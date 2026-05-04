@@ -85,6 +85,7 @@ YOU MUST RESPOND WITH ONLY THE JSON OBJECT BELOW. NO TEXT BEFORE OR AFTER IT. NO
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 4000,
+        system: 'You are a JSON API. You must respond with ONLY a valid JSON object. No markdown, no backticks, no text before or after the JSON. Your entire response must start with { and end with } and be parseable by JSON.parse().',
         messages: [{ role: 'user', content: prompt }]
       })
     });
