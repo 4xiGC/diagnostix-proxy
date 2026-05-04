@@ -1,6 +1,5 @@
-// DiagnostiX Vercel Proxy — with Serper.dev web search
-// Uses Serper.dev for real web scraping (2,500 free searches/month)
-// Then passes results to Claude for analysis and report generation
+// DiagnostiX — Vercel Proxy with Serper web search
+// Place this file at: api/diagnose.js in your GitHub repo
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -23,175 +22,58 @@ export default async function handler(req, res) {
   const location = body.location || '';
   const s        = body.sentiment || {};
 
-  // ─────────────────────────────────────────────────────────────
-  // STEP 1: Run web searches via Serper.dev
-  // ─────────────────────────────────────────────────────────────
+  // ── Step 1: Run Serper searches ──────────────────────────────
   async function serperSearch(query) {
     try {
       const r = await fetch('https://google.serper.dev/search', {
         method: 'POST',
-        headers: {
-          'X-API-KEY': serperKey,
-          'Content-Type': 'application/json'
-        },
+        headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
         body: JSON.stringify({ q: query, num: 8, gl: 'us', hl: 'en' })
       });
       const d = await r.json();
-      // Extract useful snippets from organic results
-      const results = (d.organic || []).map(item =>
-        `[${item.title}] ${item.snippet || ''} (${item.link || ''})`
-      ).join('\n');
-      // Also grab knowledge graph if present
-      const kg = d.knowledgeGraph ? 
-        `Knowledge Graph: ${d.knowledgeGraph.title || ''} - ${d.knowledgeGraph.description || ''} Rating: ${d.knowledgeGraph.rating || ''} Reviews: ${d.knowledgeGraph.reviewCount || ''}` 
+      const kg = d.knowledgeGraph
+        ? `[Knowledge Graph] ${d.knowledgeGraph.title || ''} | Rating: ${d.knowledgeGraph.rating || 'N/A'} | Reviews: ${d.knowledgeGraph.reviewCount || 'N/A'} | ${d.knowledgeGraph.description || ''}`
         : '';
-      return [kg, results].filter(Boolean).join('\n');
+      const organic = (d.organic || []).slice(0, 6).map(item =>
+        `- ${item.title}: ${item.snippet || ''}`
+      ).join('\n');
+      return [kg, organic].filter(Boolean).join('\n');
     } catch (e) {
-      return `Search failed: ${e.message}`;
+      return `Search unavailable: ${e.message}`;
     }
   }
 
-  // Run 6 targeted searches in parallel for speed
-  const [
-    googleReviews,
-    tripAdvisorYelp,
-    employeeReviews,
-    socialMedia,
-    delivery,
-    competitors
-  ] = await Promise.all([
-    serperSearch(`"${name}" ${location} restaurant reviews rating stars`),
-    serperSearch(`"${name}" ${location} TripAdvisor Yelp OpenTable reviews`),
-    serperSearch(`"${name}" ${location} Glassdoor Indeed employees work`),
-    serperSearch(`"${name}" restaurant Instagram Facebook social media followers`),
-    serperSearch(`"${name}" Uber Eats DoorDash Rappi delivery menu online order`),
-    serperSearch(`best restaurants ${location} similar to "${name}" competitors`)
+  // Run all searches in parallel
+  const [reviews, tripadvisor, employees, social, delivery, competitors] = await Promise.all([
+    serperSearch(`"${name}" ${location} restaurant reviews Google rating`),
+    serperSearch(`"${name}" ${location} TripAdvisor Yelp OpenTable`),
+    serperSearch(`"${name}" ${location} Glassdoor Indeed staff employees`),
+    serperSearch(`"${name}" Instagram Facebook social media`),
+    serperSearch(`"${name}" Uber Eats DoorDash Rappi delivery`),
+    serperSearch(`best restaurants ${location} ${name} competitors similar`)
   ]);
 
-  const webData = `
-=== GOOGLE & GENERAL REVIEWS ===
-${googleReviews}
+  const webData = `GOOGLE REVIEWS:\n${reviews}\n\nTRIPADVISOR/YELP:\n${tripadvisor}\n\nEMPLOYEES:\n${employees}\n\nSOCIAL MEDIA:\n${social}\n\nDELIVERY:\n${delivery}\n\nCOMPETITORS:\n${competitors}`;
 
-=== TRIPADVISOR / YELP / OPENTABLE ===
-${tripAdvisorYelp}
-
-=== EMPLOYEE REVIEWS (GLASSDOOR/INDEED) ===
-${employeeReviews}
-
-=== SOCIAL MEDIA ===
-${socialMedia}
-
-=== DELIVERY PLATFORMS ===
-${delivery}
-
-=== COMPETITORS ===
-${competitors}
-`.trim();
-
-  // ─────────────────────────────────────────────────────────────
-  // STEP 2: Pass web data + survey to Claude for report generation
-  // ─────────────────────────────────────────────────────────────
-  const prompt = `You are DiagnostiX, 4xi's restaurant performance intelligence platform.
-
-Using the REAL WEB DATA below, generate a comprehensive HealthCheck report for this restaurant.
+  // ── Step 2: Claude generates report from web data ────────────
+  const prompt = `You are DiagnostiX by 4xi. Analyse the web data below and generate a restaurant HealthCheck JSON report.
 
 RESTAURANT: ${name}
 LOCATION: ${location}
 WEBSITE: ${body.website || 'not provided'}
-COMPETITORS NAMED BY OWNER: ${body.competitors || 'none'}
 
-OWNER SENTIMENT SURVEY (1-10 scale):
-- Overall business performance: ${s.perf || 5}/10
-- Customer volume vs capacity: ${s.cap || 5}/10
-- Staff retention: ${s.ret || 5}/10
-- Ambiance & venue condition: ${s.amb || 5}/10
-- Repeat / return customers: ${s.repeat || 5}/10
-- Advance booking depth: ${s.book || 5}/10
-- Menu strength & appeal: ${s.menu || 5}/10
-- Online presence effectiveness: ${s.online || 5}/10
-- Pricing vs value delivered: ${s.price || 5}/10
-- 12-month business optimism: ${s.future || 5}/10
+OWNER SURVEY (1-10): performance=${s.perf||5}, capacity=${s.cap||5}, retention=${s.ret||5}, ambiance=${s.amb||5}, repeat=${s.repeat||5}, bookings=${s.book||5}, menu=${s.menu||5}, online=${s.online||5}, pricing=${s.price||5}, optimism=${s.future||5}
 
-LIVE WEB DATA (from real searches conducted right now):
+WEB DATA FOUND:
 ${webData}
 
-INSTRUCTIONS:
-- Use the web data above to extract REAL ratings, review counts, quotes and insights
-- Identify the cuisine type and price point from the data
-- Find real review verbatims (actual quotes from customers)
-- Score each pillar based on evidence from the web data
-- Compare owner sentiment scores against what the market data shows
-- Identify real named competitors from the search results
-- Generate specific, evidence-based action items
+Generate a detailed report using the web data above. Extract real ratings, review counts, quotes.
 
-Return ONLY a valid JSON object with no markdown, no backticks, no explanation:
-{
-  "healthCheckScore": 72,
-  "scoreVerdict": "Good",
-  "cuisineDetected": "from web data",
-  "priceDetected": "$$",
-  "executiveSummary": "2-3 sentences referencing REAL data found e.g. actual star ratings and review counts",
-  "pillars": {
-    "cs": {"score": 75, "label": "Customer Sentiment", "status": "good"},
-    "pa": {"score": 65, "label": "Pricing & Accessibility", "status": "good"},
-    "es": {"score": 48, "label": "Employee Sentiment", "status": "warn"},
-    "sm": {"score": 55, "label": "Social Media Impact", "status": "warn"},
-    "cp": {"score": 70, "label": "Competitive Positioning", "status": "good"},
-    "bg": {"score": 68, "label": "Brand Experience & Growth", "status": "good"}
-  },
-  "onlinePresence": {
-    "overall": 62,
-    "channels": [
-      {"name": "Google Business", "score": 80, "note": "real data e.g. 4.3 stars, 284 reviews"},
-      {"name": "Yelp", "score": 65, "note": "real data found or note if not listed"},
-      {"name": "TripAdvisor", "score": 55, "note": "real data found or note if not listed"},
-      {"name": "OpenTable / Resy", "score": 60, "note": "real data found or note if not listed"},
-      {"name": "Social Media", "score": 50, "note": "real data e.g. Instagram followers count"},
-      {"name": "Delivery Platforms", "score": 35, "note": "real data or note if not present"}
-    ]
-  },
-  "ownerSentimentSummary": "2 sentences interpreting owner survey vs what web data shows",
-  "sentimentGap": "1-2 sentences on key gaps between owner perception and market reality",
-  "reviewVerbatims": [
-    {"text": "real quote extracted from web data above", "source": "Google", "stars": 5, "sentiment": "positive"},
-    {"text": "real quote extracted from web data above", "source": "TripAdvisor", "stars": 4, "sentiment": "positive"},
-    {"text": "real quote extracted from web data above", "source": "Yelp", "stars": 3, "sentiment": "negative"},
-    {"text": "real quote from web data", "source": "Google", "stars": 3, "sentiment": "negative"}
-  ],
-  "strengths": [
-    "specific strength with evidence from web data",
-    "specific strength with evidence",
-    "specific strength with evidence"
-  ],
-  "risks": [
-    "specific risk with evidence from web data",
-    "specific risk with evidence",
-    "specific risk with evidence"
-  ],
-  "themes": {
-    "positive": ["real theme from reviews", "real theme", "real theme"],
-    "negative": ["real theme from reviews", "real theme"],
-    "neutral": ["real theme", "real theme"]
-  },
-  "employeeSentiment": "1-2 sentences from Glassdoor/Indeed data, or note if no data found",
-  "competitiveInsight": "1-2 sentences about competitive landscape from search results",
-  "competitors": [
-    {"name": "real competitor from search", "score": 68, "note": "brief real data"},
-    {"name": "real competitor from search", "score": 62, "note": "brief real data"},
-    {"name": "real competitor from search", "score": 71, "note": "brief real data"}
-  ],
-  "actions": [
-    {"priority": "urgent", "title": "Specific action title", "desc": "Evidence-based action from real data found above"},
-    {"priority": "urgent", "title": "Specific action title", "desc": "Evidence-based action"},
-    {"priority": "30days", "title": "Specific action title", "desc": "Evidence-based action"},
-    {"priority": "30days", "title": "Specific action title", "desc": "Evidence-based action"},
-    {"priority": "ongoing", "title": "Specific action title", "desc": "Evidence-based action"}
-  ]
-}
+YOU MUST RESPOND WITH ONLY THE JSON OBJECT BELOW. NO TEXT BEFORE OR AFTER IT. NO MARKDOWN. NO BACKTICKS.
 
-Scoring: good >= 65, warn 45-64, bad < 45. healthCheckScore out of 100.
-scoreVerdict must be exactly: Excellent / Good / Fair / Needs Attention`;
+{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences using real data found above including actual ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real data e.g. 4.3 stars 284 reviews"},{"name":"Yelp","score":65,"note":"data found or not listed"},{"name":"TripAdvisor","score":55,"note":"data found or not listed"},{"name":"OpenTable / Resy","score":60,"note":"data found or not listed"},{"name":"Social Media","score":50,"note":"e.g. 2.1k Instagram followers"},{"name":"Delivery Platforms","score":35,"note":"listed or not listed"}]},"ownerSentimentSummary":"2 sentences comparing survey scores to web data","sentimentGap":"what differs between owner perception and market reality","reviewVerbatims":[{"text":"real quote from web data","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote from web data","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote from web data","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote from web data","source":"Google","stars":3,"sentiment":"negative"}],"strengths":["evidence-based strength 1","strength 2","strength 3"],"risks":["evidence-based risk 1","risk 2","risk 3"],"themes":{"positive":["theme1","theme2","theme3"],"negative":["theme1","theme2"],"neutral":["theme1","theme2"]},"employeeSentiment":"Glassdoor/Indeed findings or no data found","competitiveInsight":"competitive landscape from search results","competitors":[{"name":"real competitor","score":68,"note":"data found"},{"name":"real competitor","score":62,"note":"data found"},{"name":"real competitor","score":71,"note":"data found"}],"actions":[{"priority":"urgent","title":"action title","desc":"specific evidence-based action"},{"priority":"urgent","title":"action title","desc":"specific action"},{"priority":"30days","title":"action title","desc":"specific action"},{"priority":"30days","title":"action title","desc":"specific action"},{"priority":"ongoing","title":"action title","desc":"specific action"}]}`;
 
+  let claudeData;
   try {
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -206,39 +88,65 @@ scoreVerdict must be exactly: Excellent / Good / Fair / Needs Attention`;
         messages: [{ role: 'user', content: prompt }]
       })
     });
-
-    const claudeData = await claudeRes.json();
-
-    if (claudeData.error) {
-      return res.status(500).json({ error: 'Claude error: ' + claudeData.error.message });
-    }
-
-    const text = (claudeData.content || [])
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('');
-
-    // Parse JSON — handle any accidental markdown fences
-    const cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-    let report;
-    try {
-      report = JSON.parse(cleaned);
-    } catch (e) {
-      // Try to extract JSON if there's surrounding text
-      const match = cleaned.match(/\{[\s\S]*\}/);
-      if (match) {
-        report = JSON.parse(match[0]);
-      } else {
-        return res.status(500).json({ 
-          error: 'Could not parse report JSON',
-          preview: text.slice(0, 400)
-        });
-      }
-    }
-
-    return res.status(200).json(report);
-
-  } catch (err) {
-    return res.status(500).json({ error: 'Request failed: ' + String(err) });
+    claudeData = await claudeRes.json();
+  } catch (e) {
+    return res.status(500).json({ error: 'Claude fetch failed: ' + String(e) });
   }
+
+  if (claudeData.error) {
+    return res.status(500).json({ error: 'Claude error: ' + claudeData.error.message });
+  }
+
+  // Extract text from response
+  const rawText = (claudeData.content || [])
+    .filter(b => b.type === 'text')
+    .map(b => b.text)
+    .join('');
+
+  if (!rawText) {
+    return res.status(500).json({ error: 'Empty response from Claude', stopReason: claudeData.stop_reason });
+  }
+
+  // ── Robust JSON extraction ───────────────────────────────────
+  // Try multiple strategies to extract valid JSON
+  let report = null;
+  const strategies = [
+    // 1. Direct parse of trimmed text
+    () => JSON.parse(rawText.trim()),
+    // 2. Strip markdown fences
+    () => JSON.parse(rawText.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim()),
+    // 3. Extract first {...} block
+    () => {
+      const m = rawText.match(/\{[\s\S]*\}/);
+      if (!m) throw new Error('no match');
+      return JSON.parse(m[0]);
+    },
+    // 4. Find the largest {...} block
+    () => {
+      const matches = rawText.match(/\{[\s\S]*?\}/g) || [];
+      const largest = matches.sort((a, b) => b.length - a.length)[0];
+      if (!largest) throw new Error('no block');
+      return JSON.parse(largest);
+    }
+  ];
+
+  for (const strategy of strategies) {
+    try {
+      report = strategy();
+      if (report && report.healthCheckScore) break;
+    } catch (e) {
+      continue;
+    }
+  }
+
+  if (!report) {
+    // Return the raw text so we can debug
+    return res.status(500).json({
+      error: 'JSON parsing failed after all strategies',
+      rawPreview: rawText.slice(0, 600),
+      rawLength: rawText.length
+    });
+  }
+
+  return res.status(200).json(report);
 }
