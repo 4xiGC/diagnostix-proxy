@@ -1,1 +1,15 @@
+{
+  "name": "diagnostix-proxy",
+  "version": "1.0.0",
+  "description": "DiagnostiX API proxy for 4xi360.com",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2"
+  }
+}
 
