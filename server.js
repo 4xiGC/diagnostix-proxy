@@ -79,7 +79,7 @@ app.post('/diagnose', async (req, res) => {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': ak, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-5-20251022', max_tokens: 2000,
+      body: JSON.stringify({ model: 'claude-sonnet-4-5-20250929', max_tokens: 2000,
         system: 'You are a JSON API. Output ONLY valid JSON. No markdown. No backticks. Start with { end with }.',
         messages: [{ role: 'user', content: prompt }] })
     });
