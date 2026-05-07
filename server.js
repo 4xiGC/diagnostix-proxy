@@ -1,6 +1,5 @@
-// DiagnostiX — Railway Server
-// Serves BOTH the HTML tool (as a webpage) AND the /diagnose API
-// No iframe sandbox issues — the HTML and API are on the same domain
+// DiagnostiX — Railway Server v3
+// Added /test endpoint to diagnose API key issues
 
 import express from 'express';
 import fetch from 'node-fetch';
@@ -14,7 +13,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 app.use(express.json());
 
-// CORS headers
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -23,29 +21,92 @@ app.use((req, res, next) => {
   next();
 });
 
-// ── Serve the DiagnostiX HTML tool as the homepage ───────────
+// Serve HTML page
 app.get('/', (req, res) => {
   try {
     const html = readFileSync(join(__dirname, 'public', 'index.html'), 'utf8');
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'DiagnostiX proxy running', version: '2.0', note: 'HTML page not found - check public/index.html exists' });
+    res.json({ status: 'DiagnostiX running', version: '3.0', error: 'index.html not found: ' + e.message });
   }
 });
 
-// ── Health check ─────────────────────────────────────────────
+// Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'DiagnostiX proxy is running', version: '2.0' });
+  res.json({ status: 'DiagnostiX proxy is running', version: '3.0' });
 });
 
-// ── Serper search helper ─────────────────────────────────────
+// ── TEST ENDPOINT ─────────────────────────────────────────────
+// Visit https://diagnostix-proxy-production.up.railway.app/test
+// This tells you exactly what keys are loaded and whether they work
+app.get('/test', async (req, res) => {
+  const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+  const SERPER_KEY    = process.env.SERPER_API_KEY;
+
+  const result = {
+    anthropic_key_present: !!ANTHROPIC_KEY,
+    anthropic_key_prefix:  ANTHROPIC_KEY ? ANTHROPIC_KEY.slice(0, 20) + '...' : 'MISSING',
+    anthropic_key_length:  ANTHROPIC_KEY ? ANTHROPIC_KEY.length : 0,
+    serper_key_present:    !!SERPER_KEY,
+    serper_key_prefix:     SERPER_KEY ? SERPER_KEY.slice(0, 10) + '...' : 'MISSING',
+  };
+
+  // Test Anthropic API with minimal call
+  if (ANTHROPIC_KEY) {
+    try {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type':      'application/json',
+          'x-api-key':         ANTHROPIC_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model:      'claude-haiku-4-5-20251001',
+          max_tokens: 10,
+          messages:   [{ role: 'user', content: 'Say OK' }]
+        })
+      });
+      const data = await r.json();
+      result.anthropic_test_status = r.status;
+      if (data.error) {
+        result.anthropic_test_result = 'FAILED: ' + data.error.message;
+        result.anthropic_error_type  = data.error.type;
+      } else {
+        result.anthropic_test_result = 'SUCCESS - API key is valid';
+      }
+    } catch(e) {
+      result.anthropic_test_result = 'ERROR: ' + e.message;
+    }
+  }
+
+  // Test Serper
+  if (SERPER_KEY) {
+    try {
+      const r = await fetch('https://google.serper.dev/search', {
+        method:  'POST',
+        headers: { 'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ q: 'test', num: 1 })
+      });
+      const data = await r.json();
+      result.serper_test_status = r.status;
+      result.serper_test_result = r.status === 200 ? 'SUCCESS - Serper key is valid' : 'FAILED: ' + JSON.stringify(data).slice(0, 100);
+    } catch(e) {
+      result.serper_test_result = 'ERROR: ' + e.message;
+    }
+  }
+
+  res.json(result);
+});
+
+// ── Serper search helper ──────────────────────────────────────
 async function search(query, serperKey) {
   try {
     const r = await fetch('https://google.serper.dev/search', {
-      method: 'POST',
+      method:  'POST',
       headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q: query, num: 5 })
+      body:    JSON.stringify({ q: query, num: 5 })
     });
     const d = await r.json();
     let out = '';
@@ -60,20 +121,20 @@ async function search(query, serperKey) {
   }
 }
 
-// ── Claude call helper ───────────────────────────────────────
+// ── Claude call helper ────────────────────────────────────────
 async function callClaude(userMsg, anthropicKey) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
+    method:  'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': anthropicKey,
+      'Content-Type':      'application/json',
+      'x-api-key':         anthropicKey,
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model:      'claude-sonnet-4-20250514',
       max_tokens: 2000,
-      system: 'You are a JSON API. Respond with ONLY a valid JSON object. No markdown. No backticks. No text before or after. Start with { end with }.',
-      messages: [{ role: 'user', content: userMsg }]
+      system:     'You are a JSON API. Respond with ONLY a valid JSON object. No markdown. No backticks. No text before or after. Start with { end with }.',
+      messages:   [{ role: 'user', content: userMsg }]
     })
   });
   const d = await r.json();
@@ -85,9 +146,8 @@ async function callClaude(userMsg, anthropicKey) {
   throw new Error('JSON parse failed: ' + text.slice(0,200));
 }
 
-// ── Main API endpoint ────────────────────────────────────────
+// ── Main API endpoint ─────────────────────────────────────────
 app.post('/diagnose', async (req, res) => {
-
   const body = req.body;
   if (!body || !body.name) return res.status(400).json({ error: 'Restaurant name is required' });
 
@@ -100,56 +160,53 @@ app.post('/diagnose', async (req, res) => {
   const name     = String(body.name || '');
   const location = String(body.location || '');
   const s        = body.sentiment || {};
-  const surveyStr = `perf=${s.perf||5} cap=${s.cap||5} ret=${s.ret||5} amb=${s.amb||5} repeat=${s.repeat||5} book=${s.book||5} menu=${s.menu||5} online=${s.online||5} price=${s.price||5} future=${s.future||5}`;
+  const survey   = `perf=${s.perf||5} cap=${s.cap||5} ret=${s.ret||5} amb=${s.amb||5} repeat=${s.repeat||5} book=${s.book||5} menu=${s.menu||5} online=${s.online||5} price=${s.price||5} future=${s.future||5}`;
 
   // Run 6 searches in parallel
-  const [googleData, reviewData, staffData, socialData, deliveryData, competitorData] = await Promise.all([
+  const [g, r2, st, so, d, c] = await Promise.all([
     search(`"${name}" ${location} restaurant`, SERPER_KEY),
-    search(`"${name}" ${location} reviews TripAdvisor Yelp OpenTable rating`, SERPER_KEY),
-    search(`"${name}" Glassdoor Indeed staff employees`, SERPER_KEY),
-    search(`"${name}" Instagram Facebook social media followers`, SERPER_KEY),
+    search(`"${name}" ${location} reviews TripAdvisor Yelp OpenTable`, SERPER_KEY),
+    search(`"${name}" Glassdoor Indeed employees`, SERPER_KEY),
+    search(`"${name}" Instagram Facebook social media`, SERPER_KEY),
     search(`"${name}" Uber Eats DoorDash delivery`, SERPER_KEY),
-    search(`best restaurants ${location} similar ${name} competitors`, SERPER_KEY)
+    search(`best restaurants ${location} competitors similar ${name}`, SERPER_KEY)
   ]);
 
-  const webData = `GOOGLE: ${googleData}\nREVIEWS: ${reviewData}\nSTAFF: ${staffData}\nSOCIAL: ${socialData}\nDELIVERY: ${deliveryData}\nCOMPETITORS: ${competitorData}`;
+  const webData = `GOOGLE:${g}\nREVIEWS:${r2}\nSTAFF:${st}\nSOCIAL:${so}\nDELIVERY:${d}\nCOMPETITORS:${c}`;
 
-  // Call 1: Scores
+  // Part 1: Scores
   let part1;
   try {
     part1 = await callClaude(
-      `Restaurant: ${name}, Location: ${location}\nOwner survey: ${surveyStr}\nWeb data:\n${webData.slice(0,2500)}\n\n` +
-      `Return JSON with scores using real data found:\n` +
-      `{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"detected","priceDetected":"$$","executiveSummary":"2-3 sentences with real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real data"},{"name":"Yelp","score":65,"note":"real data"},{"name":"TripAdvisor","score":55,"note":"real data"},{"name":"OpenTable","score":60,"note":"real data"},{"name":"Social Media","score":50,"note":"real data"},{"name":"Delivery Platforms","score":35,"note":"real data"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence"}\n` +
-      `Rules: good>=65 warn 45-64 bad<45. scoreVerdict=Excellent/Good/Fair/Needs Attention`,
+      `Restaurant: ${name}, Location: ${location}\nSurvey: ${survey}\nWeb data:\n${webData.slice(0,2500)}\n\n` +
+      `Return JSON scores using real data:\n` +
+      `{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"detected","priceDetected":"$$","executiveSummary":"2-3 sentences with real data","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real data"},{"name":"Yelp","score":65,"note":"real data"},{"name":"TripAdvisor","score":55,"note":"real data"},{"name":"OpenTable","score":60,"note":"real data"},{"name":"Social Media","score":50,"note":"real data"},{"name":"Delivery Platforms","score":35,"note":"real data"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence"}\n` +
+      `Rules: good>=65 warn 45-64 bad<45`,
       ANTHROPIC_KEY
     );
   } catch(e) {
-    return res.status(500).json({ error: 'Part 1 failed: ' + e.message });
+    return res.status(500).json({ error: 'Part1: ' + e.message });
   }
 
-  // Call 2: Insights
+  // Part 2: Insights
   let part2;
   try {
     part2 = await callClaude(
       `Restaurant: ${name}, Location: ${location}\nWeb data:\n${webData.slice(0,2500)}\n\n` +
-      `Return JSON with insights using real data:\n` +
-      `{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["evidence-based strength 1","strength 2","strength 3"],"risks":["evidence-based risk 1","risk 2","risk 3"],"themes":{"positive":["theme1","theme2","theme3"],"negative":["theme1","theme2"],"neutral":["theme1","theme2"]},"employeeSentiment":"Glassdoor/Indeed findings","competitiveInsight":"competitive landscape","competitors":[{"name":"real competitor","score":68,"note":"data"},{"name":"real competitor","score":62,"note":"data"},{"name":"real competitor","score":71,"note":"data"}],"actions":[{"priority":"urgent","title":"action","desc":"evidence-based"},{"priority":"urgent","title":"action","desc":"desc"},{"priority":"30days","title":"action","desc":"desc"},{"priority":"30days","title":"action","desc":"desc"},{"priority":"ongoing","title":"action","desc":"desc"}]}`,
+      `Return JSON insights:\n` +
+      `{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["strength with evidence","strength","strength"],"risks":["risk with evidence","risk","risk"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"findings","competitiveInsight":"landscape","competitors":[{"name":"competitor","score":68,"note":"data"},{"name":"competitor","score":62,"note":"data"},{"name":"competitor","score":71,"note":"data"}],"actions":[{"priority":"urgent","title":"title","desc":"evidence-based"},{"priority":"urgent","title":"title","desc":"desc"},{"priority":"30days","title":"title","desc":"desc"},{"priority":"30days","title":"title","desc":"desc"},{"priority":"ongoing","title":"title","desc":"desc"}]}`,
       ANTHROPIC_KEY
     );
   } catch(e) {
-    return res.status(500).json({ error: 'Part 2 failed: ' + e.message });
+    return res.status(500).json({ error: 'Part2: ' + e.message });
   }
 
   const report = Object.assign({}, part1, part2);
-
   if (!report.healthCheckScore || !report.pillars) {
-    return res.status(500).json({ error: 'Missing required fields', keys: Object.keys(report) });
+    return res.status(500).json({ error: 'Missing fields', keys: Object.keys(report) });
   }
 
   return res.status(200).json(report);
 });
 
-app.listen(PORT, () => {
-  console.log(`DiagnostiX running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`DiagnostiX on port ${PORT}`));
