@@ -162,6 +162,10 @@ app.post('/diagnose', async (req, res) => {
   const s        = body.sentiment || {};
   const survey   = `perf=${s.perf||5} cap=${s.cap||5} ret=${s.ret||5} amb=${s.amb||5} repeat=${s.repeat||5} book=${s.book||5} menu=${s.menu||5} online=${s.online||5} price=${s.price||5} future=${s.future||5}`;
 
+  console.log(`[diagnose] Starting for: ${name} in ${location}`);
+  console.log(`[diagnose] ANTHROPIC_KEY present: ${!!ANTHROPIC_KEY}, length: ${ANTHROPIC_KEY?.length}`);
+  console.log(`[diagnose] SERPER_KEY present: ${!!SERPER_KEY}`);
+
   // Run 6 searches in parallel
   const [g, r2, st, so, d, c] = await Promise.all([
     search(`"${name}" ${location} restaurant`, SERPER_KEY),
@@ -173,9 +177,12 @@ app.post('/diagnose', async (req, res) => {
   ]);
 
   const webData = `GOOGLE:${g}\nREVIEWS:${r2}\nSTAFF:${st}\nSOCIAL:${so}\nDELIVERY:${d}\nCOMPETITORS:${c}`;
+  console.log(`[diagnose] Searches complete. webData length: ${webData.length}`);
+  console.log(`[diagnose] Google snippet: ${g.slice(0,100)}`);
 
   // Part 1: Scores
   let part1;
+  console.log('[diagnose] Calling Claude Part 1...');
   try {
     part1 = await callClaude(
       `Restaurant: ${name}, Location: ${location}\nSurvey: ${survey}\nWeb data:\n${webData.slice(0,2500)}\n\n` +
@@ -185,11 +192,14 @@ app.post('/diagnose', async (req, res) => {
       ANTHROPIC_KEY
     );
   } catch(e) {
+    console.error('[diagnose] Part1 FAILED:', e.message);
     return res.status(500).json({ error: 'Part1: ' + e.message });
   }
+  console.log('[diagnose] Part1 success. Score:', part1?.healthCheckScore);
 
   // Part 2: Insights
   let part2;
+  console.log('[diagnose] Calling Claude Part 2...');
   try {
     part2 = await callClaude(
       `Restaurant: ${name}, Location: ${location}\nWeb data:\n${webData.slice(0,2500)}\n\n` +
@@ -198,14 +208,17 @@ app.post('/diagnose', async (req, res) => {
       ANTHROPIC_KEY
     );
   } catch(e) {
+    console.error('[diagnose] Part2 FAILED:', e.message);
     return res.status(500).json({ error: 'Part2: ' + e.message });
   }
+  console.log('[diagnose] Part2 success. Actions:', part2?.actions?.length);
 
   const report = Object.assign({}, part1, part2);
   if (!report.healthCheckScore || !report.pillars) {
     return res.status(500).json({ error: 'Missing fields', keys: Object.keys(report) });
   }
 
+  console.log('[diagnose] SUCCESS. Returning report with score:', report.healthCheckScore);
   return res.status(200).json(report);
 });
 
