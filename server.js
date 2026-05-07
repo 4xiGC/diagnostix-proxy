@@ -2,7 +2,7 @@
 // Added /test endpoint to diagnose API key issues
 
 import express from 'express';
-import fetch from 'node-fetch';
+// Using native fetch (Node 18+)
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
