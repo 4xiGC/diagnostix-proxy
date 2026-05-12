@@ -321,9 +321,9 @@ html,body{font-family:'Lato',sans-serif;background:#F4F1EC;color:var(--navy);min
 
     <!-- PAYWALL -->
     <div class="paywall" id="paywall">
-      <div class="pw-tag">Full Report Available</div>
-      <div class="pw-title">Unlock Your Complete HealthCheck</div>
-      <div class="pw-sub">Your free summary shows your overall score and top priorities. The full report includes your complete scorecard, real review verbatims, online presence breakdown, competitive analysis, owner sentiment dimension, and a 5-point action roadmap.</div>
+      <div class="pw-tag">Full Report Ready</div>
+      <div class="pw-title">Your complete intelligence report is waiting</div>
+      <div class="pw-sub">You have seen your score and one strength and one risk. The full report contains everything your competitors don&rsquo;t know about themselves &mdash; your complete scorecard, every customer quote we found, your competitive position, and a prioritised action roadmap built specifically for your restaurant.</div>
       <div class="plan-grid">
         <div class="plan-card featured">
           <div class="plan-badge">Most popular</div>
@@ -331,13 +331,13 @@ html,body{font-family:'Lato',sans-serif;background:#F4F1EC;color:var(--navy);min
           <div class="plan-price">$29<span>.99</span></div>
           <div class="plan-period">One-time purchase</div>
           <div class="plan-features">
-            <div class="plan-feat">Complete 6-pillar scorecard</div>
-            <div class="plan-feat">Online presence audit (6 platforms)</div>
-            <div class="plan-feat">Real review verbatims</div>
-            <div class="plan-feat">Competitive analysis</div>
-            <div class="plan-feat">Owner sentiment dimension</div>
-            <div class="plan-feat">5-point action roadmap</div>
-            <div class="plan-feat">Printable PDF report</div>
+            <div class="plan-feat">Every pillar scored with evidence</div>
+            <div class="plan-feat">Real customer quotes from Google, Yelp &amp; TripAdvisor</div>
+            <div class="plan-feat">Online presence audit across 6 platforms</div>
+            <div class="plan-feat">Your top 3 competitors profiled and scored</div>
+            <div class="plan-feat">Employee sentiment from Glassdoor &amp; Indeed</div>
+            <div class="plan-feat">5 prioritised actions with specific evidence</div>
+            <div class="plan-feat">Printable PDF &mdash; share with your team</div>
           </div>
           <button class="plan-btn gold" onclick="unlockFull()">Get Full Report &#8594;</button>
         </div>
@@ -509,10 +509,50 @@ async function runHealthCheck() {
   clearInterval(iv);
   pf.style.width = '100%';
   ts.textContent = 'HealthCheck complete';
+  // Track submission for analytics
+  trackSubmission(data, reportData);
   setTimeout(function(){
     renderReport(reportData, data);
     goStep(3);
   }, 700);
+}
+
+// ── ANALYTICS TRACKING ────────────────────────────────────────
+function trackSubmission(d, r) {
+  if (!r || !d) return;
+  try {
+    // Send anonymised submission data to /track endpoint for analytics
+    var payload = {
+      restaurant_name: d.name,
+      location: d.location,
+      email: d.email || '',
+      contact_name: d.contactName || '',
+      health_check_score: r.healthCheckScore,
+      score_verdict: r.scoreVerdict,
+      cuisine: r.cuisineDetected || '',
+      price_tier: r.priceDetected || '',
+      online_presence_overall: r.onlinePresence && r.onlinePresence.overall ? r.onlinePresence.overall : 0,
+      pillar_cs: r.pillars && r.pillars.cs ? r.pillars.cs.score : 0,
+      pillar_pa: r.pillars && r.pillars.pa ? r.pillars.pa.score : 0,
+      pillar_es: r.pillars && r.pillars.es ? r.pillars.es.score : 0,
+      pillar_sm: r.pillars && r.pillars.sm ? r.pillars.sm.score : 0,
+      pillar_cp: r.pillars && r.pillars.cp ? r.pillars.cp.score : 0,
+      pillar_bg: r.pillars && r.pillars.bg ? r.pillars.bg.score : 0,
+      sentiment_perf: d.sentiment && d.sentiment.perf ? d.sentiment.perf : 0,
+      sentiment_ret: d.sentiment && d.sentiment.ret ? d.sentiment.ret : 0,
+      sentiment_online: d.sentiment && d.sentiment.online ? d.sentiment.online : 0,
+      sentiment_future: d.sentiment && d.sentiment.future ? d.sentiment.future : 0,
+      submitted_at: new Date().toISOString()
+    };
+    // Fire and forget — don't block report display
+    fetch(PROXY_URL.replace('/diagnose', '/track'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).catch(function(e) { console.log('Track error (non-critical):', e.message); });
+  } catch(e) {
+    console.log('Track skipped:', e.message);
+  }
 }
 
 // ── CALL PROXY ────────────────────────────────────────────────
@@ -574,38 +614,118 @@ function renderReport(r, d) {
       +'<div class="gold-line"></div>'
     +'</div>';
 
-  // ── FREE SUMMARY (always shown) ──
-  var topRisks = (r.risks||[]).slice(0,2).map(function(s){
-    return '<div class="insight"><div class="idot r"></div><div class="itext">'+s+'</div></div>';
+  // ── FREE SUMMARY — compelling teaser ──
+  // Show enough to intrigue, withhold enough to compel purchase
+
+  // Score band messaging
+  var scoreBand = r.healthCheckScore >= 75 ? {
+    headline: 'Your restaurant is performing well — but there are hidden gaps costing you.',
+    sub: 'Restaurants at your score level typically leave 15–30% revenue on the table from addressable issues.'
+  } : r.healthCheckScore >= 55 ? {
+    headline: 'Your restaurant has real strengths — and significant risks that need urgent attention.',
+    sub: 'Our analysis found specific issues that, if unaddressed, will compound over the next 12 months.'
+  } : {
+    headline: 'Your restaurant is facing critical performance challenges that require immediate action.',
+    sub: 'The data reveals a pattern that, without intervention, puts long-term viability at risk.'
+  };
+
+  // Pillar traffic lights — scores visible but no detail
+  var pillarLights = Object.values(r.pillars||{}).map(function(p){
+    var col = p.status==='good' ? '#2E7D52' : p.status==='warn' ? '#C17D11' : '#C0392B';
+    var label = p.status==='good' ? 'Strong' : p.status==='warn' ? 'At risk' : 'Critical';
+    return '<div style="text-align:center;padding:12px 8px;background:#fff;border-radius:8px;border:1px solid #e8e4dc;border-top:3px solid '+col+'">'
+      +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:#999;margin-bottom:6px">'+p.label+'</div>'
+      +'<div style="font-size:13px;font-weight:700;color:'+col+'">'+label+'</div>'
+      +'</div>';
   }).join('');
-  var topStrengths = (r.strengths||[]).slice(0,2).map(function(s){
-    return '<div class="insight"><div class="idot g"></div><div class="itext">'+s+'</div></div>';
-  }).join('');
+
+  // One teaser strength and one teaser risk — enough to show quality, not enough to act on
+  var teaserStrength = (r.strengths||[])[0] || '';
+  var teaserRisk     = (r.risks||[])[0]     || '';
+
+  // Count what's locked to create specific FOMO
+  var numActions    = (r.actions||[]).length;
+  var numVerbatims  = (r.reviewVerbatims||[]).length;
+  var numChannels   = (r.onlinePresence&&r.onlinePresence.channels||[]).length;
+  var numCompetitors= (r.competitors||[]).length;
+  var onlineScore   = (r.onlinePresence&&r.onlinePresence.overall)||0;
+
+  // Online presence teaser — show the number but blur the detail
+  var presenceColor = onlineScore>=65?'#2E7D52':onlineScore>=45?'#C17D11':'#C0392B';
+  var presenceLabel = onlineScore>=65?'Good':'Below average';
 
   document.getElementById('rpt-summary').innerHTML =
-    '<div class="exec-box" style="border-left-color:'+overallCol+'">'+r.executiveSummary+'</div>'
 
-    +'<div class="rpt-h">Your HealthCheck Score</div>'
-    +'<div style="display:flex;align-items:center;gap:14px;margin-bottom:1rem;background:#f7f5f0;padding:1rem;border-radius:6px">'
-      +'<div style="font-family:\'Playfair Display\',serif;font-size:3rem;line-height:1;color:'+overallCol+'">'+r.healthCheckScore+'</div>'
-      +'<div><div style="font-size:14px;font-weight:700;color:var(--navy);margin-bottom:3px">'+r.scoreVerdict+'</div>'
-        +'<div style="font-size:12px;color:#888">out of 100 &mdash; DiagnostiX HealthCheck</div></div>'
+    // ── Hero score block ──
+    '<div style="background:var(--navy);color:#fff;padding:1.8rem;border-radius:10px;margin-bottom:1.2rem">'
+      +'<div style="font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:rgba(201,168,76,0.7);margin-bottom:10px">DiagnostiX HealthCheck Score</div>'
+      +'<div style="display:flex;align-items:flex-end;gap:16px;margin-bottom:12px">'
+        +'<div style="font-family:\'Playfair Display\',serif;font-size:5rem;line-height:1;color:'+overallCol+'">'+r.healthCheckScore+'</div>'
+        +'<div style="padding-bottom:8px">'
+          +'<div style="font-size:1rem;font-weight:700;color:#fff;margin-bottom:4px">'+r.scoreVerdict+'</div>'
+          +'<div style="font-size:12px;color:rgba(255,255,255,0.45)">out of 100</div>'
+        +'</div>'
+      +'</div>'
+      +'<div style="font-size:14px;color:rgba(255,255,255,0.75);line-height:1.6;margin-bottom:12px;font-style:italic">&ldquo;'+scoreBand.headline+'&rdquo;</div>'
+      +'<div style="font-size:12px;color:rgba(201,168,76,0.6);line-height:1.5">'+scoreBand.sub+'</div>'
     +'</div>'
 
-    +'<div class="rpt-h">Top Strengths</div>'+topStrengths
-    +'<div class="rpt-h">Key Risk Areas</div>'+topRisks
+    // ── Executive summary ──
+    +'<div style="background:#f7f5f0;border-left:3px solid '+overallCol+';padding:1rem 1.2rem;margin-bottom:1.2rem;font-size:13px;color:#333;line-height:1.7">'
+      +r.executiveSummary
+    +'</div>'
 
-    +'<div style="background:#f7f5f0;border-radius:6px;padding:1rem 1.2rem;margin-top:1.4rem;border:1px dashed #d4cfc7">'
-      +'<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:#999;margin-bottom:6px">Preview: 6-pillar scorecard</div>'
-      +'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">'
-      + Object.values(r.pillars||{}).map(function(p){
-          return '<div style="text-align:center;padding:10px;background:#fff;border-radius:5px;border:1px solid #e8e4dc">'
-            +'<div style="font-family:\'Playfair Display\',serif;font-size:1.3rem;color:'+stColor(p.status)+'">'+p.score+'</div>'
-            +'<div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.06em">'+p.label.split(' ')[0]+'</div>'
-            +'</div>';
-        }).join('')
+    // ── 6-pillar traffic lights ──
+    +'<div style="margin-bottom:1.2rem">'
+      +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:#999;margin-bottom:8px;font-weight:700">Performance across 6 pillars</div>'
+      +'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">'+pillarLights+'</div>'
+      +'<div style="font-size:11px;color:#bbb;margin-top:8px;text-align:center">Detailed scores, evidence and actions for each pillar in the full report</div>'
+    +'</div>'
+
+    // ── One strength teaser ──
+    +(teaserStrength ? '<div style="background:#e8f5ee;border-left:3px solid #2E7D52;border-radius:0 6px 6px 0;padding:10px 14px;margin-bottom:8px">'
+      +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:#2E7D52;font-weight:700;margin-bottom:4px">Top strength identified</div>'
+      +'<div style="font-size:13px;color:#1a3d28;line-height:1.55">'+teaserStrength+'</div>'
+    +'</div>' : '')
+
+    // ── One risk teaser ──
+    +(teaserRisk ? '<div style="background:#fdecea;border-left:3px solid #C0392B;border-radius:0 6px 6px 0;padding:10px 14px;margin-bottom:1.2rem">'
+      +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:#C0392B;font-weight:700;margin-bottom:4px">Priority risk flagged</div>'
+      +'<div style="font-size:13px;color:#4a1515;line-height:1.55">'+teaserRisk+'</div>'
+    +'</div>' : '')
+
+    // ── Locked content inventory — specific FOMO ──
+    +'<div style="background:#fff;border:1px solid #e8e4dc;border-radius:8px;padding:1.2rem;margin-bottom:1.2rem">'
+      +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:#999;margin-bottom:12px;font-weight:700">What\'s in your full report</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+        +'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#555">'
+          +'<span style="width:20px;height:20px;background:#f7f5f0;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:14px">&#128274;</span>'
+          +'Detailed pillar breakdown</div>'
+        +'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#555">'
+          +'<span style="width:20px;height:20px;background:#f7f5f0;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:14px">&#128274;</span>'
+          +numVerbatims+' real customer quotes</div>'
+        +'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#555">'
+          +'<span style="width:20px;height:20px;background:#f7f5f0;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:14px">&#128274;</span>'
+          +numChannels+' platform presence audit</div>'
+        +'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#555">'
+          +'<span style="width:20px;height:20px;background:#f7f5f0;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:14px">&#128274;</span>'
+          +numCompetitors+' local competitors profiled</div>'
+        +'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#555">'
+          +'<span style="width:20px;height:20px;background:#f7f5f0;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:14px">&#128274;</span>'
+          +'Employee sentiment analysis</div>'
+        +'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#555">'
+          +'<span style="width:20px;height:20px;background:#f7f5f0;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:14px">&#128274;</span>'
+          +numActions+'-point action roadmap</div>'
       +'</div>'
-      +'<div style="font-size:11px;color:#bbb;margin-top:8px;text-align:center">Full breakdown, review verbatims, competitive analysis &amp; action plan in the Full Report</div>'
+      // Online score teaser
+      +'<div style="margin-top:12px;padding-top:12px;border-top:1px solid #f0ede6;display:flex;align-items:center;justify-content:space-between">'
+        +'<div style="font-size:12px;color:#777">Your online presence score</div>'
+        +'<div style="display:flex;align-items:center;gap:8px">'
+          +'<span style="font-family:\'Playfair Display\',serif;font-size:1.4rem;color:'+presenceColor+'">'+onlineScore+'</span>'
+          +'<span style="font-size:11px;color:'+presenceColor+';font-weight:700">'+presenceLabel+'</span>'
+          +'<span style="font-size:11px;color:#bbb">/ 6 platforms audited in full report</span>'
+        +'</div>'
+      +'</div>'
     +'</div>';
 
   // ── FULL REPORT (rendered but locked) ──
@@ -658,9 +778,9 @@ function renderReport(r, d) {
   }).join('');
   // Add subject restaurant card first
   compCards = '<div class="comp-card me">'
-    +'<div class="comp-name" style="color:var(--gold)">'+reportData._restaurantName+'</div>'
+    +'<div class="comp-name" style="color:var(--gold)">'+d.name+'</div>'
     +'<div class="comp-score g">'+(r.healthCheckScore||0)+' <span style="font-size:11px;color:#999">/100</span></div>'
-    +'<div class="comp-detail">'+r.scoreVerdict+' &mdash; your HealthCheck score</div></div>'
+    +'<div class="comp-detail">Your HealthCheck Score</div></div>'
     + compCards;
 
   var actPriority={urgent:'Urgent &mdash; high impact',['30days']:'30 days &mdash; medium impact',ongoing:'Ongoing &mdash; compounding'};
@@ -705,8 +825,6 @@ function renderReport(r, d) {
 
   document.getElementById('rpt-full-body').innerHTML = fullHTML;
 
-  // Store restaurant name for competitor card
-  if(reportData) reportData._restaurantName = d.name;
 }
 
 // ── UNLOCK FULL REPORT ────────────────────────────────────────
