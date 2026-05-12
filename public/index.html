@@ -319,45 +319,40 @@ html,body{font-family:'Lato',sans-serif;background:#F4F1EC;color:var(--navy);min
     <!-- FREE SUMMARY -->
     <div class="rpt-body" id="rpt-summary"></div>
 
-    <!-- PAYWALL -->
+    <!-- PAYWALL — Step 3: Buy Now -->
     <div class="paywall" id="paywall">
-      <div class="pw-tag">Full Report Ready</div>
-      <div class="pw-title">Your complete intelligence report is waiting</div>
-      <div class="pw-sub">You have seen your score and one strength and one risk. The full report contains everything your competitors don&rsquo;t know about themselves &mdash; your complete scorecard, every customer quote we found, your competitive position, and a prioritised action roadmap built specifically for your restaurant.</div>
-      <div class="plan-grid">
-        <div class="plan-card featured">
-          <div class="plan-badge">Most popular</div>
-          <div class="plan-name">Full Report</div>
-          <div class="plan-price">$49<span>.99</span></div>
-          <div class="plan-period">One-time purchase</div>
-          <div class="plan-features">
-            <div class="plan-feat">Every pillar scored with evidence</div>
-            <div class="plan-feat">Real customer quotes from Google, Yelp &amp; TripAdvisor</div>
-            <div class="plan-feat">Online presence audit across 6 platforms</div>
-            <div class="plan-feat">Your top 3 competitors profiled and scored</div>
-            <div class="plan-feat">Employee sentiment from Glassdoor &amp; Indeed</div>
-            <div class="plan-feat">5 prioritised actions with specific evidence</div>
-            <div class="plan-feat">Printable PDF &mdash; share with your team</div>
-          </div>
-          <button class="plan-btn gold" onclick="unlockFull()">Get Full Report &#8594;</button>
-        </div>
-        <div class="plan-card">
-          <div class="plan-badge" style="background:rgba(201,168,76,0.2);color:var(--gold);border:1px solid var(--gold)">Best value</div>
-          <div class="plan-name">Annual Subscription</div>
-          <div class="plan-price">$99<span>.99</span></div>
-          <div class="plan-period">per year &mdash; 3 automated reports</div>
-          <div class="plan-features">
-            <div class="plan-feat">Everything in Full Report</div>
-            <div class="plan-feat">3 reports per year &mdash; auto-generated every 4 months</div>
-            <div class="plan-feat">Progress tracking vs your baseline</div>
-            <div class="plan-feat">Green / Amber / Red movement per pillar</div>
-            <div class="plan-feat">Reports emailed automatically &mdash; nothing to do</div>
-            <div class="plan-feat">Priority support from the 4xi team</div>
-          </div>
-          <button class="plan-btn outline" onclick="unlockAnnual()">Subscribe &#8594;</button>
-        </div>
+      <div class="pw-tag">&#128274; Full Report Ready</div>
+      <div class="pw-title">Unlock your complete HealthCheck report</div>
+      <div class="pw-sub">Your free summary shows your score and top priorities. The full report reveals the complete picture &mdash; every pillar scored with evidence, real customer quotes, your competitive position, and a 5-point action roadmap built specifically for your restaurant.</div>
+
+      <!-- Single prominent Buy Now button -->
+      <div style="margin:0 auto 1.4rem;max-width:400px">
+        <button class="plan-btn gold" style="font-size:15px;padding:16px;border-radius:8px;width:100%" onclick="unlockFull()">
+          Buy Full Report &mdash; $49.99 &#8594;
+        </button>
+        <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:8px;text-align:center">One-time payment &middot; Instant access &middot; Secure checkout via Wix</div>
       </div>
-      <div class="pw-note">Payments processed securely. Full report delivered instantly on screen and by email.</div>
+
+      <!-- What you get -->
+      <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:1rem 1.2rem;max-width:400px;margin:0 auto 1.2rem;text-align:left">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:rgba(201,168,76,0.7);margin-bottom:10px;font-weight:700">What&rsquo;s included</div>
+        <div class="plan-feat">Complete 6-pillar scorecard with evidence</div>
+        <div class="plan-feat">Real customer quotes from Google, Yelp &amp; TripAdvisor</div>
+        <div class="plan-feat">Online presence audit across 6 platforms</div>
+        <div class="plan-feat">Your top 3 competitors profiled and scored</div>
+        <div class="plan-feat">Employee sentiment from Glassdoor &amp; Indeed</div>
+        <div class="plan-feat">5-point prioritised action roadmap</div>
+        <div class="plan-feat">Printable PDF &mdash; share with your team</div>
+      </div>
+
+      <!-- Annual option — secondary -->
+      <div style="text-align:center">
+        <button class="plan-btn outline" style="padding:10px 24px;border-radius:6px;font-size:11px" onclick="unlockAnnual()">
+          Or subscribe annually &mdash; $99.99/yr (3 reports + progress tracking) &#8594;
+        </button>
+      </div>
+
+      <div class="pw-note" style="margin-top:1rem">&#128274; Payments processed securely by Wix Payments &middot; Full report unlocks instantly after payment</div>
     </div>
 
     <!-- FULL REPORT (locked until purchased) -->
@@ -374,11 +369,39 @@ html,body{font-family:'Lato',sans-serif;background:#F4F1EC;color:var(--navy);min
 
   </div><!-- end .report-wrap -->
 
+  <!-- Step 4: Report unlocked — print bar + annual upsell -->
   <div class="print-bar" id="print-bar" style="display:none">
     <span class="print-bar-msg">Your <b>DiagnostiX Full Report</b> is ready &mdash; save it as a PDF for your records.</span>
     <div style="display:flex;gap:8px">
       <button class="btn-restart" onclick="restart()">&#8592; New HealthCheck</button>
       <button class="btn-print" onclick="window.print()">Print / Save PDF</button>
+    </div>
+  </div>
+
+  <!-- Step 5: Annual subscription upsell — shown after full report unlocked -->
+  <div id="annual-upsell" style="display:none;background:var(--navy);border-top:3px solid var(--gold);padding:2rem 2.2rem;margin-top:0">
+    <div style="max-width:640px;margin:0 auto;text-align:center">
+      <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.14em;color:rgba(201,168,76,0.7);margin-bottom:8px;font-weight:700">Want to track your progress over time?</div>
+      <div style="font-family:'Playfair Display',serif;font-size:1.5rem;color:#fff;margin-bottom:8px">Upgrade to Annual &mdash; $99.99/year</div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.55);line-height:1.65;margin-bottom:1.4rem;max-width:480px;margin-left:auto;margin-right:auto">Get 3 automated HealthCheck reports per year &mdash; one now, one in 4 months, one in 8 months. Each report compares your scores against this baseline so you can see exactly what's improving and what still needs attention.</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:1.4rem;max-width:480px;margin-left:auto;margin-right:auto">
+        <div style="background:rgba(255,255,255,0.06);border-radius:7px;padding:12px 8px;text-align:center">
+          <div style="font-family:'Playfair Display',serif;font-size:1.6rem;color:var(--gold)">3</div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.45);text-transform:uppercase;letter-spacing:0.08em">Reports/year</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.06);border-radius:7px;padding:12px 8px;text-align:center">
+          <div style="font-family:'Playfair Display',serif;font-size:1.6rem;color:var(--gold)">Auto</div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.45);text-transform:uppercase;letter-spacing:0.08em">Generated</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.06);border-radius:7px;padding:12px 8px;text-align:center">
+          <div style="font-family:'Playfair Display',serif;font-size:1.6rem;color:var(--gold)">&#8593;&#8595;</div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.45);text-transform:uppercase;letter-spacing:0.08em">Progress tracking</div>
+        </div>
+      </div>
+      <button onclick="unlockAnnual()" style="background:var(--gold);color:var(--navy);font-family:'Lato',sans-serif;font-size:13px;font-weight:900;letter-spacing:0.08em;text-transform:uppercase;border:none;border-radius:7px;padding:14px 32px;cursor:pointer;margin-bottom:8px;width:100%;max-width:320px">
+        Subscribe now &mdash; $99.99/year &#8594;
+      </button>
+      <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-top:6px">Auto-renews annually &middot; Cancel anytime &middot; Secure via Wix</div>
     </div>
   </div>
 </div><!-- end p3 -->
@@ -915,7 +938,13 @@ function unlockFullReport() {
   document.getElementById('full-blur').style.opacity = '1';
   document.getElementById('full-blur').style.pointerEvents = 'auto';
   document.getElementById('print-bar').style.display = 'flex';
-  window.scrollTo(0,0);
+  // Show annual upsell below the report (only if they bought the one-time report)
+  var product = sessionStorage.getItem('dx_product') || 'full';
+  if (product === 'full') {
+    var upsell = document.getElementById('annual-upsell');
+    if (upsell) upsell.style.display = 'block';
+  }
+  window.scrollTo(0, 0);
 }
 
 // ── FALLBACK REPORT ───────────────────────────────────────────
