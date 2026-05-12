@@ -119,54 +119,53 @@ app.post('/diagnose', async (req, res) => {
     return res.status(500).json({ error: e.message });
   }
 });
-// ── DATA TRACKING ENDPOINT (add after /diagnose) ──────────
-app.post('/track', async (req, res) => {
-  // Always return 200 — this is fire-and-forget
-  res.status(200).json({ ok: true });
- 
-  const d = req.body;
-  if (!d || !d.restaurant_name) return;
- 
-  const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SUPABASE_KEY = process.env.SUPABASE_KEY;
-  if (!SUPABASE_URL || !SUPABASE_KEY) return;
- 
-  try {
-    await fetch(SUPABASE_URL + '/rest/v1/submissions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_KEY,
-        'Authorization': 'Bearer ' + SUPABASE_KEY,
-        'Prefer': 'return=minimal'
-      },
-      body: JSON.stringify({
-        restaurant_name:        d.restaurant_name,
-        location:               d.location,
-        email:                  d.email || null,
-        contact_name:           d.contact_name || null,
-        cuisine:                d.cuisine || null,
-        price_tier:             d.price_tier || null,
-        health_check_score:     d.health_check_score || 0,
-        score_verdict:          d.score_verdict || null,
-        pillar_cs:              d.pillar_cs || 0,
-        pillar_pa:              d.pillar_pa || 0,
-        pillar_es:              d.pillar_es || 0,
-        pillar_sm:              d.pillar_sm || 0,
-        pillar_cp:              d.pillar_cp || 0,
-        pillar_bg:              d.pillar_bg || 0,
-        online_presence_overall:d.online_presence_overall || 0,
-        sentiment_perf:         d.sentiment_perf || 0,
-        sentiment_ret:          d.sentiment_ret || 0,
-        sentiment_online:       d.sentiment_online || 0,
-        sentiment_future:       d.sentiment_future || 0,
-        submitted_at:           d.submitted_at || new Date().toISOString()
-      })
-    });
-    console.log('[track] Saved:', d.restaurant_name, d.health_check_score);
-  } catch(e) {
-    console.log('[track] Save failed:', e.message);
+
+// ── IN-MEMORY REPORT STORE ───────────────────────────────────
+// Stores reports by email for 2 hours so payment redirect can retrieve them.
+// Uses memory (not database) — simple, fast, no extra setup needed.
+const reportStore = new Map();
+
+// Clean up entries older than 2 hours every 30 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [key, val] of reportStore.entries()) {
+    if (val.savedAt < cutoff) reportStore.delete(key);
   }
+}, 30 * 60 * 1000);
+
+// ── SAVE REPORT (called before Wix redirect) ──────────────────
+app.post('/save-report', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const { email, report, survey, product } = req.body;
+  if (!email || !report) {
+    return res.status(400).json({ error: 'email and report required' });
+  }
+  const key = email.toLowerCase().trim();
+  reportStore.set(key, { report, survey, product: product || 'full', savedAt: Date.now() });
+  console.log('[save-report] Saved for:', key);
+  res.status(200).json({ ok: true });
+});
+
+// ── GET REPORT (called on payment return) ─────────────────────
+app.get('/get-report', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const email = (req.query.email || '').toLowerCase().trim();
+  if (!email) return res.status(400).json({ error: 'email required' });
+
+  const saved = reportStore.get(email);
+  if (!saved) {
+    console.log('[get-report] Not found for:', email);
+    return res.status(404).json({ error: 'Report not found or expired' });
+  }
+
+  // Check not older than 2 hours
+  if (Date.now() - saved.savedAt > 2 * 60 * 60 * 1000) {
+    reportStore.delete(email);
+    return res.status(404).json({ error: 'Report expired' });
+  }
+
+  console.log('[get-report] Retrieved for:', email);
+  res.status(200).json({ report: saved.report, survey: saved.survey, product: saved.product });
 });
 
 app.listen(PORT, () => console.log(`DiagnostiX v7 on port ${PORT}`));
