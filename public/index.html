@@ -434,6 +434,7 @@ var QS = [
 var qVals = {};
 QS.forEach(function(q){ qVals[q.id] = 5; });
 var reportData = null;
+var surveyData  = null; // stores survey form data globally
 
 // ── BUILD QUESTIONS ───────────────────────────────────────────
 function buildQuestions() {
@@ -524,6 +525,7 @@ async function runHealthCheck() {
   }, 1700);
 
   var data = gatherData();
+  surveyData = data; // save globally so paywall can access it
   try {
     reportData = await callProxy(data);
   } catch(e) {
@@ -536,6 +538,7 @@ async function runHealthCheck() {
   // Track submission for analytics
   trackSubmission(data, reportData);
   setTimeout(function(){
+    surveyData = data; // ensure surveyData is always set before render
     renderReport(reportData, data);
     goStep(3);
   }, 700);
@@ -868,11 +871,13 @@ var WIX_FULL_URL    = 'https://www.4xi360.com/diagnostix';
 var WIX_ANNUAL_URL  = 'https://www.4xi360.com/diagnostix';
 
 async function unlockFull() {
-  var d = surveyData || gatherData();
-  var email = (d && d.email) ? d.email.trim() : '';
+  // Get email from multiple sources for robustness
+  var emailField = document.getElementById('f-email');
+  var email = (surveyData && surveyData.email) ? surveyData.email.trim()
+            : (emailField && emailField.value) ? emailField.value.trim()
+            : '';
   if (!email) {
-    alert('Please enter your email address so we can restore your report after payment.');
-    document.getElementById('f-email') && document.getElementById('f-email').focus();
+    alert('Please enter your email address in the survey form so we can restore your report after payment.');
     return;
   }
   // Save report to Railway server — survives any redirect
@@ -888,10 +893,12 @@ async function unlockFull() {
 }
 
 async function unlockAnnual() {
-  var d = surveyData || gatherData();
-  var email = (d && d.email) ? d.email.trim() : '';
+  var emailField = document.getElementById('f-email');
+  var email = (surveyData && surveyData.email) ? surveyData.email.trim()
+            : (emailField && emailField.value) ? emailField.value.trim()
+            : '';
   if (!email) {
-    alert('Please enter your email address so we can restore your report after payment.');
+    alert('Please enter your email address in the survey form so we can restore your report after payment.');
     return;
   }
   // Save report to Railway server
@@ -1033,6 +1040,7 @@ function buildFallback(d) {
 
 function restart(){
   reportData=null;
+  surveyData=null;
   document.getElementById('rpt-cover-slot').innerHTML='';
   document.getElementById('rpt-summary').innerHTML='';
   document.getElementById('rpt-full-body').innerHTML='';
