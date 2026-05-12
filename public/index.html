@@ -868,22 +868,24 @@ var WIX_FULL_URL    = 'https://www.4xi360.com/diagnostix';
 var WIX_ANNUAL_URL  = 'https://www.4xi360.com/diagnostix';
 
 function unlockFull() {
-  // Save current report data so we can restore after payment redirect
+  // Save to localStorage (survives Wix sign-up redirects, unlike sessionStorage)
   try {
-    if (reportData) sessionStorage.setItem('dx_report', JSON.stringify(reportData));
-    if (surveyData) sessionStorage.setItem('dx_survey', JSON.stringify(surveyData));
-    sessionStorage.setItem('dx_product', 'full');
+    if (reportData) localStorage.setItem('dx_report', JSON.stringify(reportData));
+    if (surveyData) localStorage.setItem('dx_survey', JSON.stringify(surveyData));
+    localStorage.setItem('dx_product', 'full');
+    localStorage.setItem('dx_saved_at', Date.now().toString());
   } catch(e) {}
   // Redirect to Wix checkout
   window.location.href = WIX_FULL_URL + '?ref=diagnostix&session=' + Date.now();
 }
 
 function unlockAnnual() {
-  // Save current report data so we can restore after payment redirect
+  // Save to localStorage (survives Wix sign-up redirects)
   try {
-    if (reportData) sessionStorage.setItem('dx_report', JSON.stringify(reportData));
-    if (surveyData) sessionStorage.setItem('dx_survey', JSON.stringify(surveyData));
-    sessionStorage.setItem('dx_product', 'annual');
+    if (reportData) localStorage.setItem('dx_report', JSON.stringify(reportData));
+    if (surveyData) localStorage.setItem('dx_survey', JSON.stringify(surveyData));
+    localStorage.setItem('dx_product', 'annual');
+    localStorage.setItem('dx_saved_at', Date.now().toString());
   } catch(e) {}
   // Redirect to Wix checkout
   window.location.href = WIX_ANNUAL_URL + '?ref=diagnostix&session=' + Date.now();
@@ -896,12 +898,19 @@ function checkPaymentReturn() {
   var params = new URLSearchParams(window.location.search);
   if (params.get('payment') !== 'success') return;
   try {
-    var savedReport = sessionStorage.getItem('dx_report');
-    var savedSurvey = sessionStorage.getItem('dx_survey');
-    var product     = sessionStorage.getItem('dx_product') || 'full';
-    if (savedReport && savedSurvey) {
+    // Use localStorage — survives Wix sign-up/login flow
+    var savedReport = localStorage.getItem('dx_report');
+    var savedSurvey = localStorage.getItem('dx_survey');
+    var product     = localStorage.getItem('dx_product') || 'full';
+    var savedAt     = parseInt(localStorage.getItem('dx_saved_at') || '0');
+
+    // Check data is less than 2 hours old (prevents stale data from previous visits)
+    var isRecent = (Date.now() - savedAt) < 2 * 60 * 60 * 1000;
+
+    if (savedReport && savedSurvey && isRecent) {
       reportData = JSON.parse(savedReport);
       surveyData = JSON.parse(savedSurvey);
+
       // Show the report page and unlock
       goStep(3);
       renderReport(reportData, surveyData);
@@ -909,12 +918,51 @@ function checkPaymentReturn() {
         unlockFullReport();
         showPaymentConfirmation(product);
       }, 400);
-      // Clean up URL
+
+      // Clean up URL and clear saved data
       window.history.replaceState({}, '', window.location.pathname);
+      localStorage.removeItem('dx_report');
+      localStorage.removeItem('dx_survey');
+      localStorage.removeItem('dx_product');
+      localStorage.removeItem('dx_saved_at');
+
+    } else {
+      // Report data missing or too old — show a friendly message
+      showReportExpiredMessage();
     }
   } catch(e) {
     console.log('Payment return error:', e.message);
+    showReportExpiredMessage();
   }
+}
+
+function showReportExpiredMessage() {
+  // Payment confirmed but report data not found — ask them to re-run
+  var banner = document.createElement('div');
+  banner.style.cssText = [
+    'background:#0D1E35',
+    'color:#fff',
+    'padding:20px 24px',
+    'text-align:center',
+    'position:fixed',
+    'top:0','left:0','right:0',
+    'z-index:9999',
+    'box-shadow:0 4px 20px rgba(0,0,0,0.4)'
+  ].join(';');
+  banner.innerHTML = [
+    '<div style="font-weight:700;font-size:15px;color:#C9A84C;margin-bottom:6px">',
+    '&#10003; Payment confirmed — thank you!</div>',
+    '<div style="font-size:13px;color:rgba(255,255,255,0.7);margin-bottom:12px">',
+    'Your session expired during the payment process. Please re-run your HealthCheck below ',
+    '— your report will unlock automatically this time.</div>',
+    '<button onclick="this.parentElement.remove()" ',
+    'style="background:#C9A84C;color:#0D1E35;border:none;padding:8px 20px;',
+    'border-radius:5px;font-weight:700;cursor:pointer;font-size:12px">',
+    'Got it &#8594;</button>'
+  ].join('');
+  document.body.appendChild(banner);
+  // Clean up URL
+  window.history.replaceState({}, '', window.location.pathname);
 }
 
 function showPaymentConfirmation(product) {
@@ -939,7 +987,7 @@ function unlockFullReport() {
   document.getElementById('full-blur').style.pointerEvents = 'auto';
   document.getElementById('print-bar').style.display = 'flex';
   // Show annual upsell below the report (only if they bought the one-time report)
-  var product = sessionStorage.getItem('dx_product') || 'full';
+  var product = localStorage.getItem('dx_product') || sessionStorage.getItem('dx_product') || 'full';
   if (product === 'full') {
     var upsell = document.getElementById('annual-upsell');
     if (upsell) upsell.style.display = 'block';
