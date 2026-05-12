@@ -328,7 +328,7 @@ html,body{font-family:'Lato',sans-serif;background:#F4F1EC;color:var(--navy);min
         <div class="plan-card featured">
           <div class="plan-badge">Most popular</div>
           <div class="plan-name">Full Report</div>
-          <div class="plan-price">$29<span>.99</span></div>
+          <div class="plan-price">$49<span>.99</span></div>
           <div class="plan-period">One-time purchase</div>
           <div class="plan-features">
             <div class="plan-feat">Every pillar scored with evidence</div>
@@ -342,16 +342,17 @@ html,body{font-family:'Lato',sans-serif;background:#F4F1EC;color:var(--navy);min
           <button class="plan-btn gold" onclick="unlockFull()">Get Full Report &#8594;</button>
         </div>
         <div class="plan-card">
-          <div class="plan-name">Quarterly Updates</div>
-          <div class="plan-price">$39<span>.99</span></div>
-          <div class="plan-period">per year &mdash; 4 reports</div>
+          <div class="plan-badge" style="background:rgba(201,168,76,0.2);color:var(--gold);border:1px solid var(--gold)">Best value</div>
+          <div class="plan-name">Annual Subscription</div>
+          <div class="plan-price">$99<span>.99</span></div>
+          <div class="plan-period">per year &mdash; 3 automated reports</div>
           <div class="plan-features">
             <div class="plan-feat">Everything in Full Report</div>
-            <div class="plan-feat">Automated re-diagnostic every 90 days</div>
+            <div class="plan-feat">3 reports per year &mdash; auto-generated every 4 months</div>
             <div class="plan-feat">Progress tracking vs your baseline</div>
-            <div class="plan-feat">Score trend analysis</div>
-            <div class="plan-feat">Green / Yellow / Red movement alerts</div>
-            <div class="plan-feat">Priority email from 4xi team</div>
+            <div class="plan-feat">Green / Amber / Red movement per pillar</div>
+            <div class="plan-feat">Reports emailed automatically &mdash; nothing to do</div>
+            <div class="plan-feat">Priority support from the 4xi team</div>
           </div>
           <button class="plan-btn outline" onclick="unlockAnnual()">Subscribe &#8594;</button>
         </div>
@@ -828,24 +829,84 @@ function renderReport(r, d) {
 }
 
 // ── UNLOCK FULL REPORT ────────────────────────────────────────
-// In production: replace these with Wix Pay / Stripe payment links.
-// The unlock logic below simulates purchase for demo/testing.
-// To connect real payments: trigger a Wix payment, then on success
-// call unlockFullReport() from the payment success callback.
+// Wix Payments integration — redirects to Wix checkout.
+// After payment, Wix redirects back with ?payment=success
+// which triggers unlockFullReport() automatically.
+//
+// SETUP REQUIRED:
+// 1. Create product in Wix Store: "DiagnostiX Full Report" $49.99
+// 2. Create plan in Wix Pricing Plans: "DiagnostiX Annual" $99.99/year
+// 3. Replace the two URLs below with your actual Wix checkout URLs
+// 4. In Wix: set the post-payment redirect URL to:
+//    https://diagnostix-proxy-production.up.railway.app?payment=success&product=full
+//    (or annual) — this brings user back and auto-unlocks the report
+
+var WIX_FULL_URL    = 'https://www.4xi360.com/diagnostix';
+var WIX_ANNUAL_URL  = 'https://www.4xi360.com/diagnostix';
+
 function unlockFull() {
-  // TODO: Replace with Wix Pay payment for $29.99
-  // For now: open payment page or trigger Wix Pay
-  // window.parent.postMessage({action:'pay', product:'full', price:29.99}, '*');
-  // Demo: unlock immediately — remove this line in production
-  unlockFullReport();
+  // Save current report data so we can restore after payment redirect
+  try {
+    if (reportData) sessionStorage.setItem('dx_report', JSON.stringify(reportData));
+    if (surveyData) sessionStorage.setItem('dx_survey', JSON.stringify(surveyData));
+    sessionStorage.setItem('dx_product', 'full');
+  } catch(e) {}
+  // Redirect to Wix checkout
+  window.location.href = WIX_FULL_URL + '?ref=diagnostix&session=' + Date.now();
 }
 
 function unlockAnnual() {
-  // TODO: Replace with Wix Pay subscription for $39.99/year
-  // window.parent.postMessage({action:'pay', product:'annual', price:39.99}, '*');
-  // Demo: unlock immediately — remove this line in production
-  unlockFullReport();
+  // Save current report data so we can restore after payment redirect
+  try {
+    if (reportData) sessionStorage.setItem('dx_report', JSON.stringify(reportData));
+    if (surveyData) sessionStorage.setItem('dx_survey', JSON.stringify(surveyData));
+    sessionStorage.setItem('dx_product', 'annual');
+  } catch(e) {}
+  // Redirect to Wix checkout
+  window.location.href = WIX_ANNUAL_URL + '?ref=diagnostix&session=' + Date.now();
 }
+
+// ── CHECK FOR PAYMENT RETURN ──────────────────────────────────
+// Called on page load — if user is returning from Wix payment,
+// restore their report and unlock it automatically.
+function checkPaymentReturn() {
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('payment') !== 'success') return;
+  try {
+    var savedReport = sessionStorage.getItem('dx_report');
+    var savedSurvey = sessionStorage.getItem('dx_survey');
+    var product     = sessionStorage.getItem('dx_product') || 'full';
+    if (savedReport && savedSurvey) {
+      reportData = JSON.parse(savedReport);
+      surveyData = JSON.parse(savedSurvey);
+      // Show the report page and unlock
+      goStep(3);
+      renderReport(reportData, surveyData);
+      setTimeout(function() {
+        unlockFullReport();
+        showPaymentConfirmation(product);
+      }, 400);
+      // Clean up URL
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  } catch(e) {
+    console.log('Payment return error:', e.message);
+  }
+}
+
+function showPaymentConfirmation(product) {
+  var msg = product === 'annual'
+    ? 'Welcome to DiagnostiX Annual! Your first report is below. You will receive 2 more automatically over the next 8 months.'
+    : 'Payment confirmed! Your full report is now unlocked below. A copy will be emailed to you shortly.';
+  var banner = document.createElement('div');
+  banner.style.cssText = 'background:#2E7D52;color:#fff;padding:14px 20px;text-align:center;font-size:13px;font-weight:700;position:fixed;top:0;left:0;right:0;z-index:9999';
+  banner.textContent = '✓  ' + msg;
+  document.body.appendChild(banner);
+  setTimeout(function() { banner.style.display = 'none'; }, 8000);
+}
+
+// Run payment check on page load
+window.addEventListener('load', checkPaymentReturn);
 
 function unlockFullReport() {
   document.getElementById('paywall').style.display = 'none';
