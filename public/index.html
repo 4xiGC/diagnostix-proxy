@@ -867,28 +867,43 @@ function renderReport(r, d) {
 var WIX_FULL_URL    = 'https://www.4xi360.com/diagnostix';
 var WIX_ANNUAL_URL  = 'https://www.4xi360.com/diagnostix';
 
-function unlockFull() {
-  // Save to localStorage (survives Wix sign-up redirects, unlike sessionStorage)
+async function unlockFull() {
+  var d = surveyData || gatherData();
+  var email = (d && d.email) ? d.email.trim() : '';
+  if (!email) {
+    alert('Please enter your email address so we can restore your report after payment.');
+    document.getElementById('f-email') && document.getElementById('f-email').focus();
+    return;
+  }
+  // Save report to Railway server — survives any redirect
   try {
-    if (reportData) localStorage.setItem('dx_report', JSON.stringify(reportData));
-    if (surveyData) localStorage.setItem('dx_survey', JSON.stringify(surveyData));
-    localStorage.setItem('dx_product', 'full');
-    localStorage.setItem('dx_saved_at', Date.now().toString());
-  } catch(e) {}
-  // Redirect to Wix checkout
-  window.location.href = WIX_FULL_URL + '?ref=diagnostix&session=' + Date.now();
+    await fetch(PROXY_URL.replace('/diagnose', '/save-report'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, report: reportData, survey: surveyData, product: 'full' })
+    });
+  } catch(e) { console.log('Save failed:', e.message); }
+  // Redirect to Wix checkout — email passed so we can retrieve on return
+  window.location.href = WIX_FULL_URL + '?ref=diagnostix&email=' + encodeURIComponent(email);
 }
 
-function unlockAnnual() {
-  // Save to localStorage (survives Wix sign-up redirects)
+async function unlockAnnual() {
+  var d = surveyData || gatherData();
+  var email = (d && d.email) ? d.email.trim() : '';
+  if (!email) {
+    alert('Please enter your email address so we can restore your report after payment.');
+    return;
+  }
+  // Save report to Railway server
   try {
-    if (reportData) localStorage.setItem('dx_report', JSON.stringify(reportData));
-    if (surveyData) localStorage.setItem('dx_survey', JSON.stringify(surveyData));
-    localStorage.setItem('dx_product', 'annual');
-    localStorage.setItem('dx_saved_at', Date.now().toString());
-  } catch(e) {}
+    await fetch(PROXY_URL.replace('/diagnose', '/save-report'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, report: reportData, survey: surveyData, product: 'annual' })
+    });
+  } catch(e) { console.log('Save failed:', e.message); }
   // Redirect to Wix checkout
-  window.location.href = WIX_ANNUAL_URL + '?ref=diagnostix&session=' + Date.now();
+  window.location.href = WIX_ANNUAL_URL + '?ref=diagnostix&email=' + encodeURIComponent(email);
 }
 
 // ── CHECK FOR PAYMENT RETURN ──────────────────────────────────
@@ -897,71 +912,46 @@ function unlockAnnual() {
 function checkPaymentReturn() {
   var params = new URLSearchParams(window.location.search);
   if (params.get('payment') !== 'success') return;
-  try {
-    // Use localStorage — survives Wix sign-up/login flow
-    var savedReport = localStorage.getItem('dx_report');
-    var savedSurvey = localStorage.getItem('dx_survey');
-    var product     = localStorage.getItem('dx_product') || 'full';
-    var savedAt     = parseInt(localStorage.getItem('dx_saved_at') || '0');
 
-    // Check data is less than 2 hours old (prevents stale data from previous visits)
-    var isRecent = (Date.now() - savedAt) < 2 * 60 * 60 * 1000;
+  var email = params.get('email') || '';
 
-    if (savedReport && savedSurvey && isRecent) {
-      reportData = JSON.parse(savedReport);
-      surveyData = JSON.parse(savedSurvey);
+  // Show loading state while we retrieve the report
+  goStep(2);
+  document.getElementById('think-msg') && (document.getElementById('think-msg').textContent = 'Retrieving your report…');
 
-      // Show the report page and unlock
-      goStep(3);
-      renderReport(reportData, surveyData);
-      setTimeout(function() {
-        unlockFullReport();
-        showPaymentConfirmation(product);
-      }, 400);
-
-      // Clean up URL and clear saved data
-      window.history.replaceState({}, '', window.location.pathname);
-      localStorage.removeItem('dx_report');
-      localStorage.removeItem('dx_survey');
-      localStorage.removeItem('dx_product');
-      localStorage.removeItem('dx_saved_at');
-
-    } else {
-      // Report data missing or too old — show a friendly message
-      showReportExpiredMessage();
-    }
-  } catch(e) {
-    console.log('Payment return error:', e.message);
-    showReportExpiredMessage();
-  }
+  // Retrieve report from Railway server using email
+  fetch(PROXY_URL.replace('/diagnose', '/get-report') + '?email=' + encodeURIComponent(email))
+    .then(function(r) { return r.json(); })
+    .then(function(saved) {
+      if (saved && saved.report && saved.report.healthCheckScore) {
+        reportData = saved.report;
+        surveyData = saved.survey || {};
+        var product = saved.product || 'full';
+        goStep(3);
+        renderReport(reportData, surveyData);
+        setTimeout(function() {
+          unlockFullReport();
+          showPaymentConfirmation(product);
+        }, 400);
+        window.history.replaceState({}, '', window.location.pathname);
+      } else {
+        showReportNotFound(email);
+      }
+    })
+    .catch(function(e) {
+      console.log('Report retrieval error:', e.message);
+      showReportNotFound(email);
+    });
 }
 
-function showReportExpiredMessage() {
-  // Payment confirmed but report data not found — ask them to re-run
+function showReportNotFound(email) {
+  goStep(0);
   var banner = document.createElement('div');
-  banner.style.cssText = [
-    'background:#0D1E35',
-    'color:#fff',
-    'padding:20px 24px',
-    'text-align:center',
-    'position:fixed',
-    'top:0','left:0','right:0',
-    'z-index:9999',
-    'box-shadow:0 4px 20px rgba(0,0,0,0.4)'
-  ].join(';');
-  banner.innerHTML = [
-    '<div style="font-weight:700;font-size:15px;color:#C9A84C;margin-bottom:6px">',
-    '&#10003; Payment confirmed — thank you!</div>',
-    '<div style="font-size:13px;color:rgba(255,255,255,0.7);margin-bottom:12px">',
-    'Your session expired during the payment process. Please re-run your HealthCheck below ',
-    '— your report will unlock automatically this time.</div>',
-    '<button onclick="this.parentElement.remove()" ',
-    'style="background:#C9A84C;color:#0D1E35;border:none;padding:8px 20px;',
-    'border-radius:5px;font-weight:700;cursor:pointer;font-size:12px">',
-    'Got it &#8594;</button>'
-  ].join('');
+  banner.style.cssText = 'background:#0D1E35;color:#fff;padding:20px 24px;text-align:center;position:fixed;top:0;left:0;right:0;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.4)';
+  banner.innerHTML = '<div style="font-weight:700;font-size:15px;color:#C9A84C;margin-bottom:6px">&#10003; Payment confirmed — thank you!</div>'
+    + '<div style="font-size:13px;color:rgba(255,255,255,0.7);margin-bottom:12px">Please re-run your HealthCheck below — your full report will unlock automatically.</div>'
+    + '<button onclick="this.parentElement.remove()" style="background:#C9A84C;color:#0D1E35;border:none;padding:8px 20px;border-radius:5px;font-weight:700;cursor:pointer;font-size:12px">Start HealthCheck →</button>';
   document.body.appendChild(banner);
-  // Clean up URL
   window.history.replaceState({}, '', window.location.pathname);
 }
 
