@@ -871,28 +871,6 @@ var WIX_FULL_URL    = 'https://www.4xi360.com/diagnostix';
 var WIX_ANNUAL_URL  = 'https://www.4xi360.com/diagnostix';
 
 async function unlockFull() {
-  // Get email from multiple sources for robustness
-  var emailField = document.getElementById('f-email');
-  var email = (surveyData && surveyData.email) ? surveyData.email.trim()
-            : (emailField && emailField.value) ? emailField.value.trim()
-            : '';
-  if (!email) {
-    alert('Please enter your email address in the survey form so we can restore your report after payment.');
-    return;
-  }
-  // Save report to Railway server — survives any redirect
-  try {
-    await fetch(PROXY_URL.replace('/diagnose', '/save-report'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email, report: reportData, survey: surveyData, product: 'full' })
-    });
-  } catch(e) { console.log('Save failed:', e.message); }
-  // Redirect to Wix checkout — email passed so we can retrieve on return
-  window.location.href = WIX_FULL_URL + '?ref=diagnostix&email=' + encodeURIComponent(email);
-}
-
-async function unlockAnnual() {
   var emailField = document.getElementById('f-email');
   var email = (surveyData && surveyData.email) ? surveyData.email.trim()
             : (emailField && emailField.value) ? emailField.value.trim()
@@ -906,27 +884,64 @@ async function unlockAnnual() {
     await fetch(PROXY_URL.replace('/diagnose', '/save-report'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, report: reportData, survey: surveyData, product: 'full' })
+    });
+  } catch(e) { console.log('Save-report error:', e.message); }
+  // Save email to localStorage so we can retrieve on return
+  // (localStorage survives page reloads even if Wix clears other storage)
+  try { localStorage.setItem('dx_pending_email', email); } catch(e) {}
+  // Redirect to Wix
+  window.location.href = WIX_FULL_URL;
+}
+
+async function unlockAnnual() {
+  var emailField = document.getElementById('f-email');
+  var email = (surveyData && surveyData.email) ? surveyData.email.trim()
+            : (emailField && emailField.value) ? emailField.value.trim()
+            : '';
+  if (!email) {
+    alert('Please enter your email address in the survey form so we can restore your report after payment.');
+    return;
+  }
+  try {
+    await fetch(PROXY_URL.replace('/diagnose', '/save-report'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: email, report: reportData, survey: surveyData, product: 'annual' })
     });
-  } catch(e) { console.log('Save failed:', e.message); }
-  // Redirect to Wix checkout
-  window.location.href = WIX_ANNUAL_URL + '?ref=diagnostix&email=' + encodeURIComponent(email);
+  } catch(e) { console.log('Save-report error:', e.message); }
+  try { localStorage.setItem('dx_pending_email', email); } catch(e) {}
+  window.location.href = WIX_ANNUAL_URL;
 }
 
 // ── CHECK FOR PAYMENT RETURN ──────────────────────────────────
 // Called on page load — if user is returning from Wix payment,
 // restore their report and unlock it automatically.
 function checkPaymentReturn() {
+  // Check for pending email from before Wix redirect
+  // Works even if Wix doesn't pass URL parameters back
+  var pendingEmail = '';
+  try { pendingEmail = localStorage.getItem('dx_pending_email') || ''; } catch(e) {}
+
+  // Also check URL params as backup (if Wix does pass them)
   var params = new URLSearchParams(window.location.search);
-  if (params.get('payment') !== 'success') return;
+  var urlEmail = params.get('email') || '';
+  var urlPayment = params.get('payment') || '';
 
-  var email = params.get('email') || '';
+  var email = urlEmail || pendingEmail;
 
-  // Show loading state while we retrieve the report
+  // Only proceed if we have an email saved (means user clicked Buy before)
+  if (!email) return;
+
+  // Clear the pending email immediately to prevent re-triggering
+  try { localStorage.removeItem('dx_pending_email'); } catch(e) {}
+
+  // Show loading spinner while retrieving
   goStep(2);
-  document.getElementById('think-msg') && (document.getElementById('think-msg').textContent = 'Retrieving your report…');
+  var thinkMsg = document.getElementById('think-msg');
+  if (thinkMsg) thinkMsg.textContent = 'Retrieving your report…';
 
-  // Retrieve report from Railway server using email
+  // Retrieve saved report from Railway
   fetch(PROXY_URL.replace('/diagnose', '/get-report') + '?email=' + encodeURIComponent(email))
     .then(function(r) { return r.json(); })
     .then(function(saved) {
@@ -939,25 +954,27 @@ function checkPaymentReturn() {
         setTimeout(function() {
           unlockFullReport();
           showPaymentConfirmation(product);
-        }, 400);
+        }, 500);
         window.history.replaceState({}, '', window.location.pathname);
       } else {
-        showReportNotFound(email);
+        // No report found — show survey with thank you message
+        goStep(0);
+        showPaymentThankyou();
       }
     })
     .catch(function(e) {
-      console.log('Report retrieval error:', e.message);
-      showReportNotFound(email);
+      console.log('[checkPaymentReturn] error:', e.message);
+      goStep(0);
+      showPaymentThankyou();
     });
 }
 
-function showReportNotFound(email) {
-  goStep(0);
+function showPaymentThankyou() {
   var banner = document.createElement('div');
   banner.style.cssText = 'background:#0D1E35;color:#fff;padding:20px 24px;text-align:center;position:fixed;top:0;left:0;right:0;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.4)';
-  banner.innerHTML = '<div style="font-weight:700;font-size:15px;color:#C9A84C;margin-bottom:6px">&#10003; Payment confirmed — thank you!</div>'
-    + '<div style="font-size:13px;color:rgba(255,255,255,0.7);margin-bottom:12px">Please re-run your HealthCheck below — your full report will unlock automatically.</div>'
-    + '<button onclick="this.parentElement.remove()" style="background:#C9A84C;color:#0D1E35;border:none;padding:8px 20px;border-radius:5px;font-weight:700;cursor:pointer;font-size:12px">Start HealthCheck →</button>';
+  banner.innerHTML = '<div style="font-weight:700;font-size:16px;color:#C9A84C;margin-bottom:6px">&#10003; Payment confirmed — thank you!</div>'
+    + '<div style="font-size:13px;color:rgba(255,255,255,0.75);margin-bottom:14px">Please complete your survey below to generate your full report.</div>'
+    + '<button onclick="this.parentElement.remove()" style="background:#C9A84C;color:#0D1E35;border:none;padding:10px 24px;border-radius:5px;font-weight:700;cursor:pointer;font-size:13px">Start Survey →</button>';
   document.body.appendChild(banner);
   window.history.replaceState({}, '', window.location.pathname);
 }
