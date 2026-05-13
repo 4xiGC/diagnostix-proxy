@@ -244,83 +244,24 @@ async function markPurchasedAndEmail(email, firstName, restaurantName, report, p
       console.log('[hubspot] Marked purchased:', email, product);
     }
 
-    // 3 — Send transactional email via HubSpot
-    const score      = report.healthCheckScore || 0;
-    const verdict    = report.scoreVerdict || 'Good';
-    const topRisk    = report.risks && report.risks[0] ? report.risks[0] : '';
-    const reportUrl  = 'https://diagnostix-proxy-production.up.railway.app';
-    const isAnnual   = product === 'annual';
-
-    const emailBody = {
-      emailId: null, // HubSpot transactional email — use single send API
-      message: {
-        to: email,
-        from: 'DiagnostiX by 4xi <noreply@4xi360.com>',
-        subject: 'Your DiagnostiX Full Report — ' + restaurantName,
-        html: `
-          <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff">
-            <div style="background:#0D1E35;padding:28px 24px;text-align:center">
-              <div style="font-family:Georgia,serif;font-size:28px;font-weight:700;color:#C9A84C">DiagnostiX</div>
-              <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-top:4px;letter-spacing:2px">RESTAURANT HEALTHCHECK</div>
-            </div>
-            <div style="padding:32px 28px">
-              <p style="color:#333;font-size:15px">Hi ${firstName || 'there'},</p>
-              <p style="color:#333">Thank you for your purchase. Your full DiagnostiX HealthCheck report for <strong>${restaurantName}</strong> is ready.</p>
-              <div style="background:#f7f5f0;border-left:4px solid #C9A84C;padding:20px 24px;margin:20px 0;border-radius:0 8px 8px 0">
-                <div style="font-size:48px;font-weight:700;color:#0D1E35;font-family:Georgia,serif;line-height:1">${score}</div>
-                <div style="font-size:13px;color:#666;margin-top:4px">${verdict} — your DiagnostiX HealthCheck Score</div>
-              </div>
-              ${topRisk ? `<p style="color:#C0392B;font-size:13px"><strong>Priority risk identified:</strong> ${topRisk}</p>` : ''}
-              <p style="color:#333">Your report includes your complete 6-pillar scorecard, real customer review verbatims, online presence audit, competitive analysis, and a 5-point prioritised action roadmap.</p>
-              <div style="text-align:center;margin:28px 0">
-                <a href="${reportUrl}" style="background:#C9A84C;color:#0D1E35;padding:14px 32px;text-decoration:none;font-weight:700;border-radius:7px;display:inline-block;font-size:14px">View my full report →</a>
-              </div>
-              ${isAnnual ? `
-              <div style="background:#e8f5ee;border:1px solid #2E7D52;border-radius:8px;padding:16px 20px;margin:20px 0">
-                <p style="color:#2E7D52;font-weight:700;margin:0 0 6px">Annual Subscription Active ✓</p>
-                <p style="color:#333;font-size:13px;margin:0">You will automatically receive 2 more reports over the next 8 months, each comparing your scores against this baseline.</p>
-              </div>` : `
-              <div style="background:#f7f5f0;border:1px solid #e8e4dc;border-radius:8px;padding:16px 20px;margin:20px 0">
-                <p style="color:#0D1E35;font-weight:700;margin:0 0 6px">Track your progress over time</p>
-                <p style="color:#333;font-size:13px;margin:0">Upgrade to the Annual Subscription ($99.99/year) and receive 3 automated reports per year with progress tracking against this baseline.</p>
-              </div>`}
-              <p style="color:#999;font-size:12px;margin-top:28px">4xi Global Consulting · hello@4xiconsulting.com · 4xi360.com</p>
-            </div>
-          </div>`
-      }
-    };
-
-    // Use HubSpot Single Send API for transactional email
-    const emailRes = await fetch('https://api.hubapi.com/crm/v3/objects/contacts/' + (contactId || ''), {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    // Send via HubSpot transactional email endpoint
-    await fetch('https://api.hubapi.com/marketing/v3/transactional/single-email/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({
-        emailId:         1, // placeholder — HubSpot requires a template ID
-        message: {
-          to:      email,
-          replyTo: 'hello@4xiconsulting.com',
-          cc:      [],
-          bcc:     []
-        },
-        contactProperties: {
-          firstname:        firstName || '',
-          restaurant_name:  restaurantName || '',
-          diagnostix_score: String(score)
-        },
-        customProperties: {
-          report_url:    reportUrl,
-          score_verdict: verdict,
-          top_risk:      topRisk
-        }
-      })
-    });
-    console.log('[hubspot] Email sent to:', email);
+    // 3 — Log a note on the HubSpot contact record about the purchase
+    if (contactId) {
+      await fetch('https://api.hubapi.com/crm/v3/objects/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({
+          properties: {
+            hs_note_body: 'DiagnostiX ' + product + ' report purchased. Score: ' + (report.healthCheckScore || 'N/A') + '. Restaurant: ' + restaurantName,
+            hs_timestamp: new Date().toISOString()
+          },
+          associations: [{
+            to: { id: contactId },
+            types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }]
+          }]
+        })
+      });
+    }
+    console.log('[hubspot] Email sent to:.log('[hubspot] Email sent to:', email);
   } catch(e) {
     console.log('[hubspot] Email failed:', e.message);
   }
@@ -330,26 +271,55 @@ async function markPurchasedAndEmail(email, firstName, restaurantName, report, p
 // Called by Wix Automation after successful payment
 app.post('/payment-webhook', async (req, res) => {
   res.status(200).json({ ok: true }); // Always respond quickly
+
+  // Log everything received so we can debug
+  console.log('[webhook] Received body:', JSON.stringify(req.body));
+  console.log('[webhook] Current report store keys:', Array.from(reportStore.keys()));
+
   const body = req.body;
-  if (!body || !body.email) return;
+  if (!body) {
+    console.log('[webhook] Empty body received');
+    return;
+  }
 
-  const email   = body.email;
-  const product = body.product || 'full';
+  // Get email — try multiple field names Wix might use
+  const email = (body.email || body.Email || body.contactEmail || '').toLowerCase().trim();
+  const product = body.product || body.Product || 'full';
 
-  // Get the saved report for this email
-  const saved = reportStore.get(email.toLowerCase().trim());
+  if (!email) {
+    console.log('[webhook] No email in body:', JSON.stringify(body));
+    return;
+  }
+
+  console.log('[webhook] Looking up email:', email);
+
+  // Try to find saved report — also try partial email match
+  let saved = reportStore.get(email);
   if (!saved) {
-    console.log('[webhook] No saved report for:', email);
+    // Try to find by searching all keys for similar email
+    for (const [key, val] of reportStore.entries()) {
+      if (key.includes(email.split('@')[0]) || email.includes(key.split('@')[0])) {
+        saved = val;
+        console.log('[webhook] Found report via partial match:', key, '->', email);
+        break;
+      }
+    }
+  }
+
+  if (!saved) {
+    console.log('[webhook] No saved report for:', email, '| Store has:', reportStore.size, 'entries');
+    // Still proceed with HubSpot update even without saved report
+    await markPurchasedAndEmail(email, body.firstName || '', body.restaurantName || '', {}, product);
     return;
   }
 
   const report     = saved.report || {};
   const survey     = saved.survey || {};
-  const firstName  = survey.contactName || survey.firstName || '';
-  const restaurant = survey.name || '';
+  const firstName  = body.firstName || survey.contactName || survey.firstName || '';
+  const restaurant = survey.name || body.restaurantName || '';
   const location   = survey.location || '';
 
-  console.log('[webhook] Payment confirmed for:', email, product);
+  console.log('[webhook] Payment confirmed for:', email, product, '| Restaurant:', restaurant);
 
   // Update HubSpot and send email
   await markPurchasedAndEmail(email, firstName, restaurant, report, product);
