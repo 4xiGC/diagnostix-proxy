@@ -282,12 +282,16 @@ app.post('/payment-webhook', async (req, res) => {
     return;
   }
 
+  // Wix wraps payload in a "data" object — handle both formats
+  const payload = body.data || body;
+
   // Get email — try multiple field names Wix might use
-  const email = (body.email || body.Email || body.contactEmail || '').toLowerCase().trim();
-  const product = body.product || body.Product || 'full';
+  const email = (payload.email || payload.Email || payload.contactEmail || body.email || '').toLowerCase().trim();
+  const product = payload.product || payload.Product || body.product || 'full';
+  const firstName = payload.firstName || payload.first_name || body.firstName || '';
 
   if (!email) {
-    console.log('[webhook] No email in body:', JSON.stringify(body));
+    console.log('[webhook] No email found in body:', JSON.stringify(body));
     return;
   }
 
@@ -309,20 +313,20 @@ app.post('/payment-webhook', async (req, res) => {
   if (!saved) {
     console.log('[webhook] No saved report for:', email, '| Store has:', reportStore.size, 'entries');
     // Still proceed with HubSpot update even without saved report
-    await markPurchasedAndEmail(email, body.firstName || '', body.restaurantName || '', {}, product);
+    await markPurchasedAndEmail(email, firstName || '', payload.restaurantName || '', {}, product);
     return;
   }
 
   const report     = saved.report || {};
   const survey     = saved.survey || {};
-  const firstName  = body.firstName || survey.contactName || survey.firstName || '';
+  const resolvedFirstName = firstName || survey.contactName || survey.firstName || '';
   const restaurant = survey.name || body.restaurantName || '';
   const location   = survey.location || '';
 
   console.log('[webhook] Payment confirmed for:', email, product, '| Restaurant:', restaurant);
 
   // Update HubSpot and send email
-  await markPurchasedAndEmail(email, firstName, restaurant, report, product);
+  await markPurchasedAndEmail(email, resolvedFirstName, restaurant, report, product);
 });
 
 app.listen(PORT, () => console.log(`DiagnostiX v7 on port ${PORT}`));
