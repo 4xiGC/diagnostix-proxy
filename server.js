@@ -261,7 +261,7 @@ async function markPurchasedAndEmail(email, firstName, restaurantName, report, p
         })
       });
     }
-    console.log('[hubspot] Email sent to:.log('[hubspot] Email sent to:', email);
+    console.log('[hubspot] Note added for:', email);
   } catch(e) {
     console.log('[hubspot] Email failed:', e.message);
   }
