@@ -564,6 +564,87 @@ async function runHealthCheck() {
   }, 700);
 }
 
+// ── PROGRESS REPORT SECTION BUILDER ─────────────────────────
+function buildProgressSection(r, d) {
+  if (!r.progress) return '';
+  var p = r.progress;
+  var overall = p.overallChange || 0;
+  var overallCol = overall > 0 ? '#00A651' : overall < 0 ? '#ED1C24' : '#888';
+  var overallArrow = overall > 0 ? '&#8593;' : overall < 0 ? '&#8595;' : '&#8594;';
+  var overallStr = overall > 0 ? '+' + overall : String(overall);
+
+  // Build pillar progress rows
+  var pillarRows = Object.entries(r.pillars || {}).map(function(entry) {
+    var key = entry[0];
+    var pillar = entry[1];
+    var change = (p.pillarsProgress || {})[key] || 0;
+    var col = change > 0 ? '#00A651' : change < 0 ? '#ED1C24' : '#888';
+    var arrow = change > 0 ? '&#8593;' : change < 0 ? '&#8595;' : '&#8594;';
+    var changeStr = change > 0 ? '+' + change : String(change);
+    var baseScore = pillar.score - change;
+    return '<tr style="border-bottom:1px solid #f0ede8">'
+      + '<td style="padding:8px 10px;font-size:13px;color:#333;font-weight:600">' + pillar.label + '</td>'
+      + '<td style="padding:8px 10px;text-align:center;font-size:13px;color:#888">' + baseScore + '</td>'
+      + '<td style="padding:8px 10px;text-align:center;font-size:13px;color:#333;font-weight:700">' + pillar.score + '</td>'
+      + '<td style="padding:8px 10px;text-align:center;font-size:13px;font-weight:700;color:' + col + '">' + arrow + ' ' + Math.abs(change) + '</td>'
+      + '</tr>';
+  }).join('');
+
+  // Completed actions
+  var completedHTML = (p.completedActions || []).length > 0
+    ? '<div style="margin-bottom:8px">' + (p.completedActions || []).map(function(a) {
+        return '<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px">'
+          + '<span style="color:#00A651;font-size:14px;flex-shrink:0">&#10003;</span>'
+          + '<span style="font-size:13px;color:#333">' + a + '</span></div>';
+      }).join('') + '</div>'
+    : '<div style="font-size:13px;color:#888;font-style:italic">Continue working on your action plan from the previous report.</div>';
+
+  // Ongoing priorities
+  var ongoingHTML = (p.ongoingPriorities || []).length > 0
+    ? (p.ongoingPriorities || []).map(function(a) {
+        return '<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px">'
+          + '<span style="color:#F7941D;font-size:14px;flex-shrink:0">&#8594;</span>'
+          + '<span style="font-size:13px;color:#333">' + a + '</span></div>';
+      }).join('')
+    : '';
+
+  return '<div class="rpt-h" style="margin-top:1.6rem">Progress Report — Report ' + (r.reportNumber || 2) + ' of 3</div>'
+    + '<div style="background:#f7f5f0;border-radius:8px;padding:1.2rem;margin-bottom:1rem">'
+    + '<div style="display:flex;align-items:center;gap:16px;margin-bottom:12px">'
+    + '<div style="text-align:center;min-width:80px">'
+    + '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:#999;margin-bottom:4px">Baseline</div>'
+    + '<div style="font-size:2rem;font-weight:700;color:#333">' + (r.baselineScore || 0) + '</div>'
+    + '</div>'
+    + '<div style="flex:1;text-align:center">'
+    + '<div style="font-size:2.5rem;color:' + overallCol + '">' + overallArrow + '</div>'
+    + '<div style="font-size:13px;font-weight:700;color:' + overallCol + '">' + overallStr + ' points</div>'
+    + '</div>'
+    + '<div style="text-align:center;min-width:80px">'
+    + '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:#999;margin-bottom:4px">Current</div>'
+    + '<div style="font-size:2rem;font-weight:700;color:' + overallCol + '">' + (r.healthCheckScore || 0) + '</div>'
+    + '</div></div>'
+    + (p.progressNarrative ? '<div style="font-size:13px;color:#555;line-height:1.6;font-style:italic">' + p.progressNarrative + '</div>' : '')
+    + '</div>'
+
+    // Pillar comparison table
+    + '<table style="width:100%;border-collapse:collapse;margin-bottom:1rem;background:#fff;border-radius:8px;overflow:hidden;border:1px solid #e8e4dc">'
+    + '<thead><tr style="background:#1B1464;color:#fff">'
+    + '<th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:700;letter-spacing:0.05em">PILLAR</th>'
+    + '<th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:700;letter-spacing:0.05em">BASELINE</th>'
+    + '<th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:700;letter-spacing:0.05em">CURRENT</th>'
+    + '<th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:700;letter-spacing:0.05em">CHANGE</th>'
+    + '</tr></thead>'
+    + '<tbody>' + pillarRows + '</tbody>'
+    + '</table>'
+
+    // Completed actions
+    + '<div class="rpt-h" style="margin-top:1rem">What Has Improved</div>'
+    + completedHTML
+
+    // Ongoing priorities
+    + (ongoingHTML ? '<div class="rpt-h" style="margin-top:1rem">Ongoing Priorities</div>' + ongoingHTML : '');
+}
+
 // ── ANALYTICS TRACKING ────────────────────────────────────────
 function trackSubmission(d, r) {
   if (!r || !d) return;
@@ -791,8 +872,10 @@ function renderReport(r, d) {
       +(c.note?'<div class="pres-note">'+c.note+'</div>':'');
   }).join('');
 
+  // Use surveyData sentiment if available (more reliable than global qVals)
+  var sentimentVals = (d && d.sentiment) ? d.sentiment : qVals;
   var ownerTiles = QS.map(function(q){
-    var v=qVals[q.id]||5;
+    var v = (sentimentVals[q.id] !== undefined) ? sentimentVals[q.id] : (qVals[q.id] || 5);
     var shortQ=q.text.replace(/How (would you rate|happy are you with|satisfied are you with|confident are you in|far in advance|active and effective|does your pricing reflect|optimistic are you about) (your |the |the value you deliver )?/i,'').replace(/\?$/,'');
     shortQ=shortQ.charAt(0).toUpperCase()+shortQ.slice(1);
     if(shortQ.length>46) shortQ=shortQ.slice(0,44)+'\u2026';
@@ -850,10 +933,12 @@ function renderReport(r, d) {
       +'<span style="font-size:11px;color:#888">/ 100 overall online presence score</span></div>'
     +presRows
 
-    +'<div class="rpt-h">Owner Sentiment Dimension</div>'
+    +'<div class="rpt-h">Owner Self-Assessment</div>'
+    +'<div style="margin-bottom:10px;font-size:12px;color:#888">Your own ratings of 10 key business dimensions — compared against live data signals</div>'
     +'<div class="owner-grid">'+ownerTiles+'</div>'
-    +'<div style="margin-top:10px"><div class="insight"><div class="idot a"></div><div class="itext">'+r.ownerSentimentSummary+'</div></div>'
-    +(r.sentimentGap?'<div class="gap-block"><div class="gap-title">Perception gap identified</div><div class="gap-text">'+r.sentimentGap+'</div></div>':'')
+    +'<div style="margin-top:10px">'
+    +(r.ownerSentimentSummary?'<div class="insight"><div class="idot a"></div><div class="itext">'+r.ownerSentimentSummary+'</div></div>':'')
+    +(r.sentimentGap?'<div class="gap-block"><div class="gap-title">&#9888; Perception gap identified</div><div class="gap-text">'+r.sentimentGap+'</div></div>':'')
     +'</div>'
 
     +(verbatims?'<div class="rpt-h">Customer Review Verbatims</div>'+verbatims:'')
@@ -867,6 +952,9 @@ function renderReport(r, d) {
     +(compCards?'<div class="rpt-h">Competitive Context</div>'
       +'<div class="comp-grid">'+compCards+'</div>'
       +'<div class="insight"><div class="idot a"></div><div class="itext">'+r.competitiveInsight+'</div></div>':'')
+
+    // ── Progress Report Section (annual subscribers only) ──
+    +(r.isProgressReport && r.progress ? buildProgressSection(r, d) : '')
 
     +'<div class="rpt-h">Priority Action Roadmap</div>'+acts;
 
