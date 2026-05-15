@@ -196,6 +196,13 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .btn-print{background:#fff;color:var(--navy);font-family:'League Spartan',sans-serif;font-size:11px;font-weight:900;letter-spacing:0.08em;text-transform:uppercase;border:none;border-radius:5px;padding:8px 16px;cursor:pointer}
 .btn-restart{background:transparent;color:rgba(255,255,255,0.5);font-family:'League Spartan',sans-serif;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;border:1px solid rgba(255,255,255,0.15);border-radius:5px;padding:8px 16px;cursor:pointer}
 .btn-restart:hover{border-color:rgba(255,255,255,0.4);color:#fff}
+.btn-translate{background:rgba(255,255,255,0.1);color:#fff;font-family:'League Spartan',sans-serif;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;border:1px solid rgba(255,255,255,0.25);border-radius:5px;padding:8px 14px;cursor:pointer;transition:all 0.18s;display:flex;align-items:center;gap:6px}
+.btn-translate:hover{background:rgba(255,255,255,0.18);border-color:rgba(255,255,255,0.5)}
+.btn-translate:disabled{opacity:0.5;cursor:not-allowed}
+.translate-select{background:rgba(255,255,255,0.1);color:#fff;font-family:'League Spartan',sans-serif;font-size:11px;font-weight:700;border:1px solid rgba(255,255,255,0.25);border-radius:5px;padding:8px 10px;cursor:pointer;outline:none;letter-spacing:0.04em}
+.translate-select option{background:#1B1464;color:#fff}
+.translate-spinner{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin 0.7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 
 /* ── PRINT STYLES ────────────────────────────────────── */
 @media print{
@@ -398,7 +405,25 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   <!-- Step 4: Report unlocked — print bar + annual upsell -->
   <div class="print-bar" id="print-bar" style="display:none">
     <span class="print-bar-msg">Your <b>DiagnostiX Full Report</b> is ready &mdash; save it as a PDF for your records.</span>
-    <div style="display:flex;gap:8px">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <!-- Translate controls -->
+      <select class="translate-select" id="lang-select" onchange="onLangChange(this.value)">
+        <option value="en">🌐 English</option>
+        <option value="es">🇪🇸 Spanish</option>
+        <option value="fr">🇫🇷 French</option>
+        <option value="de">🇩🇪 German</option>
+        <option value="it">🇮🇹 Italian</option>
+        <option value="pt">🇧🇷 Portuguese</option>
+        <option value="zh">🇨🇳 Chinese</option>
+        <option value="ja">🇯🇵 Japanese</option>
+        <option value="ar">🇸🇦 Arabic</option>
+        <option value="ko">🇰🇷 Korean</option>
+        <option value="nl">🇳🇱 Dutch</option>
+        <option value="pl">🇵🇱 Polish</option>
+      </select>
+      <button class="btn-translate" id="btn-translate" onclick="translateReport()" style="display:none">
+        <span id="translate-btn-label">Translate</span>
+      </button>
       <button class="btn-restart" onclick="restart()">&#8592; New HealthCheck</button>
       <button class="btn-print" onclick="window.print()">Print / Save PDF</button>
     </div>
@@ -1196,9 +1221,131 @@ function buildFallback(d) {
   };
 }
 
+// ── TRANSLATION ──────────────────────────────────────────────
+var translatedData = null; // holds current translated report (null = showing English original)
+var currentLang = 'en';
+
+var LANG_NAMES = {
+  en:'English', es:'Spanish', fr:'French', de:'German', it:'Italian',
+  pt:'Portuguese', zh:'Chinese', ja:'Japanese', ar:'Arabic',
+  ko:'Korean', nl:'Dutch', pl:'Polish'
+};
+
+function onLangChange(val) {
+  currentLang = val;
+  var btn = document.getElementById('btn-translate');
+  if (val === 'en') {
+    btn.style.display = 'none';
+    // Revert to English original if we were translated
+    if (translatedData) {
+      translatedData = null;
+      renderReport(reportData, surveyData);
+    }
+  } else {
+    btn.style.display = 'flex';
+    document.getElementById('translate-btn-label').textContent = 'Translate to ' + LANG_NAMES[val];
+  }
+}
+
+async function translateReport() {
+  if (!reportData || !surveyData) return;
+  var lang = currentLang;
+  var langName = LANG_NAMES[lang] || lang;
+  var btn = document.getElementById('btn-translate');
+  var lbl = document.getElementById('translate-btn-label');
+
+  // Show spinner
+  btn.disabled = true;
+  lbl.innerHTML = '<span class="translate-spinner"></span> Translating&hellip;';
+
+  // Build a compact payload with only the text fields that appear in the report
+  var payload = {
+    executiveSummary: reportData.executiveSummary || '',
+    ownerSentimentSummary: reportData.ownerSentimentSummary || '',
+    sentimentGap: reportData.sentimentGap || '',
+    pillars: {},
+    reviewVerbatims: (reportData.reviewVerbatims || []).map(function(v){ return {text: v.text, note: v.note || ''}; }),
+    strengths: reportData.strengths || [],
+    risks: reportData.risks || [],
+    themes: reportData.themes || {},
+    employeeSentiment: reportData.employeeSentiment || '',
+    competitiveInsight: reportData.competitiveInsight || '',
+    competitors: (reportData.competitors || []).map(function(c){ return {note: c.note || ''}; }),
+    actions: (reportData.actions || []).map(function(a){ return {title: a.title || '', desc: a.desc || ''}; })
+  };
+  // Include pillar notes if present
+  if (reportData.pillars) {
+    Object.keys(reportData.pillars).forEach(function(k){
+      payload.pillars[k] = { note: (reportData.pillars[k].note || '') };
+    });
+  }
+
+  try {
+    var resp = await fetch('/translate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ lang: lang, langName: langName, data: payload })
+    });
+    if (!resp.ok) throw new Error('Server error ' + resp.status);
+    var tx = await resp.json();
+    if (tx.error) throw new Error(tx.error);
+
+    // Merge translated fields back into a copy of reportData
+    translatedData = JSON.parse(JSON.stringify(reportData));
+    if (tx.executiveSummary)      translatedData.executiveSummary      = tx.executiveSummary;
+    if (tx.ownerSentimentSummary) translatedData.ownerSentimentSummary = tx.ownerSentimentSummary;
+    if (tx.sentimentGap)          translatedData.sentimentGap          = tx.sentimentGap;
+    if (tx.employeeSentiment)     translatedData.employeeSentiment     = tx.employeeSentiment;
+    if (tx.competitiveInsight)    translatedData.competitiveInsight    = tx.competitiveInsight;
+    if (tx.strengths)             translatedData.strengths             = tx.strengths;
+    if (tx.risks)                 translatedData.risks                 = tx.risks;
+    if (tx.themes)                translatedData.themes                = tx.themes;
+    if (tx.reviewVerbatims && tx.reviewVerbatims.length) {
+      translatedData.reviewVerbatims = reportData.reviewVerbatims.map(function(v, i){
+        var t = tx.reviewVerbatims[i] || {};
+        return Object.assign({}, v, { text: t.text || v.text, note: t.note || v.note });
+      });
+    }
+    if (tx.pillars) {
+      Object.keys(tx.pillars).forEach(function(k){
+        if (translatedData.pillars[k]) translatedData.pillars[k].note = tx.pillars[k].note || translatedData.pillars[k].note;
+      });
+    }
+    if (tx.competitors && tx.competitors.length) {
+      translatedData.competitors = reportData.competitors.map(function(c, i){
+        return Object.assign({}, c, { note: (tx.competitors[i] || {}).note || c.note });
+      });
+    }
+    if (tx.actions && tx.actions.length) {
+      translatedData.actions = reportData.actions.map(function(a, i){
+        var t = tx.actions[i] || {};
+        return Object.assign({}, a, { title: t.title || a.title, desc: t.desc || a.desc });
+      });
+    }
+
+    // Re-render with translated data
+    renderReport(translatedData, surveyData);
+
+    // Update button state
+    btn.disabled = false;
+    lbl.textContent = '✓ ' + langName;
+    btn.style.background = 'rgba(0,166,81,0.25)';
+    btn.style.borderColor = 'rgba(0,166,81,0.6)';
+
+  } catch(e) {
+    console.error('Translate error:', e.message);
+    btn.disabled = false;
+    lbl.textContent = 'Retry translate';
+    btn.style.background = 'rgba(237,28,36,0.2)';
+    btn.style.borderColor = 'rgba(237,28,36,0.5)';
+  }
+}
+
 function restart(){
   reportData=null;
   surveyData=null;
+  translatedData=null;
+  currentLang='en';
   document.getElementById('rpt-cover-slot').innerHTML='';
   document.getElementById('rpt-summary').innerHTML='';
   document.getElementById('rpt-full-body').innerHTML='';
@@ -1207,6 +1354,13 @@ function restart(){
   document.getElementById('full-blur').style.filter='blur(4px)';
   document.getElementById('full-blur').style.opacity='0.5';
   document.getElementById('print-bar').style.display='none';
+  // Reset translate controls
+  var sel = document.getElementById('lang-select');
+  if (sel) sel.value = 'en';
+  var btn = document.getElementById('btn-translate');
+  if (btn) { btn.style.display='none'; btn.disabled=false; btn.style.background=''; btn.style.borderColor=''; }
+  var lbl = document.getElementById('translate-btn-label');
+  if (lbl) lbl.textContent = 'Translate';
   QS.forEach(function(q){ qVals[q.id]=5; });
   document.querySelectorAll('.q-slider').forEach(function(s){ s.value=5; });
   document.querySelectorAll('.q-val').forEach(function(v){ v.textContent='5'; v.style.color='var(--amber)'; });
