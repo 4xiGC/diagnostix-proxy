@@ -80,7 +80,7 @@ app.post('/diagnose', async (req, res) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': ak, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({ model: 'claude-sonnet-4-5-20250929', max_tokens: 2000,
-        system: 'You are a JSON API. Output ONLY valid JSON. No markdown. No backticks. Start with { end with }.',
+        system: 'You are a JSON API. Output ONLY valid JSON. No markdown. No backticks. Start with { end with }. CRITICAL: All text values in the JSON must be written in English, regardless of the language of the source data or the restaurant\'s location.',
         messages: [{ role: 'user', content: prompt }] })
     });
     const d = await r.json();
@@ -116,10 +116,10 @@ app.post('/diagnose', async (req, res) => {
 - 12-month business optimism: ${s.future||5}/10
 Owner average score: ${Math.round(Object.values(s).reduce((a,b)=>a+(b||5),0)/10*10)/10}/10`;
     console.log('[diagnose] claude part1...');
-    const p1 = await claude(`Restaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${sv}\n\nReturn JSON. Use WebData for scores. Use Owner Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what owner thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between owner perception and reality).\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real"},{"name":"Yelp","score":65,"note":"real"},{"name":"TripAdvisor","score":55,"note":"real"},{"name":"OpenTable","score":60,"note":"real"},{"name":"Social Media","score":50,"note":"real"},{"name":"Delivery Platforms","score":35,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence"}\nRules:good>=65 warn=45-64 bad<45 scoreVerdict=Excellent/Good/Fair/Needs Attention`);
+    const p1 = await claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${sv}\n\nReturn JSON. Use WebData for scores. Use Owner Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what owner thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between owner perception and reality).\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real"},{"name":"Yelp","score":65,"note":"real"},{"name":"TripAdvisor","score":55,"note":"real"},{"name":"OpenTable","score":60,"note":"real"},{"name":"Social Media","score":50,"note":"real"},{"name":"Delivery Platforms","score":35,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence"}\nRules:good>=65 warn=45-64 bad<45 scoreVerdict=Excellent/Good/Fair/Needs Attention`);
     console.log('[diagnose] p1 score:', p1.healthCheckScore);
     console.log('[diagnose] claude part2...');
-    const p2 = await claude(`Restaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\nReturn JSON with real data:\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real","score":68,"note":"data"},{"name":"real","score":62,"note":"data"},{"name":"real","score":71,"note":"data"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}]}`);
+    const p2 = await claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\nReturn JSON with real data:\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real","score":68,"note":"data"},{"name":"real","score":62,"note":"data"},{"name":"real","score":71,"note":"data"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}]}`);
     console.log('[diagnose] p2 actions:', p2.actions?.length);
     const report = Object.assign({}, p1, p2);
     if (!report.healthCheckScore || !report.pillars) throw new Error('missing fields: '+Object.keys(report).join(','));
@@ -131,20 +131,57 @@ Owner average score: ${Math.round(Object.values(s).reduce((a,b)=>a+(b||5),0)/10*
   }
 });
 
-// ── IN-MEMORY REPORT STORE ───────────────────────────────────
-// Stores reports by email for 2 hours so payment redirect can retrieve them.
-// Uses memory (not database) — simple, fast, no extra setup needed.
-const reportStore = new Map();
+// ── TRANSLATE REPORT ─────────────────────────────────────────
+// Takes an already-generated report's text fields and translates them.
+// No re-scraping needed — just text translation via Claude.
+app.post('/translate', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const { lang, langName, data } = req.body;
+  if (!lang || !data) return res.status(400).json({ error: 'lang and data required' });
+  if (lang === 'en') return res.json(data); // nothing to do
 
-// Clean up entries older than 2 hours every 30 minutes
-setInterval(() => {
-  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
-  for (const [key, val] of reportStore.entries()) {
-    if (val.savedAt < cutoff) reportStore.delete(key);
+  const ak = process.env.ANTHROPIC_API_KEY;
+  if (!ak) return res.status(500).json({ error: 'ANTHROPIC_API_KEY missing' });
+
+  console.log(`[translate] Translating report to ${langName} (${lang})`);
+
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': ak, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 3000,
+        system: `You are a professional translator. Translate all string values in the JSON object into ${langName}. 
+Output ONLY valid JSON with the exact same structure and keys. No markdown. No backticks. Start with { end with }.
+Rules:
+- Translate every string value. Do not translate keys.
+- Keep numbers, null, and boolean values unchanged.
+- For arrays of strings, translate each string.
+- Preserve proper nouns (restaurant names, platform names like Google, TripAdvisor, etc.).
+- Keep the same professional tone as the original.`,
+        messages: [{ role: 'user', content: `Translate this JSON into ${langName}:\n${JSON.stringify(data)}` }]
+      })
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error.message);
+    const t = (d.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    let parsed;
+    try { parsed = JSON.parse(t); }
+    catch(e) {
+      const i = t.indexOf('{'), j = t.lastIndexOf('}');
+      if (i >= 0 && j > i) parsed = JSON.parse(t.slice(i, j + 1));
+      else throw new Error('JSON parse failed');
+    }
+    console.log(`[translate] Success → ${langName}`);
+    return res.status(200).json(parsed);
+  } catch(e) {
+    console.error('[translate] FAILED:', e.message);
+    return res.status(500).json({ error: e.message });
   }
-}, 30 * 60 * 1000);
+});
 
-// ── SAVE REPORT (called before Wix redirect) ──────────────────
+// ── IN-MEMORY REPORT STORE ───────────────────────────────────
 app.post('/save-report', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const { email, report, survey, product } = req.body;
