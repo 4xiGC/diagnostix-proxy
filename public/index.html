@@ -1107,32 +1107,54 @@ function checkPaymentReturn() {
   var thinkMsg = document.getElementById('think-msg');
   if (thinkMsg) thinkMsg.textContent = 'Retrieving your report…';
 
-  // Retrieve saved report from Railway
-  fetch(PROXY_URL.replace('/diagnose', '/get-report') + '?email=' + encodeURIComponent(email))
-    .then(function(r) { return r.json(); })
-    .then(function(saved) {
-      if (saved && saved.report && saved.report.healthCheckScore) {
-        reportData = saved.report;
-        surveyData = saved.survey || {};
-        var product = saved.product || 'full';
-        goStep(3);
-        renderReport(reportData, surveyData);
-        setTimeout(function() {
+  // Retrieve saved report from Railway — retry up to 3 times (server may still be saving)
+  function fetchReport(retriesLeft) {
+    fetch(PROXY_URL.replace('/diagnose', '/get-report') + '?email=' + encodeURIComponent(email))
+      .then(function(r) { return r.json(); })
+      .then(function(saved) {
+        if (saved && saved.report && saved.report.healthCheckScore) {
+          reportData = saved.report;
+          surveyData = saved.survey || {};
+          var product = saved.product || 'full';
+          // Render report HTML into DOM first, then switch panel, then unlock
+          renderReport(reportData, surveyData);
+          // Switch directly to report panel (p3 = index 3) without going through
+          // the normal goStep path which would overwrite progress bar labels etc.
+          document.querySelectorAll('.panel').forEach(function(p, i) {
+            p.classList.toggle('active', i === 3);
+          });
+          document.getElementById('step-lbl').textContent = 'Report Ready';
+          // Mark progress segments all done
+          for (var i = 0; i < 4; i++) {
+            var seg = document.getElementById('ps' + i);
+            if (seg) seg.className = 'pseg' + (i < 3 ? ' done' : ' active');
+          }
+          window.scrollTo(0, 0);
+          // Unlock the report
           unlockFullReport();
           showPaymentConfirmation(product);
-        }, 500);
-        window.history.replaceState({}, '', window.location.pathname);
-      } else {
-        // No report found — show survey with thank you message
-        goStep(0);
-        showPaymentThankyou();
-      }
-    })
-    .catch(function(e) {
-      console.log('[checkPaymentReturn] error:', e.message);
-      goStep(0);
-      showPaymentThankyou();
-    });
+          window.history.replaceState({}, '', window.location.pathname);
+        } else if (retriesLeft > 0) {
+          // Report not found yet — wait 2s and retry (server may still be saving)
+          console.log('[checkPaymentReturn] report not ready, retrying... (' + retriesLeft + ' left)');
+          setTimeout(function() { fetchReport(retriesLeft - 1); }, 2000);
+        } else {
+          // Still not found after retries — show survey with thank you message
+          goStep(0);
+          showPaymentThankyou();
+        }
+      })
+      .catch(function(e) {
+        console.log('[checkPaymentReturn] error:', e.message);
+        if (retriesLeft > 0) {
+          setTimeout(function() { fetchReport(retriesLeft - 1); }, 2000);
+        } else {
+          goStep(0);
+          showPaymentThankyou();
+        }
+      });
+  }
+  fetchReport(3);
 }
 
 function showPaymentThankyou() {
