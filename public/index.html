@@ -1036,135 +1036,54 @@ function renderReport(r, d) {
 var WIX_FULL_URL    = 'https://www.4xi360.com/diagnostixpay';
 var WIX_ANNUAL_URL  = 'https://www.4xi360.com/diagnostixpay';
 
-async function unlockFull() {
-  var emailField = document.getElementById('f-email');
-  var email = (surveyData && surveyData.email) ? surveyData.email.trim()
-            : (emailField && emailField.value) ? emailField.value.trim()
-            : '';
-  if (!email) {
-    alert('Please enter your email address in the survey form so we can restore your report after payment.');
-    return;
-  }
-  // Save report to Railway server
+function unlockFull() {
+  // Save report data to sessionStorage so we can restore after Wix redirect
   try {
-    await fetch(PROXY_URL.replace('/diagnose', '/save-report'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email, report: reportData, survey: surveyData, product: 'full' })
-    });
-  } catch(e) { console.log('Save-report error:', e.message); }
-  // Save email to localStorage so we can retrieve on return
-  // (localStorage survives page reloads even if Wix clears other storage)
-  try { localStorage.setItem('dx_pending_email', email); } catch(e) {}
-  // Redirect to Wix
+    if (reportData) sessionStorage.setItem('dx_report', JSON.stringify(reportData));
+    if (surveyData) sessionStorage.setItem('dx_survey', JSON.stringify(surveyData));
+    sessionStorage.setItem('dx_product', 'full');
+  } catch(e) {}
+  // Redirect to Wix checkout
   window.location.href = WIX_FULL_URL;
 }
 
-async function unlockAnnual() {
-  var emailField = document.getElementById('f-email');
-  var email = (surveyData && surveyData.email) ? surveyData.email.trim()
-            : (emailField && emailField.value) ? emailField.value.trim()
-            : '';
-  if (!email) {
-    alert('Please enter your email address in the survey form so we can restore your report after payment.');
-    return;
-  }
+function unlockAnnual() {
+  // Save report data to sessionStorage so we can restore after Wix redirect
   try {
-    await fetch(PROXY_URL.replace('/diagnose', '/save-report'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email, report: reportData, survey: surveyData, product: 'annual' })
-    });
-  } catch(e) { console.log('Save-report error:', e.message); }
-  try { localStorage.setItem('dx_pending_email', email); } catch(e) {}
+    if (reportData) sessionStorage.setItem('dx_report', JSON.stringify(reportData));
+    if (surveyData) sessionStorage.setItem('dx_survey', JSON.stringify(surveyData));
+    sessionStorage.setItem('dx_product', 'annual');
+  } catch(e) {}
+  // Redirect to Wix checkout
   window.location.href = WIX_ANNUAL_URL;
 }
 
 // ── CHECK FOR PAYMENT RETURN ──────────────────────────────────
-// Called on page load — if user is returning from Wix payment,
-// restore their report and unlock it automatically.
+// Called on page load — if Wix redirects back with ?payment=success,
+// restore the report from sessionStorage and unlock it automatically.
 function checkPaymentReturn() {
-  // Check for pending email from before Wix redirect
-  // Works even if Wix doesn't pass URL parameters back
-  var pendingEmail = '';
-  try { pendingEmail = localStorage.getItem('dx_pending_email') || ''; } catch(e) {}
-
-  // Also check URL params as backup (if Wix does pass them)
   var params = new URLSearchParams(window.location.search);
-  var urlEmail = params.get('email') || '';
-  var urlPayment = params.get('payment') || '';
-
-  var email = urlEmail || pendingEmail;
-
-  // Only proceed if we have an email saved (means user clicked Buy before)
-  if (!email) return;
-
-  // Clear the pending email immediately to prevent re-triggering
-  try { localStorage.removeItem('dx_pending_email'); } catch(e) {}
-
-  // Show loading spinner while retrieving
-  goStep(2);
-  var thinkMsg = document.getElementById('think-msg');
-  if (thinkMsg) thinkMsg.textContent = 'Retrieving your report…';
-
-  // Retrieve saved report from Railway — retry up to 3 times (server may still be saving)
-  function fetchReport(retriesLeft) {
-    fetch(PROXY_URL.replace('/diagnose', '/get-report') + '?email=' + encodeURIComponent(email))
-      .then(function(r) { return r.json(); })
-      .then(function(saved) {
-        if (saved && saved.report && saved.report.healthCheckScore) {
-          reportData = saved.report;
-          surveyData = saved.survey || {};
-          var product = saved.product || 'full';
-          // Render report HTML into DOM first, then switch panel, then unlock
-          renderReport(reportData, surveyData);
-          // Switch directly to report panel (p3 = index 3) without going through
-          // the normal goStep path which would overwrite progress bar labels etc.
-          document.querySelectorAll('.panel').forEach(function(p, i) {
-            p.classList.toggle('active', i === 3);
-          });
-          document.getElementById('step-lbl').textContent = 'Report Ready';
-          // Mark progress segments all done
-          for (var i = 0; i < 4; i++) {
-            var seg = document.getElementById('ps' + i);
-            if (seg) seg.className = 'pseg' + (i < 3 ? ' done' : ' active');
-          }
-          window.scrollTo(0, 0);
-          // Unlock the report
-          unlockFullReport();
-          showPaymentConfirmation(product);
-          window.history.replaceState({}, '', window.location.pathname);
-        } else if (retriesLeft > 0) {
-          // Report not found yet — wait 2s and retry (server may still be saving)
-          console.log('[checkPaymentReturn] report not ready, retrying... (' + retriesLeft + ' left)');
-          setTimeout(function() { fetchReport(retriesLeft - 1); }, 2000);
-        } else {
-          // Still not found after retries — show survey with thank you message
-          goStep(0);
-          showPaymentThankyou();
-        }
-      })
-      .catch(function(e) {
-        console.log('[checkPaymentReturn] error:', e.message);
-        if (retriesLeft > 0) {
-          setTimeout(function() { fetchReport(retriesLeft - 1); }, 2000);
-        } else {
-          goStep(0);
-          showPaymentThankyou();
-        }
-      });
+  if (params.get('payment') !== 'success') return;
+  try {
+    var savedReport = sessionStorage.getItem('dx_report');
+    var savedSurvey = sessionStorage.getItem('dx_survey');
+    var product     = sessionStorage.getItem('dx_product') || 'full';
+    if (savedReport && savedSurvey) {
+      reportData = JSON.parse(savedReport);
+      surveyData = JSON.parse(savedSurvey);
+      // Render the report then switch to the report panel
+      renderReport(reportData, surveyData);
+      goStep(3);
+      setTimeout(function() {
+        unlockFullReport();
+        showPaymentConfirmation(product);
+      }, 400);
+      // Clean up URL
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  } catch(e) {
+    console.log('Payment return error:', e.message);
   }
-  fetchReport(3);
-}
-
-function showPaymentThankyou() {
-  var banner = document.createElement('div');
-  banner.style.cssText = 'background:#0D1E35;color:#fff;padding:20px 24px;text-align:center;position:fixed;top:0;left:0;right:0;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.4)';
-  banner.innerHTML = '<div style="font-weight:700;font-size:16px;color:#C9A84C;margin-bottom:6px">&#10003; Payment confirmed — thank you!</div>'
-    + '<div style="font-size:13px;color:rgba(255,255,255,0.75);margin-bottom:14px">Please complete your survey below to generate your full report.</div>'
-    + '<button onclick="this.parentElement.remove()" style="background:#C9A84C;color:#0D1E35;border:none;padding:10px 24px;border-radius:5px;font-weight:700;cursor:pointer;font-size:13px">Start Survey →</button>';
-  document.body.appendChild(banner);
-  window.history.replaceState({}, '', window.location.pathname);
 }
 
 function showPaymentConfirmation(product) {
