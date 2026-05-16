@@ -16,7 +16,7 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   next();
 });
-
+const reportStore = new Map();
 app.get('/', (req, res) => {
   try {
     const html = readFileSync(join(__dirname, 'public', 'index.html'), 'utf8');
