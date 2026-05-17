@@ -104,12 +104,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.1' });
+    res.json({ status: 'running', version: '8.2' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.1' });
+  res.json({ status: 'ok', version: '8.2' });
 });
 
 app.get('/test', async (req, res) => {
@@ -587,46 +587,195 @@ h1{font-size:24px;margin:0 0 16px}p{font-size:16px;line-height:1.5;color:#6b7280
 }
 
 function renderReportHtml({ subscriber, report, reportLabel }) {
-  const score = report?.healthCheckScore ?? 0;
-  const verdict = report?.scoreVerdict || '';
   const restaurant = subscriber.restaurant_name || 'Your restaurant';
-  const pillars = Object.entries(report?.pillars || {});
+  const score      = report?.healthCheckScore ?? 0;
+  const verdict    = report?.scoreVerdict || '';
+  const summary    = report?.executiveSummary || '';
+  const cuisine    = report?.cuisineDetected || '';
+  const price      = report?.priceDetected || '';
+  const location   = subscriber.location || '';
 
-  const pillarRows = pillars.map(([k, p]) => `
-    <tr><td style="padding:10px 14px;border-bottom:1px solid #eee">${p.label||k}</td>
-    <td style="padding:10px 14px;border-bottom:1px solid #eee;text-align:center;font-weight:700">${p.score}/100</td>
-    <td style="padding:10px 14px;border-bottom:1px solid #eee;font-size:12px;color:#6b7280;text-transform:uppercase">${p.status||''}</td></tr>`).join('');
+  const esc = (s) => String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-  const actions = (report?.actions || []).map(a => `
-    <li style="margin:8px 0"><strong>${a.title}</strong> — <span style="color:#6b7280">${a.desc||''}</span></li>`).join('');
+  const scoreColor = score >= 65 ? '#2f855a' : score >= 45 ? '#b8860b' : '#9b2c2c';
+
+  // Pillars
+  const pillars = Object.values(report?.pillars || {});
+  const pillarCards = pillars.map(p => {
+    const pColor = p.status === 'good' ? '#2f855a' : p.status === 'bad' ? '#9b2c2c' : '#b8860b';
+    const pBg    = p.status === 'good' ? '#f0fdf4' : p.status === 'bad' ? '#fef2f2' : '#fffbeb';
+    return `<div style="background:${pBg};border-radius:10px;padding:16px 18px;margin:8px 0;display:flex;align-items:center;justify-content:space-between;gap:12px">
+      <div style="font-weight:600;color:#0a2540;font-size:15px">${esc(p.label)}</div>
+      <div style="display:flex;align-items:center;gap:14px">
+        <div style="font-weight:800;font-size:22px;color:${pColor};line-height:1">${p.score}<span style="font-size:12px;color:#6b7280">/100</span></div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:${pColor};min-width:46px;text-align:right">${esc(p.status || '')}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Strengths and risks side by side
+  const strengths = (report?.strengths || []).map(s =>
+    `<li style="margin:6px 0;line-height:1.5">${esc(s)}</li>`).join('');
+  const risks = (report?.risks || []).map(r =>
+    `<li style="margin:6px 0;line-height:1.5">${esc(r)}</li>`).join('');
+
+  // Themes
+  const themeBlock = (label, items, color) => {
+    if (!items || !items.length) return '';
+    const chips = items.map(t =>
+      `<span style="display:inline-block;background:${color};color:#0a2540;padding:4px 10px;border-radius:14px;font-size:12px;margin:3px 4px 3px 0">${esc(t)}</span>`).join('');
+    return `<div style="margin:10px 0"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:6px">${label}</div>${chips}</div>`;
+  };
+  const themes = report?.themes || {};
+  const themesHtml = themeBlock('Positive', themes.positive, '#d1fae5')
+                   + themeBlock('Negative', themes.negative, '#fee2e2')
+                   + themeBlock('Neutral',  themes.neutral,  '#e5e7eb');
+
+  // Review verbatims
+  const sentColor = (s) => s === 'positive' ? '#2f855a' : s === 'negative' ? '#9b2c2c' : '#6b7280';
+  const verbatims = (report?.reviewVerbatims || []).map(r => {
+    const stars = (r.stars && r.stars > 0) ? '★'.repeat(r.stars) + '☆'.repeat(5 - r.stars) : '';
+    return `<div style="border-left:3px solid ${sentColor(r.sentiment)};padding:8px 14px;margin:10px 0;background:#fafafa">
+      <div style="font-style:italic;color:#0a2540;font-size:14px;line-height:1.5">&ldquo;${esc(r.text)}&rdquo;</div>
+      <div style="font-size:11px;color:#6b7280;margin-top:6px;text-transform:uppercase;letter-spacing:0.5px">
+        ${esc(r.source || '')} ${stars ? '· <span style="color:#f59e0b">' + stars + '</span>' : ''} ${r.sentiment ? '· <span style="color:' + sentColor(r.sentiment) + ';font-weight:700">' + esc(r.sentiment) + '</span>' : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  // Competitors
+  const competitors = (report?.competitors || []).map(c => `
+    <tr>
+      <td style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600">${esc(c.name)}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #eee;text-align:center;color:#0a2540;font-weight:700">${c.score > 0 ? c.score + '/100' : '—'}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #eee;color:#6b7280;font-size:13px">${esc(c.note || '')}</td>
+    </tr>`).join('');
+
+  // Online presence channels
+  const onlineChannels = (report?.onlinePresence?.channels || []).map(c => `
+    <tr>
+      <td style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600">${esc(c.name)}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #eee;text-align:center;font-weight:700;color:${c.score >= 65 ? '#2f855a' : c.score >= 45 ? '#b8860b' : '#9b2c2c'}">${c.score}/100</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #eee;color:#6b7280;font-size:13px">${esc(c.note || '')}</td>
+    </tr>`).join('');
+  const onlineOverall = report?.onlinePresence?.overall;
+
+  // Actions, grouped by priority
+  const priorityLabel = { urgent: 'Urgent', '30days': 'Next 30 Days', ongoing: 'Ongoing' };
+  const priorityColor = { urgent: '#9b2c2c', '30days': '#b8860b', ongoing: '#2e75b6' };
+  const actionsByPriority = {};
+  (report?.actions || []).forEach(a => {
+    const p = a.priority || 'ongoing';
+    if (!actionsByPriority[p]) actionsByPriority[p] = [];
+    actionsByPriority[p].push(a);
+  });
+  const actionsHtml = ['urgent', '30days', 'ongoing']
+    .filter(p => actionsByPriority[p])
+    .map(p => {
+      const items = actionsByPriority[p].map(a => `
+        <div style="margin:10px 0;padding:12px 16px;background:#fafafa;border-left:3px solid ${priorityColor[p]};border-radius:4px">
+          <div style="font-weight:700;color:#0a2540;font-size:15px;margin-bottom:4px">${esc(a.title)}</div>
+          <div style="font-size:14px;color:#374151;line-height:1.55">${esc(a.desc)}</div>
+        </div>`).join('');
+      return `<div style="margin:20px 0 14px">
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:${priorityColor[p]};margin-bottom:4px">${priorityLabel[p]}</div>
+        ${items}
+      </div>`;
+    }).join('');
+
+  // Owner vs reality block
+  const ownerSummary = report?.ownerSentimentSummary || '';
+  const sentimentGap = report?.sentimentGap || '';
+  const ownerBlock = (ownerSummary || sentimentGap) ? `
+    <div class="card">
+      <h2>Owner perception vs reality</h2>
+      ${ownerSummary ? '<p class="summary">' + esc(ownerSummary) + '</p>' : ''}
+      ${sentimentGap ? '<div style="background:#fff7ed;border-left:3px solid #b8860b;padding:12px 16px;margin-top:14px;border-radius:4px"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#b8860b;margin-bottom:4px">Gap to close</div><div style="font-size:14px;color:#374151;line-height:1.55">' + esc(sentimentGap) + '</div></div>' : ''}
+    </div>` : '';
+
+  const meta = [cuisine, price, location].filter(Boolean).map(esc).join(' &nbsp;·&nbsp; ');
 
   return `<!doctype html><html><head><meta charset="utf-8">
-<title>${restaurant} — DiagnostiX Report</title>
+<title>${esc(restaurant)} — DiagnostiX Report</title>
 <style>
-body{font-family:-apple-system,Segoe UI,Arial,sans-serif;background:#f4f7fa;color:#0a2540;margin:0}
-.wrap{max-width:760px;margin:0 auto;padding:24px}
+body{font-family:-apple-system,Segoe UI,Arial,sans-serif;background:#f4f7fa;color:#0a2540;margin:0;padding:0}
+.wrap{max-width:780px;margin:0 auto;padding:24px}
 .card{background:#fff;border-radius:12px;padding:32px;margin:16px 0;box-shadow:0 2px 12px rgba(10,37,64,.06)}
-.brand{font-weight:700;letter-spacing:.5px;color:#0a2540;font-size:14px;margin-bottom:8px}
-h1{font-size:28px;margin:0 0 4px}h2{font-size:20px;margin:24px 0 12px;color:#0a2540}
-.score{font-size:64px;font-weight:800;color:#2e75b6;line-height:1}
-.verdict{font-size:16px;color:#6b7280;margin-top:4px}
-.label{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:4px}
+.brand{font-weight:700;letter-spacing:.5px;color:#0a2540;font-size:13px;margin-bottom:8px}
+h1{font-size:30px;margin:0 0 4px;font-weight:800;letter-spacing:-0.5px}
+h2{font-size:20px;margin:0 0 14px;color:#0a2540;font-weight:700}
+.meta{font-size:13px;color:#6b7280;margin-top:6px}
+.score-wrap{display:flex;align-items:center;gap:24px;margin:24px 0 8px;flex-wrap:wrap}
+.score{font-size:64px;font-weight:800;line-height:1}
+.verdict{font-size:18px;font-weight:600;color:#0a2540}
+.summary{font-size:15px;line-height:1.65;color:#374151;margin:8px 0}
+.col-2{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+@media (max-width:600px){.col-2{grid-template-columns:1fr}}
+ul{padding-left:18px;margin:8px 0}
 table{width:100%;border-collapse:collapse;font-size:14px}
-.summary{font-size:15px;line-height:1.6;color:#374151}
-ul{padding-left:20px}
+.label{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:6px}
 .footer{text-align:center;font-size:12px;color:#6b7280;padding:24px}
 </style></head><body><div class="wrap">
+
   <div class="card">
-    <div class="brand">DIAGNOSTIX · ${reportLabel}</div>
-    <h1>${restaurant}</h1>
-    <div class="label" style="margin-top:24px">Overall HealthCheck Score</div>
-    <div class="score">${score}<span style="font-size:28px;color:#6b7280">/100</span></div>
-    <div class="verdict">${verdict}</div>
-    <p class="summary" style="margin-top:24px">${report?.executiveSummary || ''}</p>
+    <div class="brand">DIAGNOSTIX · ${esc(reportLabel)}</div>
+    <h1>${esc(restaurant)}</h1>
+    ${meta ? '<div class="meta">' + meta + '</div>' : ''}
+    <div class="score-wrap">
+      <div class="score" style="color:${scoreColor}">${score}<span style="font-size:24px;color:#6b7280;font-weight:600">/100</span></div>
+      <div><div class="label" style="margin-bottom:2px">Verdict</div><div class="verdict">${esc(verdict)}</div></div>
+    </div>
+    <p class="summary" style="margin-top:18px">${esc(summary)}</p>
   </div>
-  <div class="card"><h2>Pillar scores</h2><table>${pillarRows}</table></div>
-  ${actions ? '<div class="card"><h2>Recommended actions</h2><ul>' + actions + '</ul></div>' : ''}
-  <div class="footer">DiagnostiX by 4xi360 · This link is private to ${subscriber.email}</div>
+
+  <div class="card">
+    <h2>Pillar scores</h2>
+    ${pillarCards}
+  </div>
+
+  ${strengths || risks ? `
+  <div class="card">
+    <div class="col-2">
+      <div>
+        <h2 style="color:#2f855a">Strengths</h2>
+        <ul>${strengths || '<li style="color:#6b7280">None identified.</li>'}</ul>
+      </div>
+      <div>
+        <h2 style="color:#9b2c2c">Risks</h2>
+        <ul>${risks || '<li style="color:#6b7280">None identified.</li>'}</ul>
+      </div>
+    </div>
+  </div>` : ''}
+
+  ${themesHtml ? `<div class="card"><h2>Themes</h2>${themesHtml}</div>` : ''}
+
+  ${verbatims ? `<div class="card"><h2>What customers are saying</h2>${verbatims}</div>` : ''}
+
+  ${report?.employeeSentiment ? `<div class="card"><h2>Employee sentiment</h2><p class="summary">${esc(report.employeeSentiment)}</p></div>` : ''}
+
+  ${competitors ? `<div class="card"><h2>Competitive landscape</h2>
+    ${report?.competitiveInsight ? '<p class="summary" style="margin-bottom:16px">' + esc(report.competitiveInsight) + '</p>' : ''}
+    <table>
+      <thead><tr><th style="text-align:left;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Competitor</th><th style="text-align:center;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Score</th><th style="text-align:left;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Notes</th></tr></thead>
+      <tbody>${competitors}</tbody>
+    </table>
+  </div>` : ''}
+
+  ${onlineChannels ? `<div class="card">
+    <h2>Online presence ${onlineOverall != null ? '<span style="font-size:14px;color:#6b7280;font-weight:600">· Overall ' + onlineOverall + '/100</span>' : ''}</h2>
+    <table>
+      <thead><tr><th style="text-align:left;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Channel</th><th style="text-align:center;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Score</th><th style="text-align:left;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Notes</th></tr></thead>
+      <tbody>${onlineChannels}</tbody>
+    </table>
+  </div>` : ''}
+
+  ${ownerBlock}
+
+  ${actionsHtml ? `<div class="card"><h2>Recommended actions</h2>${actionsHtml}</div>` : ''}
+
+  <div class="footer">DiagnostiX by 4xi360 · This link is private to ${esc(subscriber.email)}</div>
 </div></body></html>`;
 }
 
@@ -982,4 +1131,4 @@ app.post('/trigger-annual-report', async (req, res) => {
   await generateProgressReport(sub);
 });
 
-app.listen(PORT, () => console.log(`DiagnostiX v8.1 on port ${PORT}`));
+app.listen(PORT, () => console.log(`DiagnostiX v8.2 on port ${PORT}`));
