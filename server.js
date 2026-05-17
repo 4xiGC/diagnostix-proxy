@@ -1299,14 +1299,45 @@ app.post('/payment-webhook', async (req, res) => {
 
   console.log('[webhook] Looking up email:', email);
 
+  // 1. Exact email match
   let saved = reportStore.get(email);
+  let matchType = 'exact';
+
+  // 2. Local-part match (e.g. simon@a.com vs simon@b.com)
   if (!saved) {
     for (const [k, v] of reportStore.entries()) {
       if (k.includes(email.split('@')[0]) || email.includes(k.split('@')[0])) {
         saved = v;
-        console.log('[webhook] Found report via partial match:', k, '->', email);
+        matchType = 'local-part';
+        console.log('[webhook] Found report via local-part match:', k, '->', email);
         break;
       }
+    }
+  }
+
+  // 3. Time-window fallback: most recent report saved within last 5 minutes.
+  // Covers the common case where the user fills the survey with one email
+  // (e.g. restaurant email) but checks out via Wix using a different email
+  // (e.g. logged-in member account email).
+  if (!saved) {
+    const FIVE_MIN = 5 * 60 * 1000;
+    const now = Date.now();
+    let mostRecent = null;
+    let mostRecentKey = null;
+    for (const [k, v] of reportStore.entries()) {
+      if (!v.savedAt) continue;
+      const age = now - v.savedAt;
+      if (age > FIVE_MIN) continue;
+      if (!mostRecent || v.savedAt > mostRecent.savedAt) {
+        mostRecent = v;
+        mostRecentKey = k;
+      }
+    }
+    if (mostRecent) {
+      saved = mostRecent;
+      matchType = 'time-window';
+      const ageSec = Math.round((now - mostRecent.savedAt) / 1000);
+      console.log('[webhook] Found report via time-window fallback:', mostRecentKey, '->', email, '| age:', ageSec + 's');
     }
   }
 
@@ -1316,16 +1347,27 @@ app.post('/payment-webhook', async (req, res) => {
     return;
   }
 
+  console.log('[webhook] Match type:', matchType);
+
   const report     = saved.report || {};
   const survey     = saved.survey || {};
   const resolvedFirstName = firstName || survey.contactName || survey.firstName || '';
   const restaurant = survey.name || body.restaurantName || '';
   const location   = survey.location || '';
 
-  console.log('[webhook] Payment confirmed for:', email, product, '| Restaurant:', restaurant);
+  // If we matched via time-window fallback, the Wix-supplied email is likely
+  // a logged-in member account that differs from the survey email. The survey
+  // email is the customer's real contact for this restaurant — send there.
+  let destEmail = email;
+  if (matchType === 'time-window' && survey.email && survey.email.toLowerCase() !== email) {
+    console.log('[webhook] Time-window fallback: overriding webhook email', email, '-> survey email', survey.email);
+    destEmail = survey.email.toLowerCase().trim();
+  }
+
+  console.log('[webhook] Payment confirmed for:', destEmail, product, '| Restaurant:', restaurant);
 
   // Legacy HubSpot purchase marker (kept for backward compatibility).
-  await markPurchasedAndEmail(email, resolvedFirstName, restaurant, report, product);
+  await markPurchasedAndEmail(destEmail, resolvedFirstName, restaurant, report, product);
 
   if (!report || Object.keys(report).length === 0) {
     console.log('[webhook] No report data — skipping full customer creation');
@@ -1337,7 +1379,7 @@ app.post('/payment-webhook', async (req, res) => {
   const amountPaid = planType === 'annual' ? 99.99 : Number(payload.amountPaid || payload.amount || 24.99);
 
   const subscriber = await createCustomer({
-    email,
+    email: destEmail,
     firstName: resolvedFirstName,
     restaurantName: restaurant,
     location: survey.location || '',
@@ -1368,7 +1410,7 @@ app.post('/payment-webhook', async (req, res) => {
     pushReportContextToHubSpot({ subscriber: supaShaped, report, reportNumber: 1, reportUrl, baseline: report })
   ]);
 
-  console.log('[webhook] Full flow complete for', email, '| plan:', planType);
+  console.log('[webhook] Full flow complete for', destEmail, '| plan:', planType);
 });
 
 // ── GET SUBSCRIBER FROM SUPABASE ─────────────────────────────
