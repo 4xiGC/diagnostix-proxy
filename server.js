@@ -104,12 +104,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.0' });
+    res.json({ status: 'running', version: '8.1' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.0' });
+  res.json({ status: 'ok', version: '8.1' });
 });
 
 app.get('/test', async (req, res) => {
@@ -658,7 +658,7 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
   const key = process.env.SUPABASE_KEY;
   if (url && key) {
     try {
-      await fetch(url + '/rest/v1/subscribers', {
+      await fetch(url + '/rest/v1/subscribers?on_conflict=email', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -982,4 +982,4 @@ app.post('/trigger-annual-report', async (req, res) => {
   await generateProgressReport(sub);
 });
 
-app.listen(PORT, () => console.log(`DiagnostiX v8 on port ${PORT}`));
+app.listen(PORT, () => console.log(`DiagnostiX v8.1 on port ${PORT}`));
