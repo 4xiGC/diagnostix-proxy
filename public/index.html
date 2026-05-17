@@ -594,6 +594,30 @@ async function runHealthCheck() {
   pf.style.width = '100%';
   ts.textContent = usedFallback ? 'Using estimated scores — live data unavailable' : 'HealthCheck complete';
   if (thinkH) thinkH.textContent = usedFallback ? 'Report ready (estimated)' : 'Report ready';
+
+  // v8.3 FIX: Save report to server cache so /payment-webhook can find it
+  if (!usedFallback && reportData && data.email) {
+    try {
+      fetch(PROXY_URL.replace('/diagnose', '/save-report'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: data.email,
+          report: reportData,
+          survey: data,
+          product: 'full'
+        })
+      }).then(function(r){
+        if (r.ok) console.log('[save-report] OK');
+        else console.log('[save-report] HTTP', r.status);
+      }).catch(function(e){
+        console.log('[save-report] failed (non-critical):', e.message);
+      });
+    } catch(e) {
+      console.log('[save-report] skipped:', e.message);
+    }
+  }
+
   // Track submission
   trackSubmission(data, reportData);
   setTimeout(function(){
