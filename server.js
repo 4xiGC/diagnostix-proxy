@@ -505,25 +505,79 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber }) {
     intro = 'Your third and final DiagnostiX report of this year is ready. Inside you will find a year-end side-by-side comparison of all three reports across every pillar.';
   }
 
-  const html = `<!doctype html><html><head><meta charset="utf-8"></head>
-<body style="margin:0;background:#f4f7fa;font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#0a2540">
-<div style="max-width:560px;margin:0 auto;padding:24px">
-  <div style="font-weight:700;letter-spacing:.5px;color:#0a2540;font-size:14px;padding:8px 0 16px">DIAGNOSTIX</div>
-  <div style="background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 12px rgba(10,37,64,.06)">
-    <h1 style="font-size:24px;margin:0 0 8px">${headline}</h1>
-    <p style="font-size:15px;line-height:1.6;color:#374151;margin:8px 0 24px">Hi ${firstName}, ${intro}</p>
-    <div style="background:#f4f7fa;border-radius:10px;padding:20px;text-align:center;margin:8px 0 24px">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#6b7280">Overall score</div>
-      <div style="font-size:56px;font-weight:800;color:#2e75b6;line-height:1;margin:8px 0">${score}<span style="font-size:24px;color:#6b7280">/100</span></div>
-      <div style="font-size:14px;color:#6b7280">${verdict}</div>
-    </div>
-    <div style="text-align:center;margin:24px 0">
-      <a href="${link}" style="display:inline-block;background:#2e75b6;color:#fff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:15px">View your full report</a>
-    </div>
-    <p style="font-size:13px;color:#6b7280;line-height:1.5;margin:24px 0 0">Or paste this link into your browser:<br><span style="color:#0a2540;word-break:break-all">${link}</span></p>
-  </div>
-  <div style="text-align:center;font-size:12px;color:#6b7280;padding:24px">DiagnostiX by 4xi360 · This link is private to you. Keep it safe.</div>
-</div></body></html>`;
+  // Score color matches the survey banding (green ≥65, amber ≥45, red <45)
+  const scoreColor = score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24';
+  const escE = (s) => String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  const html = `<!doctype html><html><head><meta charset="utf-8">
+<title>${escE(subject)}</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=League+Spartan:wght@300;400;500;700;900&display=swap');
+</style>
+</head>
+<body style="margin:0;padding:0;background:#F5F4FC;font-family:'League Spartan',-apple-system,Segoe UI,Arial,sans-serif;color:#1B1464;-webkit-font-smoothing:antialiased">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#F5F4FC">
+<tr><td align="center" style="padding:24px 12px">
+
+  <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;width:100%">
+
+    <!-- Purple gradient header -->
+    <tr><td style="background:#1B1464;background-image:linear-gradient(135deg,#92278F,#2E3192,#1B1464);border-radius:14px 14px 0 0;padding:32px 32px 28px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+        <tr><td>
+          <div style="font-family:'League Spartan',Arial,sans-serif;font-weight:900;letter-spacing:1px;color:#ffffff;font-size:22px;line-height:1">diagnosti<span style="color:#0072BC">X</span></div>
+          <div style="font-family:'League Spartan',Arial,sans-serif;font-size:10px;letter-spacing:2px;color:rgba(255,255,255,.75);text-transform:uppercase;margin-top:4px;font-weight:500">Restaurant HealthCheck · by 4xi</div>
+        </td></tr>
+        <tr><td style="padding-top:28px">
+          <div style="font-family:'League Spartan',Arial,sans-serif;font-size:10px;letter-spacing:3px;color:rgba(255,255,255,.7);text-transform:uppercase;font-weight:700">Performance Intelligence Report</div>
+          <div style="font-family:'League Spartan',Arial,sans-serif;color:#ffffff;font-size:26px;font-weight:900;line-height:1.2;margin-top:6px">${escE(restaurant)}</div>
+        </td></tr>
+      </table>
+    </td></tr>
+
+    <!-- Gold/blue gradient divider -->
+    <tr><td style="height:4px;background:#0072BC;background-image:linear-gradient(90deg,#92278F,#0072BC);font-size:0;line-height:0">&nbsp;</td></tr>
+
+    <!-- White content body -->
+    <tr><td style="background:#ffffff;padding:32px;border-radius:0 0 14px 14px">
+
+      <div style="font-family:'League Spartan',Arial,sans-serif;font-size:20px;font-weight:900;color:#1B1464;margin:0 0 14px;line-height:1.25">${escE(headline)}</div>
+      <p style="font-family:'League Spartan',Arial,sans-serif;font-size:14px;line-height:1.65;color:#444;margin:0 0 24px;font-weight:400">Hi ${escE(firstName)}, ${escE(intro)}</p>
+
+      <!-- Score block -->
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#F5F4FC;border-radius:10px;margin:0 0 28px">
+        <tr><td align="center" style="padding:22px 18px">
+          <div style="font-family:'League Spartan',Arial,sans-serif;font-size:10px;letter-spacing:2px;color:#1B1464;text-transform:uppercase;font-weight:700;opacity:.7">Overall HealthCheck Score</div>
+          <div style="font-family:'League Spartan',Arial,sans-serif;font-size:54px;font-weight:900;color:${scoreColor};line-height:1;margin:10px 0 4px">${score}<span style="font-size:20px;color:#999;font-weight:500">/100</span></div>
+          <div style="font-family:'League Spartan',Arial,sans-serif;font-size:13px;color:#1B1464;font-weight:700;letter-spacing:1px;text-transform:uppercase">${escE(verdict)}</div>
+        </td></tr>
+      </table>
+
+      <!-- CTA button -->
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+        <tr><td align="center" style="padding:0 0 8px">
+          <a href="${link}" style="display:inline-block;background:#1B1464;background-image:linear-gradient(135deg,#92278F,#2E3192,#1B1464);color:#ffffff;text-decoration:none;padding:16px 36px;border-radius:8px;font-family:'League Spartan',Arial,sans-serif;font-weight:900;font-size:14px;letter-spacing:1.5px;text-transform:uppercase;mso-padding-alt:0">View Your Full Report &rarr;</a>
+        </td></tr>
+      </table>
+
+      <p style="font-family:'League Spartan',Arial,sans-serif;font-size:12px;color:#999;line-height:1.6;margin:28px 0 0;text-align:center">Or paste this link into your browser:<br><span style="color:#1B1464;word-break:break-all;font-weight:500">${link}</span></p>
+
+    </td></tr>
+  </table>
+
+  <!-- Footer -->
+  <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;width:100%;margin-top:8px">
+    <tr><td align="center" style="padding:20px 24px;font-family:'League Spartan',Arial,sans-serif;font-size:11px;color:#999;line-height:1.6;letter-spacing:.5px">
+      <div style="font-weight:900;color:#1B1464;letter-spacing:1px;text-transform:uppercase;font-size:10px">DiagnostiX by 4xi</div>
+      <div style="margin-top:4px">24/7 · 365 Intelligence Platform</div>
+      <div style="margin-top:10px;opacity:.8">This link is private to you. Keep it safe.</div>
+    </td></tr>
+  </table>
+
+</td></tr></table>
+</body></html>`;
 
   return await sendEmailViaResend({
     to: subscriber.email, subject, html, fromName: 'DiagnostiX'
@@ -599,183 +653,562 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-  const scoreColor = score >= 65 ? '#2f855a' : score >= 45 ? '#b8860b' : '#9b2c2c';
+  // Survey banding: green ≥65, amber ≥45, red <45
+  const scoreColor = score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24';
 
-  // Pillars
+  // Circular score gauge SVG (matches survey's dialSVG)
+  const r = 48, cx = 56, cy = 56;
+  const circumference = 2 * Math.PI * r;
+  const dashOffset = circumference * (1 - Math.max(0, Math.min(100, score)) / 100);
+  const gaugeSvg = `<svg viewBox="0 0 112 112" width="112" height="112" aria-hidden="true" style="display:block">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#ede9e2" stroke-width="10"/>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${scoreColor}" stroke-width="10" stroke-linecap="round"
+      stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${dashOffset.toFixed(2)}"
+      transform="rotate(-90 ${cx} ${cy})"/>
+    <text x="${cx}" y="${cy+2}" text-anchor="middle" dominant-baseline="middle"
+      font-family="League Spartan, Arial, sans-serif" font-weight="900" font-size="30" fill="#1B1464">${score}</text>
+    <text x="${cx}" y="${cy+22}" text-anchor="middle" dominant-baseline="middle"
+      font-family="League Spartan, Arial, sans-serif" font-weight="700" font-size="9" letter-spacing="1.5" fill="#1B1464" opacity="0.7">/ 100</text>
+  </svg>`;
+
+  // Pillars — score-bar rows like survey's .sc-row
   const pillars = Object.values(report?.pillars || {});
-  const pillarCards = pillars.map(p => {
-    const pColor = p.status === 'good' ? '#2f855a' : p.status === 'bad' ? '#9b2c2c' : '#b8860b';
-    const pBg    = p.status === 'good' ? '#f0fdf4' : p.status === 'bad' ? '#fef2f2' : '#fffbeb';
-    return `<div style="background:${pBg};border-radius:10px;padding:16px 18px;margin:8px 0;display:flex;align-items:center;justify-content:space-between;gap:12px">
-      <div style="font-weight:600;color:#0a2540;font-size:15px">${esc(p.label)}</div>
-      <div style="display:flex;align-items:center;gap:14px">
-        <div style="font-weight:800;font-size:22px;color:${pColor};line-height:1">${p.score}<span style="font-size:12px;color:#6b7280">/100</span></div>
-        <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:${pColor};min-width:46px;text-align:right">${esc(p.status || '')}</div>
-      </div>
+  const statusColor = (s) => s === 'good' ? '#00A651' : s === 'bad' ? '#ED1C24' : '#F7941D';
+  const pillarRows = pillars.map(p => {
+    const c = statusColor(p.status);
+    const pct = Math.max(0, Math.min(100, p.score || 0));
+    return `<div class="sc-row">
+      <div class="sc-label">${esc(p.label)}</div>
+      <div class="sc-bar"><div class="sc-fill" style="width:${pct}%;background:${c}"></div></div>
+      <div class="sc-num" style="color:${c}">${p.score}</div>
     </div>`;
   }).join('');
 
-  // Strengths and risks side by side
+  // Strengths / risks
   const strengths = (report?.strengths || []).map(s =>
-    `<li style="margin:6px 0;line-height:1.5">${esc(s)}</li>`).join('');
-  const risks = (report?.risks || []).map(r =>
-    `<li style="margin:6px 0;line-height:1.5">${esc(r)}</li>`).join('');
+    `<li>${esc(s)}</li>`).join('');
+  const risks = (report?.risks || []).map(rr =>
+    `<li>${esc(rr)}</li>`).join('');
 
-  // Themes
-  const themeBlock = (label, items, color) => {
+  // Themes as tag pills
+  const tagClass = (kind) => kind === 'positive' ? 'tag-pos' : kind === 'negative' ? 'tag-neg' : 'tag-neu';
+  const themeBlock = (label, items, kind) => {
     if (!items || !items.length) return '';
-    const chips = items.map(t =>
-      `<span style="display:inline-block;background:${color};color:#0a2540;padding:4px 10px;border-radius:14px;font-size:12px;margin:3px 4px 3px 0">${esc(t)}</span>`).join('');
-    return `<div style="margin:10px 0"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:6px">${label}</div>${chips}</div>`;
+    const chips = items.map(t => `<span class="tag ${tagClass(kind)}">${esc(t)}</span>`).join('');
+    return `<div class="theme-row"><div class="theme-label">${label}</div><div class="theme-chips">${chips}</div></div>`;
   };
   const themes = report?.themes || {};
-  const themesHtml = themeBlock('Positive', themes.positive, '#d1fae5')
-                   + themeBlock('Negative', themes.negative, '#fee2e2')
-                   + themeBlock('Neutral',  themes.neutral,  '#e5e7eb');
+  const themesHtml = themeBlock('Positive', themes.positive, 'positive')
+                   + themeBlock('Negative', themes.negative, 'negative')
+                   + themeBlock('Neutral',  themes.neutral,  'neutral');
 
   // Review verbatims
-  const sentColor = (s) => s === 'positive' ? '#2f855a' : s === 'negative' ? '#9b2c2c' : '#6b7280';
-  const verbatims = (report?.reviewVerbatims || []).map(r => {
-    const stars = (r.stars && r.stars > 0) ? '★'.repeat(r.stars) + '☆'.repeat(5 - r.stars) : '';
-    return `<div style="border-left:3px solid ${sentColor(r.sentiment)};padding:8px 14px;margin:10px 0;background:#fafafa">
-      <div style="font-style:italic;color:#0a2540;font-size:14px;line-height:1.5">&ldquo;${esc(r.text)}&rdquo;</div>
-      <div style="font-size:11px;color:#6b7280;margin-top:6px;text-transform:uppercase;letter-spacing:0.5px">
-        ${esc(r.source || '')} ${stars ? '· <span style="color:#f59e0b">' + stars + '</span>' : ''} ${r.sentiment ? '· <span style="color:' + sentColor(r.sentiment) + ';font-weight:700">' + esc(r.sentiment) + '</span>' : ''}
+  const verbatims = (report?.reviewVerbatims || []).map(rv => {
+    const kind = rv.sentiment === 'positive' ? 'pos' : rv.sentiment === 'negative' ? 'neg' : 'neu';
+    const stars = (rv.stars && rv.stars > 0) ? '★'.repeat(rv.stars) + '☆'.repeat(5 - rv.stars) : '';
+    return `<div class="qblock qblock-${kind}">
+      <div class="qtext">&ldquo;${esc(rv.text)}&rdquo;</div>
+      <div class="qmeta">
+        ${esc(rv.source || '')}
+        ${stars ? '<span class="qstars">' + stars + '</span>' : ''}
+        ${rv.sentiment ? '<span class="tag ' + tagClass(rv.sentiment) + '" style="margin-left:6px">' + esc(rv.sentiment) + '</span>' : ''}
       </div>
     </div>`;
   }).join('');
 
-  // Competitors
-  const competitors = (report?.competitors || []).map(c => `
-    <tr>
-      <td style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600">${esc(c.name)}</td>
-      <td style="padding:10px 12px;border-bottom:1px solid #eee;text-align:center;color:#0a2540;font-weight:700">${c.score > 0 ? c.score + '/100' : '—'}</td>
-      <td style="padding:10px 12px;border-bottom:1px solid #eee;color:#6b7280;font-size:13px">${esc(c.note || '')}</td>
-    </tr>`).join('');
+  // Competitors as cards
+  const competitors = (report?.competitors || []).map((c, i) => {
+    const isMe = i === 0;
+    return `<div class="comp-card ${isMe ? 'comp-me' : 'comp-peer'}">
+      <div class="comp-name">${esc(c.name)}</div>
+      <div class="comp-score">${c.score > 0 ? c.score : '—'}<span class="comp-score-out">/100</span></div>
+      <div class="comp-note">${esc(c.note || '')}</div>
+    </div>`;
+  }).join('');
 
   // Online presence channels
-  const onlineChannels = (report?.onlinePresence?.channels || []).map(c => `
-    <tr>
-      <td style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600">${esc(c.name)}</td>
-      <td style="padding:10px 12px;border-bottom:1px solid #eee;text-align:center;font-weight:700;color:${c.score >= 65 ? '#2f855a' : c.score >= 45 ? '#b8860b' : '#9b2c2c'}">${c.score}/100</td>
-      <td style="padding:10px 12px;border-bottom:1px solid #eee;color:#6b7280;font-size:13px">${esc(c.note || '')}</td>
-    </tr>`).join('');
+  const onlineChannels = (report?.onlinePresence?.channels || []).map(c => {
+    const cColor = c.score >= 65 ? '#00A651' : c.score >= 45 ? '#F7941D' : '#ED1C24';
+    const pct = Math.max(0, Math.min(100, c.score || 0));
+    return `<div class="pres-row">
+      <div class="pres-name">${esc(c.name)}</div>
+      <div class="pres-bar"><div class="pres-fill" style="width:${pct}%;background:${cColor}"></div></div>
+      <div class="pres-num" style="color:${cColor}">${c.score}</div>
+    </div>`;
+  }).join('');
   const onlineOverall = report?.onlinePresence?.overall;
 
-  // Actions, grouped by priority
+  // Actions grouped by priority
   const priorityLabel = { urgent: 'Urgent', '30days': 'Next 30 Days', ongoing: 'Ongoing' };
-  const priorityColor = { urgent: '#9b2c2c', '30days': '#b8860b', ongoing: '#2e75b6' };
+  const priorityClass = { urgent: 'pri-hi', '30days': 'pri-med', ongoing: 'pri-lo' };
   const actionsByPriority = {};
   (report?.actions || []).forEach(a => {
     const p = a.priority || 'ongoing';
     if (!actionsByPriority[p]) actionsByPriority[p] = [];
     actionsByPriority[p].push(a);
   });
+  let actionNum = 0;
   const actionsHtml = ['urgent', '30days', 'ongoing']
     .filter(p => actionsByPriority[p])
     .map(p => {
-      const items = actionsByPriority[p].map(a => `
-        <div style="margin:10px 0;padding:12px 16px;background:#fafafa;border-left:3px solid ${priorityColor[p]};border-radius:4px">
-          <div style="font-weight:700;color:#0a2540;font-size:15px;margin-bottom:4px">${esc(a.title)}</div>
-          <div style="font-size:14px;color:#374151;line-height:1.55">${esc(a.desc)}</div>
-        </div>`).join('');
-      return `<div style="margin:20px 0 14px">
-        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:${priorityColor[p]};margin-bottom:4px">${priorityLabel[p]}</div>
-        ${items}
-      </div>`;
+      const items = actionsByPriority[p].map(a => {
+        actionNum++;
+        return `<div class="act">
+          <div class="act-num">${String(actionNum).padStart(2,'0')}</div>
+          <div class="act-body">
+            <div class="act-head">
+              <div class="act-title">${esc(a.title)}</div>
+              <span class="act-pri ${priorityClass[p]}">${priorityLabel[p]}</span>
+            </div>
+            <div class="act-desc">${esc(a.desc)}</div>
+          </div>
+        </div>`;
+      }).join('');
+      return items;
     }).join('');
 
-  // Owner vs reality block
+  // Owner perception vs reality
   const ownerSummary = report?.ownerSentimentSummary || '';
   const sentimentGap = report?.sentimentGap || '';
   const ownerBlock = (ownerSummary || sentimentGap) ? `
-    <div class="card">
-      <h2>Owner perception vs reality</h2>
-      ${ownerSummary ? '<p class="summary">' + esc(ownerSummary) + '</p>' : ''}
-      ${sentimentGap ? '<div style="background:#fff7ed;border-left:3px solid #b8860b;padding:12px 16px;margin-top:14px;border-radius:4px"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#b8860b;margin-bottom:4px">Gap to close</div><div style="font-size:14px;color:#374151;line-height:1.55">' + esc(sentimentGap) + '</div></div>' : ''}
-    </div>` : '';
+    <h2 class="rpt-h">Owner perception vs reality</h2>
+    ${ownerSummary ? '<p class="body-p">' + esc(ownerSummary) + '</p>' : ''}
+    ${sentimentGap ? '<div class="gap-block"><div class="gap-label">Gap to close</div><div class="gap-text">' + esc(sentimentGap) + '</div></div>' : ''}
+  ` : '';
 
-  const meta = [cuisine, price, location].filter(Boolean).map(esc).join(' &nbsp;·&nbsp; ');
+  const metaParts = [cuisine, price, location, reportLabel].filter(Boolean);
+  const metaRow = metaParts.map(esc).join(' &nbsp;·&nbsp; ');
 
   return `<!doctype html><html><head><meta charset="utf-8">
 <title>${esc(restaurant)} — DiagnostiX Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=League+Spartan:wght@300;400;500;700;900&display=swap" rel="stylesheet">
 <style>
-body{font-family:-apple-system,Segoe UI,Arial,sans-serif;background:#f4f7fa;color:#0a2540;margin:0;padding:0}
-.wrap{max-width:780px;margin:0 auto;padding:24px}
-.card{background:#fff;border-radius:12px;padding:32px;margin:16px 0;box-shadow:0 2px 12px rgba(10,37,64,.06)}
-.brand{font-weight:700;letter-spacing:.5px;color:#0a2540;font-size:13px;margin-bottom:8px}
-h1{font-size:30px;margin:0 0 4px;font-weight:800;letter-spacing:-0.5px}
-h2{font-size:20px;margin:0 0 14px;color:#0a2540;font-weight:700}
-.meta{font-size:13px;color:#6b7280;margin-top:6px}
-.score-wrap{display:flex;align-items:center;gap:24px;margin:24px 0 8px;flex-wrap:wrap}
-.score{font-size:64px;font-weight:800;line-height:1}
-.verdict{font-size:18px;font-weight:600;color:#0a2540}
-.summary{font-size:15px;line-height:1.65;color:#374151;margin:8px 0}
-.col-2{display:grid;grid-template-columns:1fr 1fr;gap:24px}
-@media (max-width:600px){.col-2{grid-template-columns:1fr}}
-ul{padding-left:18px;margin:8px 0}
-table{width:100%;border-collapse:collapse;font-size:14px}
-.label{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:6px}
-.footer{text-align:center;font-size:12px;color:#6b7280;padding:24px}
-</style></head><body><div class="wrap">
+:root{
+  --navy:#1B1464;
+  --navy2:#2E3192;
+  --magenta:#92278F;
+  --blue:#0072BC;
+  --grad:linear-gradient(135deg,#92278F,#2E3192,#1B1464);
+  --grad-h:linear-gradient(90deg,#92278F,#0072BC);
+  --gold:#0072BC;
+  --green:#00A651;
+  --amber:#F7941D;
+  --red:#ED1C24;
+  --sur-bg:#F5F4FC;
+  --card-bg:#ffffff;
+  --soft-bg:#f7f5f0;
+  --warn-bg:#fff8ec;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:'League Spartan',-apple-system,Segoe UI,Arial,sans-serif;
+  background:var(--sur-bg);
+  color:var(--navy);
+  font-weight:400;
+  -webkit-font-smoothing:antialiased;
+  line-height:1.6;
+}
 
-  <div class="card">
-    <div class="brand">DIAGNOSTIX · ${esc(reportLabel)}</div>
-    <h1>${esc(restaurant)}</h1>
-    ${meta ? '<div class="meta">' + meta + '</div>' : ''}
-    <div class="score-wrap">
-      <div class="score" style="color:${scoreColor}">${score}<span style="font-size:24px;color:#6b7280;font-weight:600">/100</span></div>
-      <div><div class="label" style="margin-bottom:2px">Verdict</div><div class="verdict">${esc(verdict)}</div></div>
+/* Print bar (sticky purple gradient header, hides on print) */
+.print-bar{
+  position:sticky;top:0;z-index:50;
+  background:var(--grad);
+  padding:14px 24px;
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  box-shadow:0 2px 12px rgba(27,20,100,.18);
+}
+.print-bar-brand{
+  font-family:'League Spartan',Arial,sans-serif;
+  color:#fff;font-weight:900;font-size:18px;letter-spacing:1px;line-height:1;
+}
+.print-bar-brand .x{color:var(--blue)}
+.print-bar-sub{
+  font-size:9.5px;letter-spacing:2.5px;color:rgba(255,255,255,.75);
+  text-transform:uppercase;font-weight:500;margin-top:3px;
+}
+.print-btn{
+  background:#fff;color:var(--navy);
+  font-family:'League Spartan',Arial,sans-serif;
+  font-weight:900;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;
+  border:none;border-radius:8px;padding:11px 20px;cursor:pointer;
+  transition:transform .15s ease, box-shadow .15s ease;
+}
+.print-btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.15)}
+
+.wrap{max-width:880px;margin:0 auto;padding:0}
+
+/* Cover (purple gradient header card) */
+.rpt-cover{
+  background:var(--grad);
+  color:#fff;
+  padding:36px 40px 32px;
+  margin:24px 24px 0;
+  border-radius:14px 14px 0 0;
+  position:relative;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.cover-grid{
+  display:grid;grid-template-columns:1fr auto;gap:32px;align-items:center;
+}
+.cover-left{min-width:0}
+.cover-logo{
+  font-family:'League Spartan',Arial,sans-serif;
+  font-weight:900;font-size:22px;letter-spacing:1px;color:#fff;line-height:1;
+}
+.cover-logo .x{color:var(--blue)}
+.cover-tag{
+  font-size:10px;letter-spacing:2.5px;color:rgba(255,255,255,.75);
+  text-transform:uppercase;font-weight:500;margin-top:5px;
+}
+.cover-sub{
+  font-size:10px;letter-spacing:3px;color:rgba(255,255,255,.7);
+  text-transform:uppercase;font-weight:700;margin-top:26px;
+}
+.cover-title{
+  font-size:30px;font-weight:900;line-height:1.18;margin-top:6px;color:#fff;
+  letter-spacing:-0.3px;
+}
+.cover-meta{
+  font-size:12px;color:rgba(255,255,255,.85);margin-top:12px;letter-spacing:.5px;
+}
+.cover-meta strong{color:var(--blue);font-weight:700}
+
+/* Gradient divider line */
+.grad-line{
+  height:4px;
+  background:var(--grad-h);
+  margin:0 24px;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+
+/* Body card */
+.body-card{
+  background:var(--card-bg);
+  margin:0 24px 24px;
+  padding:32px 40px 40px;
+  border-radius:0 0 14px 14px;
+  box-shadow:0 4px 24px rgba(27,20,100,.06);
+}
+
+/* Section headers (match survey .rpt-h) */
+.rpt-h{
+  font-family:'League Spartan',Arial,sans-serif;
+  font-size:14px;font-weight:900;
+  text-transform:uppercase;letter-spacing:2px;
+  color:var(--navy);
+  margin:36px 0 16px;
+  padding-bottom:10px;
+  border-bottom:2px solid var(--navy2);
+}
+.rpt-h:first-child{margin-top:0}
+
+/* Executive summary */
+.exec-box{
+  background:var(--soft-bg);
+  border-left:3px solid ${scoreColor};
+  padding:18px 22px;
+  font-size:14px;line-height:1.75;color:#333;
+  border-radius:0 6px 6px 0;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+
+.body-p{font-size:14px;line-height:1.7;color:#333;margin:10px 0}
+
+/* Pillar score rows */
+.sc-row{
+  display:flex;align-items:center;gap:14px;margin:10px 0;
+}
+.sc-label{
+  width:200px;flex-shrink:0;
+  font-size:13px;font-weight:700;color:var(--navy);
+  letter-spacing:.3px;
+}
+.sc-bar{
+  flex:1;height:10px;background:#ede9e2;border-radius:5px;overflow:hidden;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.sc-fill{
+  height:100%;border-radius:5px;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.sc-num{
+  width:42px;text-align:right;font-weight:900;font-size:18px;
+  font-family:'League Spartan',Arial,sans-serif;
+}
+
+/* Two-column strengths/risks */
+.col-2{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:8px}
+@media (max-width:680px){.col-2{grid-template-columns:1fr;gap:8px}}
+.col-h{
+  font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:2px;
+  margin:0 0 10px;
+}
+.col-h.pos{color:var(--green)}
+.col-h.neg{color:var(--red)}
+ul.bullet-list{padding-left:18px;margin:0;font-size:13.5px;line-height:1.7;color:#333}
+ul.bullet-list li{margin:4px 0}
+
+/* Theme rows */
+.theme-row{margin:12px 0;display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
+.theme-label{
+  font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:2px;
+  color:var(--navy);min-width:70px;padding-top:5px;
+}
+.theme-chips{flex:1}
+
+/* Tag pills */
+.tag{
+  display:inline-block;font-size:11px;font-weight:700;
+  padding:5px 11px;border-radius:12px;margin:3px 5px 3px 0;
+  letter-spacing:.3px;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.tag-pos{background:#E6F8EE;color:#005C2E}
+.tag-neg{background:#FDECEA;color:#8B0000}
+.tag-neu{background:#FEF3E2;color:#7A4500}
+
+/* Verbatim quotes */
+.qblock{
+  background:#fafaf8;
+  padding:14px 18px;
+  margin:12px 0;
+  border-radius:0 6px 6px 0;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.qblock-pos{border-left:3px solid var(--green)}
+.qblock-neg{border-left:3px solid var(--red)}
+.qblock-neu{border-left:3px solid var(--amber)}
+.qtext{font-style:italic;font-size:14px;line-height:1.65;color:#222}
+.qmeta{
+  font-size:11px;color:#888;margin-top:8px;
+  text-transform:uppercase;letter-spacing:1px;font-weight:600;
+}
+.qstars{color:#F7941D;margin-left:6px;letter-spacing:1px;font-size:12px}
+
+/* Competitor grid */
+.comp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:8px}
+@media (max-width:680px){.comp-grid{grid-template-columns:1fr}}
+.comp-card{
+  background:var(--soft-bg);
+  border-top:3px solid var(--amber);
+  padding:16px 18px;
+  border-radius:0 0 6px 6px;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.comp-me{border-top-color:var(--blue)}
+.comp-name{font-weight:900;font-size:14px;color:var(--navy);letter-spacing:.3px}
+.comp-score{
+  font-family:'League Spartan',Arial,sans-serif;
+  font-size:28px;font-weight:900;color:var(--navy);
+  line-height:1;margin:6px 0 8px;
+}
+.comp-score-out{font-size:13px;color:#999;font-weight:500;margin-left:2px}
+.comp-note{font-size:12px;color:#555;line-height:1.55}
+
+/* Online presence */
+.pres-row{display:flex;align-items:center;gap:14px;margin:8px 0}
+.pres-name{
+  width:160px;flex-shrink:0;
+  font-size:13px;font-weight:700;color:var(--navy);
+}
+.pres-bar{
+  flex:1;height:8px;background:#ede9e2;border-radius:4px;overflow:hidden;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.pres-fill{
+  height:100%;border-radius:4px;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.pres-num{
+  width:36px;text-align:right;font-weight:900;font-size:15px;
+  font-family:'League Spartan',Arial,sans-serif;
+}
+.pres-overall{
+  font-size:12px;color:#666;font-weight:600;margin-left:10px;
+  letter-spacing:1px;text-transform:uppercase;
+}
+
+/* Owner gap callout */
+.gap-block{
+  background:var(--warn-bg);
+  border:1px solid #f5d78a;
+  padding:14px 18px;
+  margin-top:14px;
+  border-radius:6px;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.gap-label{
+  font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:2px;
+  color:var(--amber);margin-bottom:6px;
+}
+.gap-text{font-size:13.5px;line-height:1.65;color:#333}
+
+/* Actions */
+.act{
+  display:flex;gap:16px;align-items:flex-start;
+  background:var(--soft-bg);
+  border-left:3px solid var(--gold);
+  padding:16px 20px;
+  margin:10px 0;
+  border-radius:0 6px 6px 0;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.act-num{
+  font-family:'League Spartan',Arial,sans-serif;
+  font-weight:900;font-size:28px;color:var(--gold);
+  line-height:1;min-width:38px;
+}
+.act-body{flex:1;min-width:0}
+.act-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.act-title{font-weight:900;font-size:14px;color:var(--navy);letter-spacing:.3px}
+.act-pri{
+  font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:1.5px;
+  padding:3px 9px;border-radius:10px;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.pri-hi{background:#FDECEA;color:#8B0000}
+.pri-med{background:#FEF3E2;color:#7A4500}
+.pri-lo{background:#E6F8EE;color:#005C2E}
+.act-desc{font-size:13.5px;line-height:1.65;color:#444}
+
+/* Footer */
+.rpt-footer{
+  text-align:center;font-size:11px;color:#888;padding:24px;
+  letter-spacing:1px;
+}
+.rpt-footer-brand{
+  font-weight:900;color:var(--navy);letter-spacing:1.5px;text-transform:uppercase;font-size:10px;
+}
+.rpt-footer-sub{margin-top:4px;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#999}
+.rpt-footer-priv{margin-top:10px;color:#aaa;letter-spacing:.5px;text-transform:none}
+
+/* Responsive cover */
+@media (max-width:680px){
+  .cover-grid{grid-template-columns:1fr;gap:20px}
+  .rpt-cover{padding:28px 24px 24px}
+  .body-card{padding:24px 22px 32px}
+  .cover-title{font-size:24px}
+  .sc-label{width:140px;font-size:12px}
+  .pres-name{width:110px;font-size:12px}
+}
+
+/* PRINT — clean PDF output */
+@media print{
+  body{background:#fff !important}
+  .print-bar{display:none !important}
+  .wrap{max-width:none}
+  .rpt-cover,.body-card{margin:0;border-radius:0;box-shadow:none}
+  .rpt-cover{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .grad-line{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .exec-box,.gap-block,.qblock,.comp-card,.act,.tag,.act-pri,
+  .sc-bar,.sc-fill,.pres-bar,.pres-fill{
+    -webkit-print-color-adjust:exact;print-color-adjust:exact;
+  }
+  @page{margin:0.6in}
+  .rpt-h{page-break-after:avoid}
+  .act,.comp-card,.qblock{page-break-inside:avoid}
+  .col-2{page-break-inside:avoid}
+}
+</style></head><body>
+
+<!-- Sticky print bar (hidden on print) -->
+<div class="print-bar">
+  <div>
+    <div class="print-bar-brand">diagnosti<span class="x">X</span></div>
+    <div class="print-bar-sub">Restaurant HealthCheck · by 4xi</div>
+  </div>
+  <button class="print-btn" onclick="window.print()">Print / Save PDF</button>
+</div>
+
+<div class="wrap">
+
+  <!-- Purple gradient cover -->
+  <div class="rpt-cover">
+    <div class="cover-grid">
+      <div class="cover-left">
+        <div class="cover-logo">diagnosti<span class="x">X</span></div>
+        <div class="cover-tag">Restaurant HealthCheck · by 4xi</div>
+        <div class="cover-sub">${esc(reportLabel)}</div>
+        <div class="cover-title">${esc(restaurant)}</div>
+        ${metaRow ? '<div class="cover-meta">' + metaRow + '</div>' : ''}
+      </div>
+      <div>${gaugeSvg}<div style="text-align:center;font-size:10px;letter-spacing:2.5px;color:rgba(255,255,255,.85);text-transform:uppercase;font-weight:700;margin-top:8px">${esc(verdict)}</div></div>
     </div>
-    <p class="summary" style="margin-top:18px">${esc(summary)}</p>
   </div>
 
-  <div class="card">
-    <h2>Pillar scores</h2>
-    ${pillarCards}
+  <div class="grad-line"></div>
+
+  <!-- White body card -->
+  <div class="body-card">
+
+    ${summary ? `
+      <h2 class="rpt-h">Executive Summary</h2>
+      <div class="exec-box">${esc(summary)}</div>
+    ` : ''}
+
+    ${pillarRows ? `
+      <h2 class="rpt-h">Pillar Scores</h2>
+      ${pillarRows}
+    ` : ''}
+
+    ${(strengths || risks) ? `
+      <h2 class="rpt-h">Strengths &amp; Risks</h2>
+      <div class="col-2">
+        <div>
+          <div class="col-h pos">Strengths</div>
+          <ul class="bullet-list">${strengths || '<li style="color:#999">None identified.</li>'}</ul>
+        </div>
+        <div>
+          <div class="col-h neg">Risks</div>
+          <ul class="bullet-list">${risks || '<li style="color:#999">None identified.</li>'}</ul>
+        </div>
+      </div>
+    ` : ''}
+
+    ${themesHtml ? `
+      <h2 class="rpt-h">Themes</h2>
+      ${themesHtml}
+    ` : ''}
+
+    ${verbatims ? `
+      <h2 class="rpt-h">What Customers Are Saying</h2>
+      ${verbatims}
+    ` : ''}
+
+    ${report?.employeeSentiment ? `
+      <h2 class="rpt-h">Employee Sentiment</h2>
+      <p class="body-p">${esc(report.employeeSentiment)}</p>
+    ` : ''}
+
+    ${competitors ? `
+      <h2 class="rpt-h">Competitive Landscape</h2>
+      ${report?.competitiveInsight ? '<p class="body-p" style="margin-bottom:14px">' + esc(report.competitiveInsight) + '</p>' : ''}
+      <div class="comp-grid">${competitors}</div>
+    ` : ''}
+
+    ${onlineChannels ? `
+      <h2 class="rpt-h">Online Presence ${onlineOverall != null ? '<span class="pres-overall">· Overall ' + onlineOverall + '/100</span>' : ''}</h2>
+      ${onlineChannels}
+    ` : ''}
+
+    ${ownerBlock}
+
+    ${actionsHtml ? `
+      <h2 class="rpt-h">Recommended Actions</h2>
+      ${actionsHtml}
+    ` : ''}
+
   </div>
 
-  ${strengths || risks ? `
-  <div class="card">
-    <div class="col-2">
-      <div>
-        <h2 style="color:#2f855a">Strengths</h2>
-        <ul>${strengths || '<li style="color:#6b7280">None identified.</li>'}</ul>
-      </div>
-      <div>
-        <h2 style="color:#9b2c2c">Risks</h2>
-        <ul>${risks || '<li style="color:#6b7280">None identified.</li>'}</ul>
-      </div>
-    </div>
-  </div>` : ''}
+  <div class="rpt-footer">
+    <div class="rpt-footer-brand">DiagnostiX by 4xi</div>
+    <div class="rpt-footer-sub">24/7 · 365 Intelligence Platform</div>
+    <div class="rpt-footer-priv">This link is private to ${esc(subscriber.email)}</div>
+  </div>
 
-  ${themesHtml ? `<div class="card"><h2>Themes</h2>${themesHtml}</div>` : ''}
-
-  ${verbatims ? `<div class="card"><h2>What customers are saying</h2>${verbatims}</div>` : ''}
-
-  ${report?.employeeSentiment ? `<div class="card"><h2>Employee sentiment</h2><p class="summary">${esc(report.employeeSentiment)}</p></div>` : ''}
-
-  ${competitors ? `<div class="card"><h2>Competitive landscape</h2>
-    ${report?.competitiveInsight ? '<p class="summary" style="margin-bottom:16px">' + esc(report.competitiveInsight) + '</p>' : ''}
-    <table>
-      <thead><tr><th style="text-align:left;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Competitor</th><th style="text-align:center;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Score</th><th style="text-align:left;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Notes</th></tr></thead>
-      <tbody>${competitors}</tbody>
-    </table>
-  </div>` : ''}
-
-  ${onlineChannels ? `<div class="card">
-    <h2>Online presence ${onlineOverall != null ? '<span style="font-size:14px;color:#6b7280;font-weight:600">· Overall ' + onlineOverall + '/100</span>' : ''}</h2>
-    <table>
-      <thead><tr><th style="text-align:left;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Channel</th><th style="text-align:center;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Score</th><th style="text-align:left;padding:8px 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:2px solid #0a2540">Notes</th></tr></thead>
-      <tbody>${onlineChannels}</tbody>
-    </table>
-  </div>` : ''}
-
-  ${ownerBlock}
-
-  ${actionsHtml ? `<div class="card"><h2>Recommended actions</h2>${actionsHtml}</div>` : ''}
-
-  <div class="footer">DiagnostiX by 4xi360 · This link is private to ${esc(subscriber.email)}</div>
 </div></body></html>`;
 }
 
@@ -1131,4 +1564,4 @@ app.post('/trigger-annual-report', async (req, res) => {
   await generateProgressReport(sub);
 });
 
-app.listen(PORT, () => console.log(`DiagnostiX v8.2 on port ${PORT}`));
+app.listen(PORT, () => console.log(`DiagnostiX v8.3 on port ${PORT}`));
