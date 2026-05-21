@@ -1355,16 +1355,19 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
   // Logged distinctly so we can measure fill rate from Railway logs while we evaluate
   // whether to build the richer report analysis.
   const bm = (survey && survey.businessMetrics) || {};
-  const guestCountChange = (typeof bm.guestCountChange === 'number') ? bm.guestCountChange : null;
-  const avgCheckChange   = (typeof bm.avgCheckChange   === 'number') ? bm.avgCheckChange   : null;
-  const hasGuest = guestCountChange !== null;
-  const hasCheck = avgCheckChange !== null;
-  if (hasGuest || hasCheck) {
-    console.log('[business-metrics] provided | guest:', hasGuest ? guestCountChange + '%' : 'skipped',
-                '| check:', hasCheck ? avgCheckChange + '%' : 'skipped',
+  const guestCountChange    = (typeof bm.guestCountChange    === 'number') ? bm.guestCountChange    : null;
+  const avgCheckChange      = (typeof bm.avgCheckChange      === 'number') ? bm.avgCheckChange      : null;
+  const profitabilityChange = (typeof bm.profitabilityChange === 'number') ? bm.profitabilityChange : null;
+  const hasGuest  = guestCountChange    !== null;
+  const hasCheck  = avgCheckChange      !== null;
+  const hasProfit = profitabilityChange !== null;
+  if (hasGuest || hasCheck || hasProfit) {
+    console.log('[business-metrics] provided | guest:',  hasGuest  ? guestCountChange    + '%' : 'skipped',
+                '| check:',  hasCheck  ? avgCheckChange      + '%' : 'skipped',
+                '| profit:', hasProfit ? profitabilityChange + '%' : 'skipped',
                 '| email:', email);
   } else {
-    console.log('[business-metrics] skipped (both) | email:', email);
+    console.log('[business-metrics] skipped (all) | email:', email);
   }
 
   const subscriber = {
@@ -1380,7 +1383,8 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
     reports: [{ generatedAt: now, report, survey, reportNumber: 1 }],
     nextReportAt: isAnnual ? now + (4 * 30 * 24 * 60 * 60 * 1000) : null,
     guestCountChange,
-    avgCheckChange
+    avgCheckChange,
+    profitabilityChange
   };
 
   if (isAnnual) {
@@ -1413,9 +1417,10 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
           amount_paid:        amountPaid || 0,
           baseline_score:     report?.healthCheckScore || 0,
           baseline_report:    report || null,
-          report_token:       reportToken,
-          guest_count_change: guestCountChange,
-          avg_check_change:   avgCheckChange
+          report_token:         reportToken,
+          guest_count_change:   guestCountChange,
+          avg_check_change:     avgCheckChange,
+          profitability_change: profitabilityChange
         })
       });
       console.log('[customer] saved', planType, email, '| token:', reportToken);
