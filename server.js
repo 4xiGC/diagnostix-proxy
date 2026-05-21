@@ -73,44 +73,73 @@ async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
     console.log('[email] RESEND_API_KEY missing — skipping send to', to);
     return { ok: false, reason: 'missing key' };
   }
-  try {
-    const payload = {
-      from: (fromName || 'DiagnostiX') + ' <' + from + '>',
-      to: [to],
-      subject,
-      html
-    };
-    if (bcc && bcc.length) {
-      payload.bcc = Array.isArray(bcc) ? bcc : [bcc];
-    }
-    const r = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
 
-    // Resend usually returns JSON, but on rate-limits or transient errors it can
-    // return HTML/text. Read as text first, then try to parse — never let a
-    // non-JSON body crash the whole send and silently kill downstream code.
-    const rawBody = await r.text();
-    let d;
-    try {
-      d = rawBody ? JSON.parse(rawBody) : {};
-    } catch(parseErr) {
-      console.log('[email] Resend returned non-JSON (status ' + r.status + '):', rawBody.slice(0, 200));
-      return { ok: false, reason: 'non-json response (status ' + r.status + ')' };
-    }
-
-    if (d.id) {
-      console.log('[email] sent to', to, bcc ? '| bcc: ' + (Array.isArray(bcc) ? bcc.join(',') : bcc) : '', '| id:', d.id);
-      return { ok: true, id: d.id };
-    }
-    console.log('[email] Resend rejected (status ' + r.status + '):', JSON.stringify(d));
-    return { ok: false, reason: d.message || d.error || 'unknown' };
-  } catch(e) {
-    console.log('[email] send failed:', e.message);
-    return { ok: false, reason: e.message };
+  const payload = {
+    from: (fromName || 'DiagnostiX') + ' <' + from + '>',
+    to: [to],
+    subject,
+    html
+  };
+  if (bcc && bcc.length) {
+    payload.bcc = Array.isArray(bcc) ? bcc : [bcc];
   }
+
+  // Single attempt — returns one of: {ok:true,id}, {ok:false,reason,retryable:bool}
+  async function attempt() {
+    try {
+      const r = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      // Resend usually returns JSON, but on timeouts/rate-limits/5xx it can
+      // return HTML/text. Read as text first, then try to parse safely.
+      const rawBody = await r.text();
+      let d;
+      try {
+        d = rawBody ? JSON.parse(rawBody) : {};
+      } catch(parseErr) {
+        // Non-JSON response → almost always a transient infra issue (408, 502, 503, 504).
+        const retryable = r.status === 408 || r.status === 429 || (r.status >= 500 && r.status < 600);
+        console.log('[email] Resend returned non-JSON (status ' + r.status + '):', rawBody.slice(0, 200));
+        return { ok: false, reason: 'non-json response (status ' + r.status + ')', retryable };
+      }
+
+      if (d.id) {
+        return { ok: true, id: d.id };
+      }
+      // JSON error response — retryable if status code indicates transient issue.
+      const retryable = r.status === 408 || r.status === 429 || (r.status >= 500 && r.status < 600);
+      console.log('[email] Resend rejected (status ' + r.status + '):', JSON.stringify(d));
+      return { ok: false, reason: d.message || d.error || 'unknown', retryable };
+    } catch(e) {
+      // Network failure (fetch threw) — always worth one retry.
+      console.log('[email] send failed:', e.message);
+      return { ok: false, reason: e.message, retryable: true };
+    }
+  }
+
+  // First attempt
+  let result = await attempt();
+  if (result.ok) {
+    console.log('[email] sent to', to, bcc ? '| bcc: ' + (Array.isArray(bcc) ? bcc.join(',') : bcc) : '', '| id:', result.id);
+    return result;
+  }
+
+  // Retry once on transient errors after a 2s backoff
+  if (result.retryable) {
+    console.log('[email] transient failure — retrying in 2s:', result.reason);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    result = await attempt();
+    if (result.ok) {
+      console.log('[email] sent to', to, bcc ? '| bcc: ' + (Array.isArray(bcc) ? bcc.join(',') : bcc) : '', '| id:', result.id, '(after retry)');
+      return result;
+    }
+    console.log('[email] retry also failed:', result.reason);
+  }
+
+  return result;
 }
 
 // ── INTERNAL SUMMARY EMAIL ───────────────────────────────────
