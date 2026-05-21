@@ -1350,6 +1350,23 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
   const now = Date.now();
   const isAnnual = planType === 'annual';
 
+  // Extract optional business performance metrics from survey.
+  // Each is either a number in the expected range, or null when operator skipped/didn't track.
+  // Logged distinctly so we can measure fill rate from Railway logs while we evaluate
+  // whether to build the richer report analysis.
+  const bm = (survey && survey.businessMetrics) || {};
+  const guestCountChange = (typeof bm.guestCountChange === 'number') ? bm.guestCountChange : null;
+  const avgCheckChange   = (typeof bm.avgCheckChange   === 'number') ? bm.avgCheckChange   : null;
+  const hasGuest = guestCountChange !== null;
+  const hasCheck = avgCheckChange !== null;
+  if (hasGuest || hasCheck) {
+    console.log('[business-metrics] provided | guest:', hasGuest ? guestCountChange + '%' : 'skipped',
+                '| check:', hasCheck ? avgCheckChange + '%' : 'skipped',
+                '| email:', email);
+  } else {
+    console.log('[business-metrics] skipped (both) | email:', email);
+  }
+
   const subscriber = {
     email,
     firstName: firstName || '',
@@ -1361,7 +1378,9 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
     amountPaid: amountPaid || 0,
     reportToken,
     reports: [{ generatedAt: now, report, survey, reportNumber: 1 }],
-    nextReportAt: isAnnual ? now + (4 * 30 * 24 * 60 * 60 * 1000) : null
+    nextReportAt: isAnnual ? now + (4 * 30 * 24 * 60 * 60 * 1000) : null,
+    guestCountChange,
+    avgCheckChange
   };
 
   if (isAnnual) {
@@ -1382,19 +1401,21 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
         },
         body: JSON.stringify({
           email,
-          first_name:      firstName || null,
-          restaurant_name: restaurantName || null,
-          location:        location || null,
-          website:         website || null,
-          subscribed_at:   new Date(now).toISOString(),
-          next_report_at:  isAnnual ? new Date(subscriber.nextReportAt).toISOString() : null,
-          reports_sent:    1,
-          active:          isAnnual,
-          plan_type:       planType,
-          amount_paid:     amountPaid || 0,
-          baseline_score:  report?.healthCheckScore || 0,
-          baseline_report: report || null,
-          report_token:    reportToken
+          first_name:         firstName || null,
+          restaurant_name:    restaurantName || null,
+          location:           location || null,
+          website:            website || null,
+          subscribed_at:      new Date(now).toISOString(),
+          next_report_at:     isAnnual ? new Date(subscriber.nextReportAt).toISOString() : null,
+          reports_sent:       1,
+          active:             isAnnual,
+          plan_type:          planType,
+          amount_paid:        amountPaid || 0,
+          baseline_score:     report?.healthCheckScore || 0,
+          baseline_report:    report || null,
+          report_token:       reportToken,
+          guest_count_change: guestCountChange,
+          avg_check_change:   avgCheckChange
         })
       });
       console.log('[customer] saved', planType, email, '| token:', reportToken);
