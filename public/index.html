@@ -311,6 +311,49 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
     <div style="font-size:11px;color:#aaa;margin-top:5px">Name 1&ndash;3 nearby restaurants you consider competition</div>
   </div>
 
+  <div style="margin:24px 0 0;padding:18px 18px 16px;background:#F5F4FC;border-radius:10px;border:1px solid #E5E1F5">
+    <div style="font-family:'League Spartan',Arial,sans-serif;font-weight:700;color:#1B1464;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px">
+      Optional: Business Performance Metrics
+    </div>
+    <div style="font-size:12px;color:#666;margin-bottom:14px;line-height:1.5">
+      Real numbers sharpen your diagnosis significantly. Skip if you don't track these &mdash; the report will still work.
+    </div>
+
+    <div class="field" style="margin-bottom:14px">
+      <label class="flbl" style="text-transform:none;letter-spacing:0;color:#333;font-weight:600">
+        How does your guest count compare to the same time last year?
+      </label>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:4px">
+          <input class="finput" id="f-guest-change" type="number" min="-30" max="30" step="1" placeholder="e.g. -8" style="width:110px;text-align:right" oninput="onMetricInput('guest')">
+          <span style="font-weight:600;color:#666">%</span>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#555;cursor:pointer;user-select:none">
+          <input type="checkbox" id="f-guest-skip" onchange="onMetricSkip('guest')" style="margin:0;cursor:pointer">
+          I don't track this
+        </label>
+      </div>
+      <div style="font-size:11px;color:#999;margin-top:4px">Range: -30% to +30%</div>
+    </div>
+
+    <div class="field" style="margin-bottom:0">
+      <label class="flbl" style="text-transform:none;letter-spacing:0;color:#333;font-weight:600">
+        How does your average check compare to the same time last year?
+      </label>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:4px">
+          <input class="finput" id="f-check-change" type="number" min="-15" max="15" step="1" placeholder="e.g. 3" style="width:110px;text-align:right" oninput="onMetricInput('check')">
+          <span style="font-weight:600;color:#666">%</span>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#555;cursor:pointer;user-select:none">
+          <input type="checkbox" id="f-check-skip" onchange="onMetricSkip('check')" style="margin:0;cursor:pointer">
+          I don't track this
+        </label>
+      </div>
+      <div style="font-size:11px;color:#999;margin-top:4px">Range: -15% to +15%</div>
+    </div>
+  </div>
+
   <div class="privacy">
     <b>&#128274; Privacy:</b> Your data is used solely to generate your HealthCheck report. We never sell or share your information.
   </div>
@@ -545,11 +588,49 @@ function goStep(n) {
 }
 
 // ── GATHER DATA ───────────────────────────────────────────────
+function onMetricInput(which) {
+  // If the user types a number, uncheck the "I don't track this" box automatically.
+  var skipBox = document.getElementById('f-' + which + '-skip');
+  if (skipBox && skipBox.checked) skipBox.checked = false;
+}
+
+function onMetricSkip(which) {
+  // If the user checks "I don't track this", clear and disable the number input.
+  var input = document.getElementById('f-' + which + '-change');
+  var skipBox = document.getElementById('f-' + which + '-skip');
+  if (skipBox && skipBox.checked) {
+    input.value = '';
+    input.disabled = true;
+    input.style.opacity = '0.5';
+  } else {
+    input.disabled = false;
+    input.style.opacity = '1';
+  }
+}
+
+function parseMetric(inputId, skipId, min, max) {
+  // Returns one of: a number in [min,max], or null (skipped or invalid).
+  // Empty input with no skip checked also returns null — treated as "not provided".
+  var skipBox = document.getElementById(skipId);
+  if (skipBox && skipBox.checked) return null;
+  var raw = document.getElementById(inputId).value.trim();
+  if (raw === '') return null;
+  var n = Number(raw);
+  if (!isFinite(n)) return null;
+  if (n < min) n = min;
+  if (n > max) n = max;
+  return Math.round(n); // keep it integer in the data
+}
+
 function gatherData() {
   var city    = document.getElementById('f-loc-city').value.trim();
   var state   = document.getElementById('f-loc-state').value.trim();
   var country = document.getElementById('f-loc-country').value.trim();
   var location = [city, state, country].filter(Boolean).join(', ');
+
+  var guestChange = parseMetric('f-guest-change', 'f-guest-skip', -30, 30);
+  var checkChange = parseMetric('f-check-change', 'f-check-skip', -15, 15);
+
   return {
     name:        document.getElementById('f-name').value.trim(),
     location:    location,
@@ -557,7 +638,11 @@ function gatherData() {
     email:       document.getElementById('f-email').value.trim(),
     website:     document.getElementById('f-web').value.trim(),
     competitors: document.getElementById('f-comp').value.trim(),
-    sentiment:   JSON.parse(JSON.stringify(qVals))
+    sentiment:   JSON.parse(JSON.stringify(qVals)),
+    businessMetrics: {
+      guestCountChange: guestChange,
+      avgCheckChange:   checkChange
+    }
   };
 }
 
