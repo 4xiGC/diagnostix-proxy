@@ -72,6 +72,18 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .q-val{font-family:'League Spartan',sans-serif;font-size:1.5rem;min-width:36px;text-align:center;font-weight:600;transition:color 0.2s;background:#f4f1ec;border-radius:6px;padding:2px 6px}
 .slider-ends{display:flex;justify-content:space-between;margin-top:5px}
 .send-lbl{font-size:10px;color:#999;letter-spacing:0.04em}
+/* ── METRIC SECTION (financial questions, styled to match q-card) ── */
+.metric-section-eyebrow{font-size:9px;text-transform:uppercase;letter-spacing:0.16em;color:var(--sur-gold);font-weight:700;margin:28px 0 6px}
+.metric-section-sub{font-size:12px;color:var(--sur-muted);margin-bottom:14px;line-height:1.55;font-style:italic}
+.metric-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:4px}
+.metric-input-wrap{display:flex;align-items:center;gap:6px}
+.metric-input{width:120px;background:#fff;border:1.5px solid var(--sur-border);border-radius:6px;padding:11px 13px;color:var(--sur-text);font-family:'League Spartan',sans-serif;font-size:18px;font-weight:700;text-align:right;outline:none;transition:border-color 0.2s}
+.metric-input:focus{border-color:var(--gold)}
+.metric-input:disabled{opacity:0.4;background:#f5f5f5;cursor:not-allowed}
+.metric-pct{font-family:'League Spartan',sans-serif;font-weight:700;color:#999;font-size:16px}
+.metric-skip{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--sur-muted);cursor:pointer;user-select:none;font-weight:500}
+.metric-skip input{margin:0;cursor:pointer;width:14px;height:14px;accent-color:var(--navy2)}
+.metric-range{font-size:10px;color:#aaa;letter-spacing:0.04em;margin-top:6px}
 /* ── BUTTONS ─────────────────────────────────────────── */
 .btn-row{display:flex;gap:10px;margin-top:1.6rem;flex-wrap:wrap;padding:0 2rem}
 .btn-back{background:#fff;color:#777;font-family:'League Spartan',sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;border:1.5px solid #ccc;border-radius:6px;padding:11px 20px;cursor:pointer;transition:all 0.18s}
@@ -331,64 +343,58 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   <div class="s-sub">Rate each area honestly from 1 (poor) to 10 (excellent). This calibrates your HealthCheck score.</div>
   <div id="q-wrap"></div>
 
-  <div style="margin:24px 0 0;padding:18px 18px 16px;background:#F5F4FC;border-radius:10px;border:1px solid #E5E1F5">
-    <div style="font-family:'League Spartan',Arial,sans-serif;font-weight:700;color:#1B1464;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px">
-      Optional: Business Performance Metrics
-    </div>
-    <div style="font-size:12px;color:#666;margin-bottom:14px;line-height:1.5">
-      Real numbers sharpen your diagnosis significantly. Skip any you don't track &mdash; the report will still work.
-    </div>
+  <div class="metric-section-eyebrow">Optional · Business Performance Metrics</div>
+  <div class="metric-section-sub">Real numbers sharpen your diagnosis significantly. Skip any you don't track &mdash; the report still works.</div>
 
-    <div class="field" style="margin-bottom:14px">
-      <label class="flbl" style="text-transform:none;letter-spacing:0;color:#333;font-weight:600">
-        How does your guest count compare to the same time last year?
-      </label>
-      <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
-        <div style="display:flex;align-items:center;gap:4px">
-          <input class="finput" id="f-guest-change" type="number" min="-30" max="30" step="1" placeholder="e.g. -8" style="width:110px;text-align:right" oninput="onMetricInput('guest')">
-          <span style="font-weight:600;color:#666">%</span>
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#555;cursor:pointer;user-select:none">
-          <input type="checkbox" id="f-guest-skip" onchange="onMetricSkip('guest')" style="margin:0;cursor:pointer">
-          I don't track this
-        </label>
+  <div class="q-card">
+    <div class="q-num">Optional Metric 1 of 3</div>
+    <div class="q-text">How does your guest count compare to the same time last year?</div>
+    <div class="q-hint">Type the actual percentage if you know it, or check &ldquo;I don&rsquo;t track this&rdquo; to skip.</div>
+    <div class="metric-row">
+      <div class="metric-input-wrap">
+        <input class="metric-input" id="f-guest-change" type="number" min="-30" max="30" step="1" placeholder="-8" oninput="onMetricInput('guest')">
+        <span class="metric-pct">%</span>
       </div>
-      <div style="font-size:11px;color:#999;margin-top:4px">Range: -30% to +30%</div>
+      <label class="metric-skip">
+        <input type="checkbox" id="f-guest-skip" onchange="onMetricSkip('guest')">
+        I don&rsquo;t track this
+      </label>
     </div>
+    <div class="metric-range">Range: -30% to +30%</div>
+  </div>
 
-    <div class="field" style="margin-bottom:14px">
-      <label class="flbl" style="text-transform:none;letter-spacing:0;color:#333;font-weight:600">
-        How does your average check compare to the same time last year?
-      </label>
-      <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
-        <div style="display:flex;align-items:center;gap:4px">
-          <input class="finput" id="f-check-change" type="number" min="-15" max="15" step="1" placeholder="e.g. 3" style="width:110px;text-align:right" oninput="onMetricInput('check')">
-          <span style="font-weight:600;color:#666">%</span>
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#555;cursor:pointer;user-select:none">
-          <input type="checkbox" id="f-check-skip" onchange="onMetricSkip('check')" style="margin:0;cursor:pointer">
-          I don't track this
-        </label>
+  <div class="q-card">
+    <div class="q-num">Optional Metric 2 of 3</div>
+    <div class="q-text">How does your average check compare to the same time last year?</div>
+    <div class="q-hint">Type the actual percentage if you know it, or check &ldquo;I don&rsquo;t track this&rdquo; to skip.</div>
+    <div class="metric-row">
+      <div class="metric-input-wrap">
+        <input class="metric-input" id="f-check-change" type="number" min="-15" max="15" step="1" placeholder="3" oninput="onMetricInput('check')">
+        <span class="metric-pct">%</span>
       </div>
-      <div style="font-size:11px;color:#999;margin-top:4px">Range: -15% to +15%</div>
+      <label class="metric-skip">
+        <input type="checkbox" id="f-check-skip" onchange="onMetricSkip('check')">
+        I don&rsquo;t track this
+      </label>
     </div>
+    <div class="metric-range">Range: -15% to +15%</div>
+  </div>
 
-    <div class="field" style="margin-bottom:0">
-      <label class="flbl" style="text-transform:none;letter-spacing:0;color:#333;font-weight:600">
-        How does your profitability compare to the same time last year?
-      </label>
-      <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
-        <div style="display:flex;align-items:center;gap:4px">
-          <input class="finput" id="f-profit-change" type="number" min="-25" max="25" step="1" placeholder="e.g. -5" style="width:110px;text-align:right" oninput="onMetricInput('profit')">
-          <span style="font-weight:600;color:#666">%</span>
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#555;cursor:pointer;user-select:none">
-          <input type="checkbox" id="f-profit-skip" onchange="onMetricSkip('profit')" style="margin:0;cursor:pointer">
-          I don't track this
-        </label>
+  <div class="q-card">
+    <div class="q-num">Optional Metric 3 of 3</div>
+    <div class="q-text">How does your profitability compare to the same time last year?</div>
+    <div class="q-hint">Type the actual percentage if you know it, or check &ldquo;I don&rsquo;t track this&rdquo; to skip.</div>
+    <div class="metric-row">
+      <div class="metric-input-wrap">
+        <input class="metric-input" id="f-profit-change" type="number" min="-25" max="25" step="1" placeholder="-5" oninput="onMetricInput('profit')">
+        <span class="metric-pct">%</span>
       </div>
-      <div style="font-size:11px;color:#999;margin-top:4px">Range: -25% to +25%</div>
+      <label class="metric-skip">
+        <input type="checkbox" id="f-profit-skip" onchange="onMetricSkip('profit')">
+        I don&rsquo;t track this
+      </label>
     </div>
+    <div class="metric-range">Range: -25% to +25%</div>
   </div>
 
   <div class="btn-row" style="padding:0">
