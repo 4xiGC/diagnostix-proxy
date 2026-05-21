@@ -283,8 +283,12 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
       <input class="finput" id="f-name" type="text" placeholder="e.g. The Corner Bistro" maxlength="80">
     </div>
     <div class="field">
-      <label class="flbl">Location / City <span style="color:var(--red)">*</span></label>
-      <input class="finput" id="f-loc" type="text" placeholder="e.g. Austin, TX" maxlength="80">
+      <label class="flbl">Location</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input class="finput" id="f-loc-city"    type="text" placeholder="City"    maxlength="60" style="flex:1;min-width:0">
+        <input class="finput" id="f-loc-state"   type="text" placeholder="State"   maxlength="60" style="flex:1;min-width:0">
+        <input class="finput" id="f-loc-country" type="text" placeholder="Country" maxlength="60" style="flex:1;min-width:0">
+      </div>
     </div>
   </div>
   <div class="field-row">
@@ -475,9 +479,9 @@ var QS = [
   {id:'ret',    text:'How would you rate your staff retention?',                               hint:'1 = High turnover (concern) &nbsp;&middot;&nbsp; 10 = Very stable team (positive)',  lo:'High turnover',         hi:'Stable team'},
   {id:'amb',    text:'How would you rate the ambiance, d&eacute;cor, and physical condition of your venue?', hint:'1 = Needs significant attention &nbsp;&middot;&nbsp; 10 = Excellent condition', lo:'Needs attention',       hi:'Excellent condition'},
   {id:'repeat', text:'What is your level of repeat / return customers?',                       hint:'1 = Few customers return &nbsp;&middot;&nbsp; 10 = Strong loyal following',             lo:'Few return',            hi:'Strong loyalty'},
-  {id:'book',   text:'How far in advance are you fully booked?',                               hint:'1 = Rarely fully booked &nbsp;&middot;&nbsp; 10 = Booked 3+ months out',               lo:'Rarely booked',         hi:'3+ months out'},
+  {id:'book',   text:'Are you full to capacity every service?',                                hint:'1 = Rarely full &nbsp;&middot;&nbsp; 10 = Full to capacity every service',             lo:'Rarely full',           hi:'Full every service'},
   {id:'menu',   text:'How confident are you in the strength and appeal of your current menu?', hint:'1 = Due for a refresh &nbsp;&middot;&nbsp; 10 = Strong, well-received menu',            lo:'Needs refresh',         hi:'Strong menu'},
-  {id:'online', text:'How active and effective do you feel your online presence is?',           hint:'1 = Minimal or inactive &nbsp;&middot;&nbsp; 10 = Strong across all platforms',        lo:'Minimal',               hi:'Very active'},
+  {id:'online', text:'How effective is your social media, digital marketing, and consumer engagement?', hint:'1 = Minimal or inactive &nbsp;&middot;&nbsp; 10 = Strong across all channels',    lo:'Minimal',               hi:'Very effective'},
   {id:'price',  text:'How well does your pricing reflect the value you deliver?',               hint:'1 = Customers often question value &nbsp;&middot;&nbsp; 10 = Pricing well-received',   lo:'Often questioned',      hi:'Well accepted'},
   {id:'future', text:'How optimistic are you about the next 12 months for your business?',      hint:'1 = Significant concerns &nbsp;&middot;&nbsp; 10 = Very optimistic',                   lo:'Significant concerns',  hi:'Very optimistic'}
 ];
@@ -519,11 +523,10 @@ function buildQuestions() {
 function goStep(n) {
   if (n === 1) {
     var nm = document.getElementById('f-name').value.trim();
-    var lo = document.getElementById('f-loc').value.trim();
     var cn = document.getElementById('f-cname').value.trim();
     var em = document.getElementById('f-email').value.trim();
     var emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em);
-    if (!nm||!lo||!cn||!em||!emailOk) {
+    if (!nm||!cn||!em||!emailOk) {
       var err = document.getElementById('e0');
       err.style.display = 'block';
       err.textContent = (!emailOk && em) ? 'Please enter a valid email address.' : 'Please fill in all required fields (marked *).';
@@ -543,9 +546,13 @@ function goStep(n) {
 
 // ── GATHER DATA ───────────────────────────────────────────────
 function gatherData() {
+  var city    = document.getElementById('f-loc-city').value.trim();
+  var state   = document.getElementById('f-loc-state').value.trim();
+  var country = document.getElementById('f-loc-country').value.trim();
+  var location = [city, state, country].filter(Boolean).join(', ');
   return {
     name:        document.getElementById('f-name').value.trim(),
-    location:    document.getElementById('f-loc').value.trim(),
+    location:    location,
     contactName: document.getElementById('f-cname').value.trim(),
     email:       document.getElementById('f-email').value.trim(),
     website:     document.getElementById('f-web').value.trim(),
