@@ -1365,14 +1365,14 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
   };
 
   if (isAnnual) {
-    annualSubscribers.set(email.toLowerCase(), subscriber);
+    annualSubscribers.set(reportToken, subscriber);
   }
 
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_KEY;
   if (url && key) {
     try {
-      await fetch(url + '/rest/v1/subscribers?on_conflict=email', {
+      await fetch(url + '/rest/v1/subscribers?on_conflict=report_token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1584,7 +1584,7 @@ async function updateSubscriberInSupabase(sub, reportNumber) {
       body.report_3_score = latest?.healthCheckScore || 0;
       body.report_3_date = new Date().toISOString();
     }
-    await fetch(`${url}/rest/v1/subscribers?email=eq.${encodeURIComponent(sub.email)}`, {
+    await fetch(`${url}/rest/v1/subscribers?report_token=eq.${encodeURIComponent(sub.reportToken)}`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -1593,7 +1593,7 @@ async function updateSubscriberInSupabase(sub, reportNumber) {
       },
       body: JSON.stringify(body)
     });
-    console.log('[supabase] Subscriber updated:', sub.email, 'report', reportNumber);
+    console.log('[supabase] Subscriber updated:', sub.email, '| token:', sub.reportToken, 'report', reportNumber);
   } catch(e) {
     console.log('[supabase] Subscriber update failed:', e.message);
   }
@@ -1696,18 +1696,20 @@ async function loadSubscribersFromSupabase() {
     const rows = await res.json();
     if (Array.isArray(rows)) {
       rows.forEach(row => {
-        annualSubscribers.set(row.email, {
+        if (!row.report_token) return; // skip rows without token (legacy/test data)
+        annualSubscribers.set(row.report_token, {
           email:          row.email,
           firstName:      row.first_name || '',
           restaurantName: row.restaurant_name || '',
           location:       row.location || '',
           website:        row.website || '',
+          reportToken:    row.report_token,
           subscribedAt:   new Date(row.subscribed_at).getTime(),
           nextReportAt:   row.next_report_at ? new Date(row.next_report_at).getTime() : null,
           reports:        [{ generatedAt: new Date(row.subscribed_at).getTime(), report: row.baseline_report || { healthCheckScore: row.baseline_score || 0, pillars: {} }, reportNumber: 1 }]
         });
       });
-      console.log('[annual] Loaded', rows.length, 'active subscribers from Supabase');
+      console.log('[annual] Loaded', annualSubscribers.size, 'active subscribers from Supabase');
     }
   } catch(e) {
     console.log('[annual] Failed to load subscribers from Supabase:', e.message);
@@ -1719,9 +1721,9 @@ loadSubscribersFromSupabase();
 setInterval(async () => {
   const now = Date.now();
   console.log('[scheduler] Checking', annualSubscribers.size, 'subscribers for due reports...');
-  for (const [email, sub] of annualSubscribers.entries()) {
+  for (const [token, sub] of annualSubscribers.entries()) {
     if (sub.nextReportAt && now >= sub.nextReportAt) {
-      console.log('[scheduler] Report due for:', email);
+      console.log('[scheduler] Report due for:', sub.email, '|', sub.restaurantName, '| token:', token);
       await generateProgressReport(sub);
       await new Promise(r => setTimeout(r, 5000));
     }
@@ -1729,13 +1731,29 @@ setInterval(async () => {
 }, 6 * 60 * 60 * 1000);
 
 // ── MANUAL TRIGGER (for testing) ─────────────────────────────
+// Accepts either { email } (fires for ALL matching subscriptions) or { token } (specific subscription)
 app.post('/trigger-annual-report', async (req, res) => {
-  const { email, secret } = req.body;
+  const { email, token, secret } = req.body;
   if (secret !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Forbidden' });
-  const sub = annualSubscribers.get((email||'').toLowerCase());
-  if (!sub) return res.status(404).json({ error: 'Subscriber not found' });
-  res.status(200).json({ ok: true, message: 'Report generation started' });
-  await generateProgressReport(sub);
+
+  let targets = [];
+  if (token) {
+    const sub = annualSubscribers.get(token);
+    if (sub) targets.push(sub);
+  } else if (email) {
+    const emailLower = email.toLowerCase();
+    for (const sub of annualSubscribers.values()) {
+      if (sub.email && sub.email.toLowerCase() === emailLower) targets.push(sub);
+    }
+  }
+
+  if (targets.length === 0) return res.status(404).json({ error: 'No matching annual subscription found' });
+
+  res.status(200).json({ ok: true, message: `Report generation started for ${targets.length} subscription(s)` });
+  for (const sub of targets) {
+    await generateProgressReport(sub);
+    await new Promise(r => setTimeout(r, 3000));
+  }
 });
 
 app.listen(PORT, () => console.log(`DiagnostiX v8.3 on port ${PORT}`));
