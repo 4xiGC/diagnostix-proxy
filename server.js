@@ -661,14 +661,19 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   const circumference = 2 * Math.PI * r;
   const dashOffset = circumference * (1 - Math.max(0, Math.min(100, score)) / 100);
   const gaugeSvg = `<svg viewBox="0 0 112 112" width="112" height="112" aria-hidden="true" style="display:block">
-    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#ede9e2" stroke-width="10"/>
+    <defs>
+      <filter id="scoreShadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.35"/>
+      </filter>
+    </defs>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="10"/>
     <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${scoreColor}" stroke-width="10" stroke-linecap="round"
       stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${dashOffset.toFixed(2)}"
       transform="rotate(-90 ${cx} ${cy})"/>
     <text x="${cx}" y="${cy+2}" text-anchor="middle" dominant-baseline="middle"
-      font-family="League Spartan, Arial, sans-serif" font-weight="900" font-size="30" fill="#1B1464">${score}</text>
+      font-family="League Spartan, Arial, sans-serif" font-weight="900" font-size="30" fill="#ffffff" filter="url(#scoreShadow)">${score}</text>
     <text x="${cx}" y="${cy+22}" text-anchor="middle" dominant-baseline="middle"
-      font-family="League Spartan, Arial, sans-serif" font-weight="700" font-size="9" letter-spacing="1.5" fill="#1B1464" opacity="0.7">/ 100</text>
+      font-family="League Spartan, Arial, sans-serif" font-weight="700" font-size="9" letter-spacing="1.5" fill="#ffffff" opacity="0.85">/ 100</text>
   </svg>`;
 
   // Pillars — score-bar rows like survey's .sc-row
