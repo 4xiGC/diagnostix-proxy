@@ -336,7 +336,7 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
       <div style="font-size:11px;color:#999;margin-top:4px">Range: -30% to +30%</div>
     </div>
 
-    <div class="field" style="margin-bottom:0">
+    <div class="field" style="margin-bottom:14px">
       <label class="flbl" style="text-transform:none;letter-spacing:0;color:#333;font-weight:600">
         How does your average check compare to the same time last year?
       </label>
@@ -351,6 +351,23 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
         </label>
       </div>
       <div style="font-size:11px;color:#999;margin-top:4px">Range: -15% to +15%</div>
+    </div>
+
+    <div class="field" style="margin-bottom:0">
+      <label class="flbl" style="text-transform:none;letter-spacing:0;color:#333;font-weight:600">
+        How does your profitability compare to the same time last year?
+      </label>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:4px">
+          <input class="finput" id="f-profit-change" type="number" min="-25" max="25" step="1" placeholder="e.g. -5" style="width:110px;text-align:right" oninput="onMetricInput('profit')">
+          <span style="font-weight:600;color:#666">%</span>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#555;cursor:pointer;user-select:none">
+          <input type="checkbox" id="f-profit-skip" onchange="onMetricSkip('profit')" style="margin:0;cursor:pointer">
+          I don't track this
+        </label>
+      </div>
+      <div style="font-size:11px;color:#999;margin-top:4px">Range: -25% to +25%</div>
     </div>
   </div>
 
@@ -630,6 +647,7 @@ function gatherData() {
 
   var guestChange = parseMetric('f-guest-change', 'f-guest-skip', -30, 30);
   var checkChange = parseMetric('f-check-change', 'f-check-skip', -15, 15);
+  var profitChange = parseMetric('f-profit-change', 'f-profit-skip', -25, 25);
 
   return {
     name:        document.getElementById('f-name').value.trim(),
@@ -640,8 +658,9 @@ function gatherData() {
     competitors: document.getElementById('f-comp').value.trim(),
     sentiment:   JSON.parse(JSON.stringify(qVals)),
     businessMetrics: {
-      guestCountChange: guestChange,
-      avgCheckChange:   checkChange
+      guestCountChange:    guestChange,
+      avgCheckChange:      checkChange,
+      profitabilityChange: profitChange
     }
   };
 }
