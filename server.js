@@ -66,7 +66,7 @@ async function claude(prompt) {
 }
 
 // ── EMAIL VIA RESEND ─────────────────────────────────────────
-async function sendEmailViaResend({ to, subject, html, fromName }) {
+async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
   const key = process.env.RESEND_API_KEY;
   const from = process.env.FROM_EMAIL || 'reports@4xi360.com';
   if (!key) {
@@ -74,19 +74,23 @@ async function sendEmailViaResend({ to, subject, html, fromName }) {
     return { ok: false, reason: 'missing key' };
   }
   try {
+    const payload = {
+      from: (fromName || 'DiagnostiX') + ' <' + from + '>',
+      to: [to],
+      subject,
+      html
+    };
+    if (bcc && bcc.length) {
+      payload.bcc = Array.isArray(bcc) ? bcc : [bcc];
+    }
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: (fromName || 'DiagnostiX') + ' <' + from + '>',
-        to: [to],
-        subject,
-        html
-      })
+      body: JSON.stringify(payload)
     });
     const d = await r.json();
     if (d.id) {
-      console.log('[email] sent to', to, '| id:', d.id);
+      console.log('[email] sent to', to, bcc ? '| bcc: ' + (Array.isArray(bcc) ? bcc.join(',') : bcc) : '', '| id:', d.id);
       return { ok: true, id: d.id };
     }
     console.log('[email] Resend rejected:', JSON.stringify(d));
@@ -95,6 +99,72 @@ async function sendEmailViaResend({ to, subject, html, fromName }) {
     console.log('[email] send failed:', e.message);
     return { ok: false, reason: e.message };
   }
+}
+
+// ── INTERNAL SUMMARY EMAIL ───────────────────────────────────
+// Sent to hello@4xiconsulting.com alongside every customer report.
+// Compact plain-text-style summary for at-a-glance triage in inbox.
+async function sendInternalSummaryEmail({ subscriber, report, reportNumber, survey }) {
+  const INTERNAL_TO = 'hello@4xiconsulting.com';
+  const baseUrl = process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app';
+  const link = baseUrl + '/report?token=' + subscriber.report_token;
+  const score = report?.healthCheckScore ?? 0;
+  const verdict = report?.scoreVerdict || '';
+  const restaurant = subscriber.restaurant_name || '(unknown)';
+  const location = (survey && survey.location) || subscriber.location || '';
+  const cuisine = (survey && survey.cuisine) || '';
+  const price = (survey && survey.price) || '';
+  const ownerName = subscriber.first_name || '';
+  const ownerEmail = subscriber.email || '';
+  const isOneOff = subscriber.plan_type === 'one_off';
+
+  // Subject: [DiagnostiX] New {full|annual} report: {restaurant} ({location}) — Score {score}
+  const planLabel = isOneOff ? 'full' : 'annual';
+  const reportTag = isOneOff
+    ? 'Full Report ($49.99)'
+    : `Annual Subscription ($99.99) — Report ${reportNumber || 1} of 3`;
+  const subject = `[DiagnostiX] New ${planLabel} report: ${restaurant}${location ? ' (' + location + ')' : ''} — Score ${score}`;
+
+  // Pillars summary
+  const pillars = Object.values(report?.pillars || {});
+  const pillarRows = pillars.map(p =>
+    `  ${(p.label || '').padEnd(28)} ${p.score}`
+  ).join('\n');
+
+  const escE = (s) => String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  // Plain-text body wrapped in minimal HTML (so Resend accepts + email clients render mono-friendly)
+  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f5f5f5;font-family:-apple-system,Segoe UI,Arial,sans-serif">
+<div style="max-width:560px;margin:0 auto;background:#fff;padding:24px 28px;border-radius:8px;border:1px solid #e5e5e5">
+  <div style="font-family:'League Spartan',Arial,sans-serif;font-weight:900;color:#1B1464;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin-bottom:16px;border-bottom:2px solid #92278F;padding-bottom:10px">
+    DiagnostiX · Internal Summary
+  </div>
+  <div style="font-size:14px;line-height:1.7;color:#222">
+    <strong>Restaurant:</strong> ${escE(restaurant)}<br>
+    <strong>Location:</strong> ${escE(location || '—')}<br>
+    ${cuisine ? `<strong>Cuisine:</strong> ${escE(cuisine)}<br>` : ''}
+    ${price ? `<strong>Price:</strong> ${escE(price)}<br>` : ''}
+    <strong>Owner:</strong> ${escE(ownerName || '—')} (${escE(ownerEmail)})<br>
+    <strong>Plan:</strong> ${escE(reportTag)}<br>
+    <br>
+    <strong>Overall Score:</strong> <span style="font-weight:900;color:${score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24'}">${score} / 100</span> ${verdict ? '— ' + escE(verdict) : ''}<br>
+    <br>
+    <strong>Pillars:</strong>
+    <pre style="font-family:'SF Mono',Consolas,Menlo,monospace;font-size:13px;background:#f7f5f0;padding:12px 14px;border-radius:6px;margin:6px 0 14px;white-space:pre-wrap">${escE(pillarRows || '(none)')}</pre>
+    <a href="${link}" style="display:inline-block;background:#1B1464;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:700;font-size:13px;letter-spacing:0.5px">View Full Report &rarr;</a>
+    <div style="margin-top:14px;font-size:11px;color:#888;word-break:break-all">${link}</div>
+  </div>
+</div>
+</body></html>`;
+
+  return await sendEmailViaResend({
+    to: INTERNAL_TO,
+    subject,
+    html,
+    fromName: 'DiagnostiX Internal'
+  });
 }
 
 // ── ROOT + HEALTH + TEST ─────────────────────────────────────
@@ -477,7 +547,7 @@ async function pushLastEngaged(email) {
 }
 
 // ── CUSTOMER WELCOME / REPORT EMAIL ──────────────────────────
-async function sendCustomerReportEmail({ subscriber, report, reportNumber }) {
+async function sendCustomerReportEmail({ subscriber, report, reportNumber, survey }) {
   const baseUrl = process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app';
   const link = baseUrl + '/report?token=' + subscriber.report_token;
   const score = report?.healthCheckScore ?? 0;
@@ -579,9 +649,22 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber }) {
 </td></tr></table>
 </body></html>`;
 
-  return await sendEmailViaResend({
-    to: subscriber.email, subject, html, fromName: 'DiagnostiX'
-  });
+  // Send customer email with BCC to internal address, AND fire compact internal summary in parallel.
+  // Failures in either are logged but don't break the other or the calling flow.
+  const INTERNAL_BCC = 'hello@4xiconsulting.com';
+  const [customerResult, internalResult] = await Promise.all([
+    sendEmailViaResend({
+      to: subscriber.email,
+      subject,
+      html,
+      fromName: 'DiagnostiX',
+      bcc: [INTERNAL_BCC]
+    }),
+    sendInternalSummaryEmail({ subscriber, report, reportNumber, survey })
+      .catch(e => { console.log('[email-internal] failed:', e.message); return { ok: false, reason: e.message }; })
+  ]);
+
+  return customerResult;
 }
 
 // ── /report VIEWER ───────────────────────────────────────────
@@ -1411,7 +1494,7 @@ app.post('/payment-webhook', async (req, res) => {
                    + '/report?token=' + subscriber.reportToken;
 
   await Promise.all([
-    sendCustomerReportEmail({ subscriber: supaShaped, report, reportNumber: 1 }),
+    sendCustomerReportEmail({ subscriber: supaShaped, report, reportNumber: 1, survey }),
     pushReportContextToHubSpot({ subscriber: supaShaped, report, reportNumber: 1, reportUrl, baseline: report })
   ]);
 
