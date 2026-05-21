@@ -88,13 +88,25 @@ async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
       headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    const d = await r.json();
+
+    // Resend usually returns JSON, but on rate-limits or transient errors it can
+    // return HTML/text. Read as text first, then try to parse — never let a
+    // non-JSON body crash the whole send and silently kill downstream code.
+    const rawBody = await r.text();
+    let d;
+    try {
+      d = rawBody ? JSON.parse(rawBody) : {};
+    } catch(parseErr) {
+      console.log('[email] Resend returned non-JSON (status ' + r.status + '):', rawBody.slice(0, 200));
+      return { ok: false, reason: 'non-json response (status ' + r.status + ')' };
+    }
+
     if (d.id) {
       console.log('[email] sent to', to, bcc ? '| bcc: ' + (Array.isArray(bcc) ? bcc.join(',') : bcc) : '', '| id:', d.id);
       return { ok: true, id: d.id };
     }
-    console.log('[email] Resend rejected:', JSON.stringify(d));
-    return { ok: false, reason: d.message || 'unknown' };
+    console.log('[email] Resend rejected (status ' + r.status + '):', JSON.stringify(d));
+    return { ok: false, reason: d.message || d.error || 'unknown' };
   } catch(e) {
     console.log('[email] send failed:', e.message);
     return { ok: false, reason: e.message };
@@ -649,20 +661,23 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber, surve
 </td></tr></table>
 </body></html>`;
 
-  // Send customer email with BCC to internal address, AND fire compact internal summary in parallel.
-  // Failures in either are logged but don't break the other or the calling flow.
+  // Send customer email (with BCC to internal address) first, then fire compact internal summary.
+  // Sequential with a small pause to stay safely under Resend's 2/sec rate limit on the free tier.
+  // Internal summary failures are logged but do NOT affect the customer email result.
   const INTERNAL_BCC = 'hello@4xiconsulting.com';
-  const [customerResult, internalResult] = await Promise.all([
-    sendEmailViaResend({
-      to: subscriber.email,
-      subject,
-      html,
-      fromName: 'DiagnostiX',
-      bcc: [INTERNAL_BCC]
-    }),
+  const customerResult = await sendEmailViaResend({
+    to: subscriber.email,
+    subject,
+    html,
+    fromName: 'DiagnostiX',
+    bcc: [INTERNAL_BCC]
+  });
+
+  // Fire-and-forget the internal summary — don't block return, don't propagate failure.
+  setTimeout(() => {
     sendInternalSummaryEmail({ subscriber, report, reportNumber, survey })
-      .catch(e => { console.log('[email-internal] failed:', e.message); return { ok: false, reason: e.message }; })
-  ]);
+      .catch(e => console.log('[email-internal] failed:', e.message));
+  }, 600);
 
   return customerResult;
 }
