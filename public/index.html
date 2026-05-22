@@ -1099,6 +1099,101 @@ function renderReport(r, d) {
       +'<div class="act-t">'+a.title+'</div><div class="act-d">'+a.desc+'</div></div></div>';
   }).join('');
 
+  // ── FINANCIAL REALITY vs OPERATIONAL REALITY ──
+  // Builds the financial-vs-qualitative section. Only renders when at least
+  // one business metric was actually entered (defensive against legacy data).
+  // For survey-time rendering, the metrics come from d.businessMetrics
+  // (the survey form data), since there is no DB row yet at this point.
+  var bm = (d && d.businessMetrics) || {};
+  var gN = (typeof bm.guestCountChange === 'number') ? bm.guestCountChange : null;
+  var cN = (typeof bm.avgCheckChange === 'number') ? bm.avgCheckChange : null;
+  var pN = (typeof bm.profitabilityChange === 'number') ? bm.profitabilityChange : null;
+  var hasAnyBM = (gN !== null || cN !== null || pN !== null);
+
+  // Color band helper — red below threshold, amber between, green at or above 0
+  function bmColor(v, redAt) {
+    if (v === null) return '#999';
+    if (v <= redAt) return '#C0392B';
+    if (v < 0)      return '#C17D11';
+    return '#2E7D52';
+  }
+  function bmChip(v, label, redAt) {
+    if (v === null) {
+      return '<div style="flex:1;min-width:140px;background:#f7f5f0;border-radius:8px;padding:12px 14px;border:1px solid #e8e3d8">'
+        +'<div style="font-size:10px;letter-spacing:0.12em;color:#999;text-transform:uppercase;font-weight:700;margin-bottom:6px">'+label+'</div>'
+        +'<div style="font-size:16px;font-weight:700;color:#bbb">Not tracked</div></div>';
+    }
+    var col = bmColor(v, redAt);
+    var sign = v >= 0 ? '+' : '';
+    return '<div style="flex:1;min-width:140px;background:#f7f5f0;border-radius:8px;padding:12px 14px;border-left:4px solid '+col+'">'
+      +'<div style="font-size:10px;letter-spacing:0.12em;color:#666;text-transform:uppercase;font-weight:700;margin-bottom:6px">'+label+'</div>'
+      +'<div style="font-family:\'Playfair Display\',serif;font-size:1.6rem;font-weight:700;color:'+col+';line-height:1">'+sign+v+'%</div>'
+      +'<div style="font-size:10px;color:#888;margin-top:2px">vs same time last year</div></div>';
+  }
+
+  // Pillar pairing rows — paired with related qualitative pillars
+  function pillarColor(s){ return s==='good'?'#2E7D52':s==='bad'?'#C0392B':'#C17D11'; }
+  var pp = r.pillars || {};
+  var pgn = r.pillarGapNarratives || {};
+  function pillarPairRow(metricVal, metricLabel, metricRedAt, pillarObj, gapNarrative) {
+    if (metricVal === null) return '';
+    if (!pillarObj || typeof pillarObj.score !== 'number') return '';
+    var mCol = bmColor(metricVal, metricRedAt);
+    var pCol = pillarColor(pillarObj.status);
+    var sign = metricVal >= 0 ? '+' : '';
+    return '<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:center;background:#f7f5f0;padding:14px 16px;margin:7px 0;border-radius:6px">'
+      +'<div style="text-align:left">'
+        +'<div style="font-size:10px;letter-spacing:0.12em;color:#666;text-transform:uppercase;font-weight:700;margin-bottom:4px">'+metricLabel+'</div>'
+        +'<div style="font-family:\'Playfair Display\',serif;font-size:1.4rem;font-weight:700;color:'+mCol+';line-height:1">'+sign+metricVal+'%</div>'
+      +'</div>'
+      +'<div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;font-weight:700">vs</div>'
+      +'<div style="text-align:right">'
+        +'<div style="font-size:10px;letter-spacing:0.12em;color:#666;text-transform:uppercase;font-weight:700;margin-bottom:4px">'+(pillarObj.label||'')+'</div>'
+        +'<div style="font-family:\'Playfair Display\',serif;font-size:1.4rem;font-weight:700;color:'+pCol+';line-height:1">'+pillarObj.score+'<span style="font-size:12px;color:#999;font-weight:400">/100</span></div>'
+      +'</div>'
+      +(gapNarrative?'<div style="grid-column:1/-1;font-size:12.5px;color:#333;line-height:1.55;padding-top:8px;border-top:1px solid #e8e3d8">'+gapNarrative+'</div>':'')
+    +'</div>';
+  }
+
+  var financialBlock = '';
+  if (hasAnyBM) {
+    var chips = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
+      +bmChip(gN, 'Guest Count', -10)
+      +bmChip(cN, 'Average Check', -3)
+      +bmChip(pN, 'Profitability', -5)
+    +'</div>';
+    var analysis = r.businessRealityAnalysis ? '<div class="insight"><div class="idot a"></div><div class="itext">'+r.businessRealityAnalysis+'</div></div>' : '';
+    var pairings = [
+      pillarPairRow(gN, 'Guest Count',   -10, pp.cs, pgn.guest),
+      pillarPairRow(cN, 'Average Check', -3,  pp.pa, pgn.check),
+      pillarPairRow(pN, 'Profitability', -5,  pp.bg, pgn.profit)
+    ].filter(Boolean).join('');
+    var pairingsBlock = pairings ? '<div style="margin:14px 0 8px;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#666;font-weight:700">Where your numbers and your self-assessment meet</div>'+pairings : '';
+    var perceptionBlock = r.perceptionGap ? '<div class="gap-block" style="margin-top:12px"><div class="gap-title">&#9888; Perception vs reality</div><div class="gap-text">'+r.perceptionGap+'</div></div>' : '';
+    financialBlock = '<div class="rpt-h">Financial Reality vs Operational Reality</div>'+chips+analysis+pairingsBlock+perceptionBlock;
+  }
+
+  // ── COMMERCIAL RECOMMENDATIONS ──
+  // Distinct from operational actions. Magenta-accented, with "Tied to:" callouts.
+  var commActions = Array.isArray(r.commercialActions) ? r.commercialActions : [];
+  var commercialBlock = '';
+  if (hasAnyBM && commActions.length) {
+    var commItems = commActions.slice(0, 3).map(function(a, i) {
+      var evidence = a.evidence ? '<div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--magenta);font-weight:700;background:#fbf2fa;padding:5px 9px;border-radius:4px;display:inline-block;margin-top:7px">Tied to: '+a.evidence+'</div>' : '';
+      return '<div style="display:flex;gap:11px;align-items:flex-start;padding:14px 16px;background:#f7f5f0;border-left:3px solid var(--magenta);border-radius:0 6px 6px 0;margin-bottom:7px">'
+        +'<div style="font-family:\'Playfair Display\',serif;font-size:1.4rem;font-weight:700;color:var(--magenta);line-height:1.1;min-width:24px">C'+(i+1)+'</div>'
+        +'<div style="flex:1;min-width:0">'
+          +'<div class="act-t">'+(a.title||'')+'</div>'
+          +'<div class="act-d">'+(a.desc||'')+'</div>'
+          +evidence
+        +'</div>'
+      +'</div>';
+    }).join('');
+    commercialBlock = '<div class="rpt-h">Commercial Recommendations</div>'
+      +'<div style="margin-bottom:10px;font-size:12px;color:#666">Actions tied directly to your financial reality. These complement &mdash; not replace &mdash; the operational actions below.</div>'
+      +commItems;
+  }
+
   var fullHTML =
     '<div class="rpt-h">Full HealthCheck Scorecard</div>'+pillarRows
     +'<div class="sc-total"><div class="sc-total-lbl">Overall HealthCheck Score</div>'
@@ -1130,8 +1225,14 @@ function renderReport(r, d) {
       +'<div class="comp-grid">'+compCards+'</div>'
       +'<div class="insight"><div class="idot a"></div><div class="itext">'+r.competitiveInsight+'</div></div>':'')
 
+    // ── Financial Reality vs Operational Reality ──
+    +financialBlock
+
     // ── Progress Report Section (annual subscribers only) ──
     +(r.isProgressReport && r.progress ? buildProgressSection(r, d) : '')
+
+    // ── Commercial Recommendations (financial-driven, distinct from operational) ──
+    +commercialBlock
 
     +'<div class="rpt-h">Priority Action Roadmap</div>'+acts;
 
