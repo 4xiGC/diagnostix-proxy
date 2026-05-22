@@ -303,7 +303,7 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   <div class="field-row">
     <div class="field">
       <label class="flbl">Your Name <span style="color:var(--red)">*</span></label>
-      <input class="finput" id="f-cname" type="text" placeholder="Owner or manager name" maxlength="60">
+      <input class="finput" id="f-cname" type="text" placeholder="Owner/Manager/Reviewer Name" maxlength="60">
     </div>
     <div class="field">
       <label class="flbl">Your Email <span style="color:var(--red)">*</span></label>
@@ -325,17 +325,17 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   </div>
 
   <div class="btn-row" style="padding:0">
-    <button class="btn-next" style="flex:1" onclick="goStep(1)">Next: Owner Sentiment &rarr;</button>
+    <button class="btn-next" style="flex:1" onclick="goStep(1)">Next: Reviewer Sentiment &rarr;</button>
   </div>
 </div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════
-     STEP 1 — OWNER SENTIMENT SLIDERS
+     STEP 1 — REVIEWER SENTIMENT SLIDERS
 ═══════════════════════════════════════════════════════ -->
 <div class="panel" id="p1">
 <div class="survey-wrap">
-  <div class="s-eyebrow">Step 2 of 2 &mdash; Owner Sentiment</div>
+  <div class="s-eyebrow">Step 2 of 2 &mdash; Reviewer Sentiment</div>
   <div class="s-title">How is your restaurant performing?</div>
   <div class="s-sub">Rate each area honestly from 1 (poor) to 10 (excellent). This calibrates your HealthCheck score.</div>
   <div id="q-wrap"></div>
@@ -597,7 +597,7 @@ function goStep(n) {
     var s=document.getElementById('ps'+i);
     if(s) s.className='pseg'+(i<n?' done':i===n?' active':'');
   }
-  var labels=['Step 1 of 2 \u2014 Your Restaurant','Step 2 of 2 \u2014 Owner Sentiment','Analysing\u2026','Report Ready'];
+  var labels=['Step 1 of 2 \u2014 Your Restaurant','Step 2 of 2 \u2014 Reviewer Sentiment','Analysing\u2026','Report Ready'];
   document.getElementById('step-lbl').textContent = labels[n]||'';
   window.scrollTo(0,0);
 }
@@ -659,7 +659,7 @@ async function runHealthCheck() {
     'Reading employee sentiment on Glassdoor\u2026',
     'Measuring social media presence\u2026',
     'Benchmarking against local competitors\u2026',
-    'Calibrating your owner sentiment scores\u2026',
+    'Calibrating your reviewer sentiment scores\u2026',
     'Building your HealthCheck report\u2026'
   ];
   var pf=document.getElementById('pf'), ts=document.getElementById('ts');
@@ -1205,7 +1205,7 @@ function renderReport(r, d) {
       +'<span style="font-size:11px;color:#888">/ 100 overall online presence score</span></div>'
     +presRows
 
-    +'<div class="rpt-h">Owner Self-Assessment</div>'
+    +'<div class="rpt-h">Reviewer Self-Assessment</div>'
     +'<div style="margin-bottom:10px;font-size:12px;color:#888">Your own ratings of 10 key business dimensions — compared against live data signals</div>'
     +'<div class="owner-grid">'+ownerTiles+'</div>'
     +'<div style="margin-top:10px">'
@@ -1349,7 +1349,7 @@ function buildFallback(d) {
   return {
     healthCheckScore:overall, scoreVerdict:v,
     cuisineDetected:null, priceDetected:null,
-    executiveSummary:d.name+' has completed the DiagnostiX Owner Sentiment Survey. Live web intelligence is currently unavailable — scores below are derived from your self-assessment. Please try again or contact 4xi at hello@4xiconsulting.com.',
+    executiveSummary:d.name+' has completed the DiagnostiX Reviewer Sentiment Survey. Live web intelligence is currently unavailable — scores below are derived from your self-assessment. Please try again or contact 4xi at hello@4xiconsulting.com.',
     pillars:{
       cs:{score:cs,label:'Customer Sentiment',       status:st(cs)},
       pa:{score:pa,label:'Pricing & Accessibility',  status:st(pa)},
@@ -1362,16 +1362,16 @@ function buildFallback(d) {
       {name:'Google Business',   score:sc2(sv.online||5)+5,note:'Live data currently unavailable'},
       {name:'Yelp',              score:sc2(sv.online||5),  note:'Live data currently unavailable'},
       {name:'TripAdvisor',       score:sc2(sv.online||5)-5,note:'Live data currently unavailable'},
-      {name:'Social Media',      score:sc2(sv.online||5)-10,note:'Based on owner self-report of '+(sv.online||5)+'/10'},
+      {name:'Social Media',      score:sc2(sv.online||5)-10,note:'Based on reviewer self-report of '+(sv.online||5)+'/10'},
       {name:'Delivery Platforms',score:sc2(sv.online||5)-15,note:'Live data currently unavailable'},
     ]},
-    ownerSentimentSummary:'Owner rates overall performance at '+(sv.perf||5)+'/10 with a 12-month outlook of '+(sv.future||5)+'/10.',
+    ownerSentimentSummary:'Reviewer rates overall performance at '+(sv.perf||5)+'/10 with a 12-month outlook of '+(sv.future||5)+'/10.',
     sentimentGap:'Live market comparison unavailable. Survey responses captured — contact 4xi to activate full HealthCheck.',
     reviewVerbatims:[],
-    strengths:['Owner sentiment survey completed across all 10 dimensions','Self-assessment data captured for baseline comparison','Survey indicates '+((sv.perf||5)>=7?'strong owner confidence':'areas of operational focus needed')],
+    strengths:['Reviewer sentiment survey completed across all 10 dimensions','Self-assessment data captured for baseline comparison','Survey indicates '+((sv.perf||5)>=7?'strong reviewer confidence':'areas of operational focus needed')],
     risks:['Live web intelligence unavailable — proxy configuration may be needed','Contact 4xi at hello@4xiconsulting.com to activate full report','Scores below are self-assessment only and may not reflect market reality'],
     themes:{positive:['survey complete'],negative:['proxy needed'],neutral:['baseline captured']},
-    employeeSentiment:'Live employee sentiment data unavailable. Owner-reported retention of '+(sv.ret||5)+'/10.',
+    employeeSentiment:'Live employee sentiment data unavailable. Reviewer-reported retention of '+(sv.ret||5)+'/10.',
     competitiveInsight:'Live competitive analysis unavailable. Contact 4xi for a full managed diagnostic.',
     competitors:[],
     actions:[
