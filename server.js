@@ -282,27 +282,29 @@ app.post('/diagnose', async (req, res) => {
 Owner average score: ${Math.round(Object.values(s).reduce((a,b)=>a+(b||5),0)/10*10)/10}/10`;
 
     // Build optional business-metrics block. Operators self-report year-over-year changes.
-    // When ANY of the three is provided we inject a clear instruction set telling the AI
-    // how to weight quantitative against qualitative — financials are tier-1 evidence when present.
+    // Financial metrics arrive as sliders — always have a value (default 0 = "same as last year").
+    // We still defensively coerce in case of missing field; treat null/undefined as 0.
     const bm = body.businessMetrics || {};
-    const hasG = typeof bm.guestCountChange    === 'number';
-    const hasC = typeof bm.avgCheckChange      === 'number';
-    const hasP = typeof bm.profitabilityChange === 'number';
-    const hasAnyBM = hasG || hasC || hasP;
-    const bmFmt = (v, label) => (typeof v === 'number'
-      ? `- ${label}: ${v >= 0 ? '+' : ''}${v}% year-over-year`
-      : `- ${label}: not provided`);
-    const bmBlock = hasAnyBM
-      ? `OWNER-REPORTED BUSINESS METRICS (year-over-year change):
-${bmFmt(bm.guestCountChange,    'Guest count change')}
-${bmFmt(bm.avgCheckChange,      'Average check change')}
-${bmFmt(bm.profitabilityChange, 'Profitability change')}
+    const num = (v) => (typeof v === 'number' && isFinite(v)) ? v : 0;
+    const guestN  = num(bm.guestCountChange);
+    const checkN  = num(bm.avgCheckChange);
+    const profitN = num(bm.profitabilityChange);
+    const fmtPct = (v) => (v >= 0 ? '+' : '') + v + '%';
+    const bmBlock = `OWNER-REPORTED BUSINESS METRICS (year-over-year change, from sliders — default 0 means "same as last year"):
+- Guest count change:    ${fmtPct(guestN)}
+- Average check change:  ${fmtPct(checkN)}
+- Profitability change:  ${fmtPct(profitN)}
 
-These are TIER-1 evidence (quantitative business reality). Weight heavier than qualitative self-ratings.
-When writing businessRealityAnalysis: 2-3 sentences integrating these numbers with web data and self-assessment.
-When writing perceptionGap: ONLY include if there is a significant divergence (e.g. high owner sentiment with declining metrics, or vice-versa). 1-2 sentences. If no significant gap, return empty string "".`
-      : `OWNER-REPORTED BUSINESS METRICS: not provided. Return businessRealityAnalysis as empty string "" and perceptionGap as empty string "".`;
-    console.log('[diagnose] business metrics in prompt:', hasAnyBM ? 'yes' : 'no');
+CRITICAL — INTEGRATE QUALITATIVE WITH QUANTITATIVE:
+These financial metrics are TIER-1 evidence (real business reality). You MUST blend them with the qualitative pillar scores and web data to produce holistic findings, not isolated commentary. Examples of the integration we want:
+  • If guest count is down but Customer Sentiment pillar is high → "Sentiment among existing customers is strong, but acquisition is failing. The issue isn't the experience, it's getting people through the door."
+  • If average check is down but Pricing pillar is high → "Pricing strategy reads well from the menu, but operators aren't capturing the upside in real ticket value — likely an upselling or menu-mix execution gap."
+  • If profitability is down but revenue stable → "Top line holds but margins erode — this is a cost-control problem, not a demand problem."
+  • If all three are flat (0% / 0% / 0%) → operator likely defaulted the sliders; treat financials as a "stable baseline" signal and lean more on qualitative+web evidence in the analysis.
+
+When writing businessRealityAnalysis: 2-3 sentences that EXPLICITLY weave the financial numbers together with the relevant qualitative pillars. Name the pillars. Show how the numbers either confirm or contradict the qualitative picture.
+When writing perceptionGap: 1-2 sentences ONLY if there is a meaningful divergence between owner self-perception and financial reality. If broadly aligned (or all metrics ~0), return empty string "".`;
+    console.log('[diagnose] business metrics:', fmtPct(guestN), '|', fmtPct(checkN), '|', fmtPct(profitN));
     console.log('[diagnose] claude part1...');
     const p1 = await claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${sv}\n\n${bmBlock}\n\nReturn JSON. Use WebData for scores. Use Owner Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what owner thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between owner perception and reality). businessRealityAnalysis and perceptionGap follow the rules above. When business metrics are provided, ALSO populate pillarGapNarratives with one short sentence per relevant pairing (guest count ↔ Customer Sentiment pillar; average check ↔ Pricing & Accessibility pillar; profitability ↔ Brand Experience & Growth pillar). Each narrative should be 1 punchy sentence interpreting the gap or alignment between the financial metric and the qualitative pillar score. If a metric is not provided, return empty string "" for its narrative.\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real"},{"name":"Yelp","score":65,"note":"real"},{"name":"TripAdvisor","score":55,"note":"real"},{"name":"OpenTable","score":60,"note":"real"},{"name":"Social Media","score":50,"note":"real"},{"name":"Delivery Platforms","score":35,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence","businessRealityAnalysis":"","perceptionGap":"","pillarGapNarratives":{"guest":"","check":"","profit":""}}\nRules:good>=65 warn=45-64 bad<45 scoreVerdict=Excellent/Good/Fair/Needs Attention. NOTE: Do NOT change the healthCheckScore or pillar scores based on businessMetrics — the score remains qualitative+web-data driven. Financial metrics are reported separately via businessRealityAnalysis, perceptionGap, and pillarGapNarratives.`);
     console.log('[diagnose] p1 score:', p1.healthCheckScore);
