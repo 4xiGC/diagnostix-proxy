@@ -304,10 +304,10 @@ When writing perceptionGap: ONLY include if there is a significant divergence (e
       : `OWNER-REPORTED BUSINESS METRICS: not provided. Return businessRealityAnalysis as empty string "" and perceptionGap as empty string "".`;
     console.log('[diagnose] business metrics in prompt:', hasAnyBM ? 'yes' : 'no');
     console.log('[diagnose] claude part1...');
-    const p1 = await claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${sv}\n\n${bmBlock}\n\nReturn JSON. Use WebData for scores. Use Owner Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what owner thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between owner perception and reality). businessRealityAnalysis and perceptionGap follow the rules above.\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real"},{"name":"Yelp","score":65,"note":"real"},{"name":"TripAdvisor","score":55,"note":"real"},{"name":"OpenTable","score":60,"note":"real"},{"name":"Social Media","score":50,"note":"real"},{"name":"Delivery Platforms","score":35,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence","businessRealityAnalysis":"","perceptionGap":""}\nRules:good>=65 warn=45-64 bad<45 scoreVerdict=Excellent/Good/Fair/Needs Attention. NOTE: Do NOT change the healthCheckScore or pillar scores based on businessMetrics — the score remains qualitative+web-data driven. Financial metrics are reported separately via businessRealityAnalysis and perceptionGap.`);
+    const p1 = await claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${sv}\n\n${bmBlock}\n\nReturn JSON. Use WebData for scores. Use Owner Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what owner thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between owner perception and reality). businessRealityAnalysis and perceptionGap follow the rules above. When business metrics are provided, ALSO populate pillarGapNarratives with one short sentence per relevant pairing (guest count ↔ Customer Sentiment pillar; average check ↔ Pricing & Accessibility pillar; profitability ↔ Brand Experience & Growth pillar). Each narrative should be 1 punchy sentence interpreting the gap or alignment between the financial metric and the qualitative pillar score. If a metric is not provided, return empty string "" for its narrative.\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real"},{"name":"Yelp","score":65,"note":"real"},{"name":"TripAdvisor","score":55,"note":"real"},{"name":"OpenTable","score":60,"note":"real"},{"name":"Social Media","score":50,"note":"real"},{"name":"Delivery Platforms","score":35,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence","businessRealityAnalysis":"","perceptionGap":"","pillarGapNarratives":{"guest":"","check":"","profit":""}}\nRules:good>=65 warn=45-64 bad<45 scoreVerdict=Excellent/Good/Fair/Needs Attention. NOTE: Do NOT change the healthCheckScore or pillar scores based on businessMetrics — the score remains qualitative+web-data driven. Financial metrics are reported separately via businessRealityAnalysis, perceptionGap, and pillarGapNarratives.`);
     console.log('[diagnose] p1 score:', p1.healthCheckScore);
     console.log('[diagnose] claude part2...');
-    const p2 = await claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${bmBlock}\n\nReturn JSON with real data. When business metrics are provided above, factor them into the actions array — e.g. declining guest count suggests acquisition actions; declining check size suggests pricing/menu actions; declining profitability with stable revenue suggests cost-control actions. Integrate financial-driven actions naturally into the existing action list (do not create a separate list).\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real","score":68,"note":"data"},{"name":"real","score":62,"note":"data"},{"name":"real","score":71,"note":"data"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}]}`);
+    const p2 = await claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${bmBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven specifically by the business metrics provided. Only populate when at least one metric is given; return empty array [] if none provided. Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific financial metric that drove the recommendation, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance: declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real","score":68,"note":"data"},{"name":"real","score":62,"note":"data"},{"name":"real","score":71,"note":"data"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`);
     console.log('[diagnose] p2 actions:', p2.actions?.length);
     const report = Object.assign({}, p1, p2);
     if (!report.healthCheckScore || !report.pillars) throw new Error('missing fields: '+Object.keys(report).join(','));
@@ -931,7 +931,7 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
     ${sentimentGap ? '<div class="gap-block"><div class="gap-label">Gap to close</div><div class="gap-text">' + esc(sentimentGap) + '</div></div>' : ''}
   ` : '';
 
-  // Business reality block — financial metrics + AI's integrated analysis.
+  // Business reality block — financial metrics + pillar pairings + AI's analysis.
   // Renders only when at least one financial metric is present on the subscriber row.
   // Color bands: red when worse than -5%, amber -5% to 0%, green >= 0%. Profitability widens slightly.
   const guestChg  = (typeof subscriber.guest_count_change   === 'number') ? subscriber.guest_count_change   : null;
@@ -962,15 +962,76 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
         <div style="font-size:11px;color:#888;margin-top:2px">vs same time last year</div>
       </div>`;
   };
+
+  // Pillar pairing mini-grid — pairs each financial metric with the qualitative pillar
+  // most relevant to it. Helps operators see at a glance whether perception matches reality.
+  // Pairing logic (justified in the prompt):
+  //   Guest count       ↔ Customer Sentiment (cs)
+  //   Average check     ↔ Pricing & Accessibility (pa)
+  //   Profitability     ↔ Brand Experience & Growth (bg)
+  const pp = report?.pillars || {};
+  const pillarColor = (s) => s === 'good' ? 'var(--green)' : s === 'bad' ? 'var(--red)' : 'var(--amber)';
+  const pillarPairRow = (metricVal, metricLabel, metricRedAt, metricAmberAt, pillarObj, gapNarrative) => {
+    if (metricVal === null) return ''; // skip if metric not tracked
+    if (!pillarObj || typeof pillarObj.score !== 'number') return '';
+    const mColor = bandColor(metricVal, metricRedAt, metricAmberAt);
+    const pColor = pillarColor(pillarObj.status);
+    const sign = metricVal >= 0 ? '+' : '';
+    return `
+      <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:18px;align-items:center;background:#f7f5f0;padding:14px 18px;margin:8px 0;border-radius:8px">
+        <div style="text-align:left">
+          <div style="font-size:10px;letter-spacing:1.5px;color:#666;text-transform:uppercase;font-weight:700;margin-bottom:4px">${esc(metricLabel)}</div>
+          <div style="font-size:22px;font-weight:900;color:${mColor};font-family:'League Spartan',Arial,sans-serif;line-height:1">${sign}${metricVal}%</div>
+        </div>
+        <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1.5px;font-weight:700">vs</div>
+        <div style="text-align:right">
+          <div style="font-size:10px;letter-spacing:1.5px;color:#666;text-transform:uppercase;font-weight:700;margin-bottom:4px">${esc(pillarObj.label || '')}</div>
+          <div style="font-size:22px;font-weight:900;color:${pColor};font-family:'League Spartan',Arial,sans-serif;line-height:1">${pillarObj.score}<span style="font-size:13px;color:#999;font-weight:500">/100</span></div>
+        </div>
+        ${gapNarrative ? '<div style="grid-column:1/-1;font-size:13px;color:#333;line-height:1.6;padding-top:8px;border-top:1px solid #e8e3d8">' + esc(gapNarrative) + '</div>' : ''}
+      </div>`;
+  };
+
+  // AI provides pillarGapNarratives — one short sentence per pairing explaining the gap
+  const pgn = report?.pillarGapNarratives || {};
+  const pillarPairings = hasAnyBM ? [
+    pillarPairRow(guestChg,  'Guest Count',   -10, 0, pp.cs, pgn.guest),
+    pillarPairRow(checkChg,  'Average Check', -3,  0, pp.pa, pgn.check),
+    pillarPairRow(profitChg, 'Profitability', -5,  0, pp.bg, pgn.profit)
+  ].filter(Boolean).join('') : '';
+
   const businessRealityBlock = hasAnyBM ? `
-    <h2 class="rpt-h">Business Reality Check</h2>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+    <h2 class="rpt-h">Financial Reality vs Operational Reality</h2>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">
       ${metricChip(guestChg,  'Guest Count',     -10, 0)}
       ${metricChip(checkChg,  'Average Check',   -3,  0)}
       ${metricChip(profitChg, 'Profitability',   -5,  0)}
     </div>
-    ${businessAnalysis ? '<p class="body-p" style="margin-bottom:14px">' + esc(businessAnalysis) + '</p>' : ''}
-    ${perceptionGap ? '<div class="gap-block" style="background:#fff8ec;border-left:4px solid var(--amber)"><div class="gap-label" style="color:#a85d00">Perception vs reality</div><div class="gap-text">' + esc(perceptionGap) + '</div></div>' : ''}
+    ${businessAnalysis ? '<p class="body-p" style="margin:8px 0 16px">' + esc(businessAnalysis) + '</p>' : ''}
+    ${pillarPairings ? '<div style="margin:14px 0 10px;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#666;font-weight:700">Where your numbers and your self-assessment meet</div>' + pillarPairings : ''}
+    ${perceptionGap ? '<div class="gap-block" style="background:#fff8ec;border-left:4px solid var(--amber);margin-top:14px"><div class="gap-label" style="color:#a85d00">Perception vs reality</div><div class="gap-text">' + esc(perceptionGap) + '</div></div>' : ''}
+  ` : '';
+
+  // Commercial recommendations block — distinct from operational actions.
+  // Renders only when AI produced commercialActions AND at least one financial metric was provided.
+  const commercialActions = Array.isArray(report?.commercialActions) ? report.commercialActions : [];
+  const commercialActionsBlock = (hasAnyBM && commercialActions.length) ? `
+    <h2 class="rpt-h">Commercial Recommendations</h2>
+    <p class="body-p" style="margin:0 0 14px;color:#666;font-size:13px">Actions tied directly to your financial reality. These complement &mdash; not replace &mdash; the operational actions below.</p>
+    ${commercialActions.slice(0, 3).map((a, idx) => {
+      const evidence = a.evidence || '';
+      return `
+        <div style="background:#f7f5f0;border-left:3px solid var(--magenta);padding:18px 22px;margin:10px 0;border-radius:0 8px 8px 0">
+          <div style="display:flex;align-items:flex-start;gap:14px">
+            <div style="font-family:'League Spartan',Arial,sans-serif;font-weight:900;font-size:24px;color:var(--magenta);line-height:1;min-width:32px">C${idx + 1}</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:900;font-size:14px;color:var(--navy);letter-spacing:.3px;margin-bottom:6px">${esc(a.title || '')}</div>
+              <div style="font-size:13.5px;line-height:1.65;color:#444;margin-bottom:8px">${esc(a.desc || '')}</div>
+              ${evidence ? '<div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--magenta);font-weight:700;background:#fbf2fa;padding:6px 10px;border-radius:4px;display:inline-block">Tied to: ' + esc(evidence) + '</div>' : ''}
+            </div>
+          </div>
+        </div>`;
+    }).join('')}
   ` : '';
 
   const metaParts = [cuisine, price, location, reportLabel].filter(Boolean);
@@ -1394,6 +1455,8 @@ ul.bullet-list li{margin:4px 0}
     ` : ''}
 
     ${ownerBlock}
+
+    ${commercialActionsBlock}
 
     ${actionsHtml ? `
       <h2 class="rpt-h">Recommended Actions</h2>
