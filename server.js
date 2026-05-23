@@ -23,14 +23,113 @@ const annualSubscribers = new Map();
 
 // ── SHARED HELPERS (Serper + Claude) ─────────────────────────
 // Lifted out so both /diagnose and generateProgressReport can use them.
-async function search(q) {
+// ── REGION-AWARE PLATFORMS ───────────────────────────────────
+// Different regions use different review/delivery/employer platforms.
+// We map the user-entered country to a region, then build queries tailored
+// to that region's dominant platforms. Each query category has a fallback
+// chain (region-specific → generic) so non-mapped regions still get coverage.
+//
+// Phase 1 covers US (default) and LATAM. Phase 2 will add EU, UK, APAC, MENA.
+function getRegion(country) {
+  if (!country) return 'US';
+  const c = String(country).trim().toLowerCase();
+  const LATAM = [
+    'chile','argentina','uruguay','peru','colombia','mexico','méxico',
+    'brazil','brasil','ecuador','bolivia','paraguay','venezuela',
+    'costa rica','panama','panamá','dominican republic','república dominicana',
+    'guatemala','honduras','nicaragua','el salvador','cuba','puerto rico'
+  ];
+  if (LATAM.includes(c)) return 'LATAM';
+  // Default to US-style queries for everything else for now. Add more regions in Phase 2.
+  return 'US';
+}
+
+// Per-region query templates. Each category returns an ARRAY of progressive
+// fallback queries (most specific → most generic). The first to yield enough
+// content wins; if all fall below threshold, the longest result is used.
+// Tokens: ${name}, ${location} are substituted by the caller.
+function buildRegionQueries(region, name, location) {
+  if (region === 'LATAM') {
+    return {
+      GOOGLE: [
+        `${name} ${location} restaurante`,
+        `${name} ${location}`
+      ],
+      REVIEWS: [
+        `${name} ${location} opiniones TripAdvisor Google`,
+        `${name} ${location} reseñas restaurante`,
+        `${name} ${location} reviews`
+      ],
+      STAFF: [
+        `${name} Computrabajo empleos`,
+        `${name} LinkedIn empleados`,
+        `${name} ${location} trabajar`
+      ],
+      SOCIAL: [
+        `${name} Instagram Facebook ${location}`,
+        `${name} redes sociales`,
+        `${name} @ ${location}`
+      ],
+      DELIVERY: [
+        `${name} PedidosYa Rappi iFood delivery`,
+        `${name} ${location} delivery menú`,
+        `${name} ${location} domicilio`
+      ],
+      COMPETITORS: [
+        `mejores restaurantes ${location} competencia ${name}`,
+        `restaurantes ${location} similares ${name}`,
+        `best restaurants ${location} competitors ${name}`
+      ]
+    };
+  }
+  // Default: US/global platforms
+  return {
+    GOOGLE: [
+      `${name} ${location} restaurant`,
+      `${name} ${location}`
+    ],
+    REVIEWS: [
+      `${name} ${location} reviews TripAdvisor Yelp OpenTable`,
+      `${name} ${location} restaurant reviews`,
+      `${name} ${location} ratings`
+    ],
+    STAFF: [
+      `${name} Glassdoor Indeed employees`,
+      `${name} ${location} employees jobs`,
+      `${name} ${location} working`
+    ],
+    SOCIAL: [
+      `${name} Instagram Facebook social media`,
+      `${name} ${location} social`,
+      `${name} @`
+    ],
+    DELIVERY: [
+      `${name} Uber Eats DoorDash Grubhub delivery`,
+      `${name} ${location} delivery menu`,
+      `${name} ${location} order online`
+    ],
+    COMPETITORS: [
+      `best restaurants ${location} competitors ${name}`,
+      `restaurants near ${location} similar to ${name}`,
+      `top restaurants ${location}`
+    ]
+  };
+}
+
+// search() — Google search via Serper. Returns a text blob for the AI to read.
+// Logging: per-query timing and result length so empty results are diagnosable from Railway logs.
+// Returns the literal string 'no data' on empty (or 'no api key' / 'err:...' on failure).
+async function search(q, opts) {
+  opts = opts || {};
+  const label = opts.label || 'search';
   const sk = process.env.SERPER_API_KEY;
-  if (!sk) return 'no api key';
+  if (!sk) { console.log(`[serper] ${label} q="${q}" → NO API KEY`); return 'no api key'; }
+  const t0 = Date.now();
   try {
     const r = await fetch('https://google.serper.dev/search', {
       method: 'POST',
       headers: { 'X-API-KEY': sk, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q, num: 5 })
+      body: JSON.stringify({ q, num: 10 })
     });
     const d = await r.json();
     let o = '';
@@ -38,9 +137,45 @@ async function search(q) {
       const kg = d.knowledgeGraph;
       o += `[${kg.title||''}] Rating:${kg.rating||'N/A'} (${kg.reviewCount||0} reviews) ${kg.description||''}\n`;
     }
-    (d.organic||[]).slice(0,4).forEach(i => { o += `${i.title}: ${i.snippet||''}\n`; });
-    return o || 'no data';
-  } catch(e) { return 'err:'+e.message; }
+    (d.organic||[]).slice(0,8).forEach(i => { o += `${i.title}: ${i.snippet||''}\n`; });
+    const ms = Date.now() - t0;
+    const out = o || 'no data';
+    const flag = (out === 'no data') ? ' EMPTY' : '';
+    console.log(`[serper] ${label} q="${q.slice(0,80)}" → ${out.length}ch ${ms}ms${flag}`);
+    return out;
+  } catch(e) {
+    const ms = Date.now() - t0;
+    console.log(`[serper] ${label} q="${q.slice(0,80)}" → ERR ${ms}ms ${e.message}`);
+    return 'err:'+e.message;
+  }
+}
+
+// searchWithFallback() — try progressive queries until one yields substantive content.
+// `queries` is an array ordered from most-specific to most-general.
+// Returns the first result with > MIN_CHARS of content. If all fall below threshold,
+// returns the best (longest) attempt rather than 'no data'.
+// MIN_CHARS = 120: filters out lone knowledge-graph one-liners that don't give the AI
+// enough to triangulate from. Tune up if reports remain thin; tune down if too aggressive.
+const FALLBACK_MIN_CHARS = 120;
+async function searchWithFallback(queries, opts) {
+  opts = opts || {};
+  const label = opts.label || 'search';
+  let best = { out: 'no data', len: 0, attempt: 0 };
+  for (let i = 0; i < queries.length; i++) {
+    const out = await search(queries[i], { label: `${label} try${i+1}/${queries.length}` });
+    const usable = (out && out !== 'no data' && out !== 'no api key' && !out.startsWith('err:'));
+    if (usable && out.length >= FALLBACK_MIN_CHARS) {
+      if (i > 0) console.log(`[serper] ${label} RECOVERED on attempt ${i+1}/${queries.length}`);
+      return out;
+    }
+    if (usable && out.length > best.len) best = { out, len: out.length, attempt: i+1 };
+  }
+  if (best.len > 0) {
+    console.log(`[serper] ${label} BELOW THRESHOLD — returning best attempt (${best.attempt}/${queries.length}, ${best.len}ch)`);
+    return best.out;
+  }
+  console.log(`[serper] ${label} EXHAUSTED — all ${queries.length} attempts empty`);
+  return 'no data';
 }
 
 async function claude(prompt) {
@@ -176,6 +311,24 @@ async function sendInternalSummaryEmail({ subscriber, report, reportNumber, surv
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
+  // Business metrics — show each metric, or "(not tracked)" when user opted out.
+  // This tells you at a glance whether the user shared financials or skipped them,
+  // distinct from "flat YoY" (which is also a legitimate response of 0%).
+  const fmtBM = (v) => {
+    if (v === null || v === undefined || !isFinite(v)) return '<span style="color:#999;font-style:italic">not tracked</span>';
+    const sign = v >= 0 ? '+' : '';
+    const col = v < 0 ? '#C0392B' : v > 0 ? '#2E7D52' : '#666';
+    return `<span style="color:${col};font-weight:700">${sign}${v}%</span>`;
+  };
+  const guestBM  = (typeof subscriber.guest_count_change   === 'number') ? subscriber.guest_count_change   : null;
+  const checkBM  = (typeof subscriber.avg_check_change     === 'number') ? subscriber.avg_check_change     : null;
+  const profitBM = (typeof subscriber.profitability_change === 'number') ? subscriber.profitability_change : null;
+  const bmShared = [guestBM, checkBM, profitBM].filter(v => v !== null).length;
+  const bmRow = `<strong>Business metrics:</strong> ${bmShared}/3 shared
+    <pre style="font-family:'SF Mono',Consolas,Menlo,monospace;font-size:13px;background:#f7f5f0;padding:10px 14px;border-radius:6px;margin:6px 0 14px;white-space:pre-wrap;line-height:1.7">  Guest count:    ${fmtBM(guestBM)}
+  Average check:  ${fmtBM(checkBM)}
+  Profitability:  ${fmtBM(profitBM)}</pre>`;
+
   // Plain-text body wrapped in minimal HTML (so Resend accepts + email clients render mono-friendly)
   const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f5f5f5;font-family:-apple-system,Segoe UI,Arial,sans-serif">
 <div style="max-width:560px;margin:0 auto;background:#fff;padding:24px 28px;border-radius:8px;border:1px solid #e5e5e5">
@@ -192,6 +345,7 @@ async function sendInternalSummaryEmail({ subscriber, report, reportNumber, surv
     <br>
     <strong>Overall Score:</strong> <span style="font-weight:900;color:${score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24'}">${score} / 100</span> ${verdict ? '— ' + escE(verdict) : ''}<br>
     <br>
+    ${bmRow}
     <strong>Pillars:</strong>
     <pre style="font-family:'SF Mono',Consolas,Menlo,monospace;font-size:13px;background:#f7f5f0;padding:12px 14px;border-radius:6px;margin:6px 0 14px;white-space:pre-wrap">${escE(pillarRows || '(none)')}</pre>
     <a href="${link}" style="display:inline-block;background:#1B1464;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:700;font-size:13px;letter-spacing:0.5px">View Full Report &rarr;</a>
@@ -257,17 +411,28 @@ app.post('/diagnose', async (req, res) => {
   console.log(`[diagnose] ${name} | ${location}`);
 
   try {
+    const tSearch = Date.now();
+    // Extract country from location (form sends "City, State, Country") → resolve region.
+    const locParts = location.split(',').map(s => s.trim()).filter(Boolean);
+    const country = locParts.length > 0 ? locParts[locParts.length - 1] : '';
+    const region = getRegion(country);
+    console.log(`[diagnose] region=${region} (country=${country || 'none'})`);
+    const queries = buildRegionQueries(region, name, location);
     console.log('[diagnose] searching...');
     const [g,rv,st,so,dl,co] = await Promise.all([
-      search(`"${name}" ${location} restaurant`),
-      search(`"${name}" ${location} reviews TripAdvisor Yelp OpenTable`),
-      search(`"${name}" Glassdoor Indeed employees`),
-      search(`"${name}" Instagram Facebook social media`),
-      search(`"${name}" Uber Eats DoorDash delivery`),
-      search(`best restaurants ${location} competitors ${name}`)
+      searchWithFallback(queries.GOOGLE,      { label: 'GOOGLE' }),
+      searchWithFallback(queries.REVIEWS,     { label: 'REVIEWS' }),
+      searchWithFallback(queries.STAFF,       { label: 'STAFF' }),
+      searchWithFallback(queries.SOCIAL,      { label: 'SOCIAL' }),
+      searchWithFallback(queries.DELIVERY,    { label: 'DELIVERY' }),
+      searchWithFallback(queries.COMPETITORS, { label: 'COMPETITORS' })
     ]);
     const web = `GOOGLE:${g}\nREVIEWS:${rv}\nSTAFF:${st}\nSOCIAL:${so}\nDELIVERY:${dl}\nCOMPETITORS:${co}`;
-    console.log('[diagnose] web len:', web.length, '| google:', g.slice(0,80));
+    // Scraping summary: count which categories returned 'no data' so empty-report cases are visible in logs.
+    const cats = { GOOGLE:g, REVIEWS:rv, STAFF:st, SOCIAL:so, DELIVERY:dl, COMPETITORS:co };
+    const empties = Object.entries(cats).filter(([k,v]) => v === 'no data' || v === 'no api key' || v.startsWith('err:')).map(([k]) => k);
+    const ok = 6 - empties.length;
+    console.log(`[diagnose] scraping summary: ${ok}/6 succeeded, ${Date.now()-tSearch}ms total, ${web.length} chars` + (empties.length ? ` | EMPTY: ${empties.join(',')}` : ''));
     const sv = `REVIEWER SELF-ASSESSMENT (1=low 10=high):
 - Overall business performance satisfaction: ${s.perf||5}/10
 - Customer volume vs capacity: ${s.cap||5}/10
@@ -281,35 +446,50 @@ app.post('/diagnose', async (req, res) => {
 - 12-month business optimism: ${s.future||5}/10
 Reviewer average score: ${Math.round(Object.values(s).reduce((a,b)=>a+(b||5),0)/10*10)/10}/10`;
 
-    // Build optional business-metrics block. Operators self-report year-over-year changes.
-    // Financial metrics arrive as sliders — always have a value (default 0 = "same as last year").
-    // We still defensively coerce in case of missing field; treat null/undefined as 0.
+    // Build business-metrics block. Each metric is either:
+    //   - a number (user moved the slider; 0 = "flat YoY", -5 = "down 5%", etc.)
+    //   - null (user checked "I don't track this metric")
+    // Null is preserved end-to-end so the AI knows the difference between
+    // "user reports flat" (real signal) and "user didn't share" (no signal).
     const bm = body.businessMetrics || {};
-    const num = (v) => (typeof v === 'number' && isFinite(v)) ? v : 0;
-    const guestN  = num(bm.guestCountChange);
-    const checkN  = num(bm.avgCheckChange);
-    const profitN = num(bm.profitabilityChange);
-    const fmtPct = (v) => (v >= 0 ? '+' : '') + v + '%';
-    const bmBlock = `REVIEWER-REPORTED BUSINESS METRICS (year-over-year change, from sliders — default 0 means "same as last year"):
+    const isNum = (v) => (typeof v === 'number' && isFinite(v));
+    const guestN  = isNum(bm.guestCountChange)    ? bm.guestCountChange    : null;
+    const checkN  = isNum(bm.avgCheckChange)      ? bm.avgCheckChange      : null;
+    const profitN = isNum(bm.profitabilityChange) ? bm.profitabilityChange : null;
+    const providedCount = [guestN, checkN, profitN].filter(v => v !== null).length;
+    const fmtPct = (v) => v === null ? 'Not tracked (user opted out)' : (v >= 0 ? '+' : '') + v + '%';
+
+    // If user opted out of ALL three metrics, suppress the entire financial block
+    // from the prompt so the AI won't fabricate financial commentary. The prompt
+    // explicitly tells the AI: in this case, leave all financial-related fields empty.
+    let bmBlock;
+    if (providedCount === 0) {
+      bmBlock = `REVIEWER-REPORTED BUSINESS METRICS: The user opted out of sharing all three financial metrics (guest count, average check, profitability).
+CRITICAL: Return empty string "" for businessRealityAnalysis, empty string "" for perceptionGap, and empty strings "" for ALL pillarGapNarratives entries. Do NOT fabricate financial commentary. The report will fall back to qualitative analysis only.`;
+    } else {
+      bmBlock = `REVIEWER-REPORTED BUSINESS METRICS (year-over-year change):
 - Guest count change:    ${fmtPct(guestN)}
 - Average check change:  ${fmtPct(checkN)}
 - Profitability change:  ${fmtPct(profitN)}
 
-CRITICAL — INTEGRATE QUALITATIVE WITH QUANTITATIVE:
-These financial metrics are TIER-1 evidence (real business reality). You MUST blend them with the qualitative pillar scores and web data to produce holistic findings, not isolated commentary. Examples of the integration we want:
+CRITICAL — INTEGRATE QUALITATIVE WITH QUANTITATIVE, BUT ONLY FOR METRICS THE USER SHARED:
+A metric marked "Not tracked (user opted out)" means the user did NOT share that number. You MUST NOT mention or analyze it. Do NOT speculate about its value. Do NOT include it in businessRealityAnalysis. Return empty string "" for its pillarGapNarratives entry.
+
+For metrics the user DID share (those with a percentage value): blend them with the qualitative pillar scores and web data to produce holistic findings. Examples:
   • If guest count is down but Customer Sentiment pillar is high → "Sentiment among existing customers is strong, but acquisition is failing. The issue isn't the experience, it's getting people through the door."
   • If average check is down but Pricing pillar is high → "Pricing strategy reads well from the menu, but operators aren't capturing the upside in real ticket value — likely an upselling or menu-mix execution gap."
   • If profitability is down but revenue stable → "Top line holds but margins erode — this is a cost-control problem, not a demand problem."
-  • If all three are flat (0% / 0% / 0%) → operator likely defaulted the sliders; treat financials as a "stable baseline" signal and lean more on qualitative+web evidence in the analysis.
+  • If all shared metrics are flat (0%) → treat as a "stable baseline" signal and lean more on qualitative+web evidence.
 
-When writing businessRealityAnalysis: 2-3 sentences that EXPLICITLY weave the financial numbers together with the relevant qualitative pillars. Name the pillars. Show how the numbers either confirm or contradict the qualitative picture.
-When writing perceptionGap: 1-2 sentences ONLY if there is a meaningful divergence between reviewer self-perception and financial reality. If broadly aligned (or all metrics ~0), return empty string "".`;
-    console.log('[diagnose] business metrics:', fmtPct(guestN), '|', fmtPct(checkN), '|', fmtPct(profitN));
+When writing businessRealityAnalysis: 2-3 sentences that EXPLICITLY weave the SHARED financial numbers together with the relevant qualitative pillars. Name the pillars. Show how the numbers either confirm or contradict the qualitative picture. Only reference metrics the user actually shared.
+When writing perceptionGap: 1-2 sentences ONLY if there is a meaningful divergence between reviewer self-perception and the shared financial reality. If broadly aligned, or if fewer than 2 metrics were shared, return empty string "".`;
+    }
+    console.log('[diagnose] business metrics:', fmtPct(guestN), '|', fmtPct(checkN), '|', fmtPct(profitN), '| provided:', providedCount + '/3');
     console.log('[diagnose] claude part1...');
     const p1 = await claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${sv}\n\n${bmBlock}\n\nReturn JSON. Use WebData for scores. Use Reviewer Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what the reviewer thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between reviewer perception and reality). businessRealityAnalysis and perceptionGap follow the rules above. When business metrics are provided, ALSO populate pillarGapNarratives with one short sentence per relevant pairing (guest count ↔ Customer Sentiment pillar; average check ↔ Pricing & Accessibility pillar; profitability ↔ Brand Experience & Growth pillar). Each narrative should be 1 punchy sentence interpreting the gap or alignment between the financial metric and the qualitative pillar score. If a metric is not provided, return empty string "" for its narrative.\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real"},{"name":"Yelp","score":65,"note":"real"},{"name":"TripAdvisor","score":55,"note":"real"},{"name":"OpenTable","score":60,"note":"real"},{"name":"Social Media","score":50,"note":"real"},{"name":"Delivery Platforms","score":35,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence","businessRealityAnalysis":"","perceptionGap":"","pillarGapNarratives":{"guest":"","check":"","profit":""}}\nRules:good>=65 warn=45-64 bad<45 scoreVerdict=Excellent/Good/Fair/Needs Attention. NOTE: Do NOT change the healthCheckScore or pillar scores based on businessMetrics — the score remains qualitative+web-data driven. Financial metrics are reported separately via businessRealityAnalysis, perceptionGap, and pillarGapNarratives.`);
     console.log('[diagnose] p1 score:', p1.healthCheckScore);
     console.log('[diagnose] claude part2...');
-    const p2 = await claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${bmBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven specifically by the business metrics provided. Only populate when at least one metric is given; return empty array [] if none provided. Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific financial metric that drove the recommendation, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance: declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real","score":68,"note":"data"},{"name":"real","score":62,"note":"data"},{"name":"real","score":71,"note":"data"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`);
+    const p2 = await claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${bmBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven SPECIFICALLY by the business metrics the user SHARED. Rules: (a) If the businessMetrics block says all metrics are "Not tracked (user opted out)", return empty array []. (b) Each item MUST reference only a metric the user actually shared — never reference a "Not tracked" metric or speculate about one. (c) Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific shared financial metric, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance (only for shared metrics): declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real","score":68,"note":"data"},{"name":"real","score":62,"note":"data"},{"name":"real","score":71,"note":"data"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`);
     console.log('[diagnose] p2 actions:', p2.actions?.length);
     const report = Object.assign({}, p1, p2);
     if (!report.healthCheckScore || !report.pillars) throw new Error('missing fields: '+Object.keys(report).join(','));
@@ -1767,15 +1947,24 @@ async function generateProgressReport(sub) {
   console.log('[annual] Generating report', reportNumber, 'for:', email);
 
   try {
+    const tSearch2 = Date.now();
+    const locParts2 = String(location || '').split(',').map(s => s.trim()).filter(Boolean);
+    const country2 = locParts2.length > 0 ? locParts2[locParts2.length - 1] : '';
+    const region2 = getRegion(country2);
+    console.log(`[annual] region=${region2} (country=${country2 || 'none'})`);
+    const queries2 = buildRegionQueries(region2, restaurantName, location);
     const [g, rv, st, so, dl, co] = await Promise.all([
-      search(`"${restaurantName}" ${location} restaurant`),
-      search(`"${restaurantName}" ${location} reviews TripAdvisor Yelp OpenTable`),
-      search(`"${restaurantName}" Glassdoor Indeed employees`),
-      search(`"${restaurantName}" Instagram Facebook social media`),
-      search(`"${restaurantName}" Uber Eats DoorDash delivery`),
-      search(`best restaurants ${location} competitors ${restaurantName}`)
+      searchWithFallback(queries2.GOOGLE,      { label: 'GOOGLE-progress' }),
+      searchWithFallback(queries2.REVIEWS,     { label: 'REVIEWS-progress' }),
+      searchWithFallback(queries2.STAFF,       { label: 'STAFF-progress' }),
+      searchWithFallback(queries2.SOCIAL,      { label: 'SOCIAL-progress' }),
+      searchWithFallback(queries2.DELIVERY,    { label: 'DELIVERY-progress' }),
+      searchWithFallback(queries2.COMPETITORS, { label: 'COMPETITORS-progress' })
     ]);
     const web = `GOOGLE:${g}\nREVIEWS:${rv}\nSTAFF:${st}\nSOCIAL:${so}\nDELIVERY:${dl}\nCOMPETITORS:${co}`;
+    const cats2 = { GOOGLE:g, REVIEWS:rv, STAFF:st, SOCIAL:so, DELIVERY:dl, COMPETITORS:co };
+    const empties2 = Object.entries(cats2).filter(([k,v]) => v === 'no data' || v === 'no api key' || v.startsWith('err:')).map(([k]) => k);
+    console.log(`[annual] scraping summary: ${6 - empties2.length}/6 succeeded, ${Date.now()-tSearch2}ms` + (empties2.length ? ` | EMPTY: ${empties2.join(',')}` : ''));
 
     const baselineCtx = `BASELINE REPORT (${new Date(baseline.generatedAt).toLocaleDateString()}):
 - HealthCheck Score: ${baseline.report.healthCheckScore}/100 (${baseline.report.scoreVerdict})
