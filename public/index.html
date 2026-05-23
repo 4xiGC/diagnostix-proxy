@@ -77,6 +77,12 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .metric-section-sub{font-size:12px;color:var(--sur-muted);margin-bottom:14px;line-height:1.55;font-style:italic}
 .metric-slider-row{display:flex;align-items:center;gap:12px;margin-top:4px}
 .metric-slider{flex:1;cursor:pointer;accent-color:var(--navy2);height:5px}
+.metric-skip-row{display:flex;align-items:center;gap:7px;margin-top:8px;margin-bottom:2px;font-size:12px;color:#666;user-select:none}
+.metric-skip-row input[type="checkbox"]{cursor:pointer;accent-color:var(--navy2);margin:0}
+.metric-skip-row label{cursor:pointer;line-height:1.3}
+.metric-disabled .metric-slider{opacity:.35;pointer-events:none;cursor:not-allowed}
+.metric-disabled .metric-val{color:#bbb !important;text-decoration:line-through}
+.metric-disabled .metric-ends{opacity:.5}
 .metric-val{font-family:'League Spartan',sans-serif;font-size:1.35rem;min-width:64px;text-align:center;font-weight:700;transition:color 0.2s;background:#f4f1ec;border-radius:6px;padding:2px 8px}
 .metric-ends{display:flex;justify-content:space-between;margin-top:6px;align-items:center}
 .metric-end-lbl{font-size:10px;color:#999;letter-spacing:0.04em;font-weight:600}
@@ -343,10 +349,14 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   <div class="metric-section-eyebrow">Business Performance Metrics</div>
   <div class="metric-section-sub">How does your business compare to the same time last year? Slide to the right for growth, left for decline, or leave at the centre if it&rsquo;s broadly the same.</div>
 
-  <div class="q-card">
+  <div class="q-card" id="mc-guest">
     <div class="q-num">Metric 1 of 3</div>
     <div class="q-text">Guest count change vs same time last year</div>
     <div class="q-hint">Roughly how is your traffic this year compared to last?</div>
+    <div class="metric-skip-row">
+      <input type="checkbox" id="f-guest-skip" onchange="onSkipMetric('guest')"/>
+      <label for="f-guest-skip">I don&rsquo;t track this metric</label>
+    </div>
     <div class="metric-slider-row">
       <input type="range" min="-30" max="30" value="0" step="1" class="metric-slider" id="f-guest-change" oninput="onMetricSlider('guest', -30, 30)"/>
       <div class="metric-val" id="mv-guest" style="color:#888">0%</div>
@@ -358,10 +368,14 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
     </div>
   </div>
 
-  <div class="q-card">
+  <div class="q-card" id="mc-check">
     <div class="q-num">Metric 2 of 3</div>
     <div class="q-text">Average check change vs same time last year</div>
     <div class="q-hint">Is the typical ticket size up or down vs last year?</div>
+    <div class="metric-skip-row">
+      <input type="checkbox" id="f-check-skip" onchange="onSkipMetric('check')"/>
+      <label for="f-check-skip">I don&rsquo;t track this metric</label>
+    </div>
     <div class="metric-slider-row">
       <input type="range" min="-15" max="15" value="0" step="1" class="metric-slider" id="f-check-change" oninput="onMetricSlider('check', -15, 15)"/>
       <div class="metric-val" id="mv-check" style="color:#888">0%</div>
@@ -373,10 +387,14 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
     </div>
   </div>
 
-  <div class="q-card">
+  <div class="q-card" id="mc-profit">
     <div class="q-num">Metric 3 of 3</div>
     <div class="q-text">Profitability change vs same time last year</div>
     <div class="q-hint">Are you keeping more or less of what you earn vs last year?</div>
+    <div class="metric-skip-row">
+      <input type="checkbox" id="f-profit-skip" onchange="onSkipMetric('profit')"/>
+      <label for="f-profit-skip">I don&rsquo;t track this metric</label>
+    </div>
     <div class="metric-slider-row">
       <input type="range" min="-25" max="25" value="0" step="1" class="metric-slider" id="f-profit-change" oninput="onMetricSlider('profit', -25, 25)"/>
       <div class="metric-val" id="mv-profit" style="color:#888">0%</div>
@@ -622,16 +640,38 @@ function onMetricSlider(which, min, max) {
   else                    el.style.color = '#2E7D52'; // green
 }
 
+// ── SKIP-METRIC TOGGLE ───────────────────────────────────────
+// User can opt out of any financial metric they don't track.
+// When checked: slider greys out, value sent to backend is null (not 0).
+// The report uses null vs 0 to distinguish "didn't share" from "flat YoY".
+function onSkipMetric(which) {
+  var card = document.getElementById('mc-' + which);
+  var cb   = document.getElementById('f-' + which + '-skip');
+  if (!card || !cb) return;
+  if (cb.checked) {
+    card.classList.add('metric-disabled');
+  } else {
+    card.classList.remove('metric-disabled');
+  }
+}
+
 function gatherData() {
   var city    = document.getElementById('f-loc-city').value.trim();
   var state   = document.getElementById('f-loc-state').value.trim();
   var country = document.getElementById('f-loc-country').value.trim();
   var location = [city, state, country].filter(Boolean).join(', ');
 
-  // Sliders always have a value — default is 0 (= no change vs last year)
-  var guestChange  = parseInt(document.getElementById('f-guest-change').value);
-  var checkChange  = parseInt(document.getElementById('f-check-change').value);
-  var profitChange = parseInt(document.getElementById('f-profit-change').value);
+  // Each financial metric is either a slider value or null (user checked skip).
+  // Null is deliberate: backend uses presence/absence to decide whether to
+  // analyze that metric. A slider at 0 = "flat YoY"; null = "user didn't share".
+  function readMetric(which) {
+    var skipCb = document.getElementById('f-' + which + '-skip');
+    if (skipCb && skipCb.checked) return null;
+    return parseInt(document.getElementById('f-' + which + '-change').value);
+  }
+  var guestChange  = readMetric('guest');
+  var checkChange  = readMetric('check');
+  var profitChange = readMetric('profit');
 
   return {
     name:        document.getElementById('f-name').value.trim(),
@@ -1525,12 +1565,16 @@ function restart(){
   QS.forEach(function(q){ qVals[q.id]=5; });
   document.querySelectorAll('.q-slider').forEach(function(s){ s.value=5; });
   document.querySelectorAll('.q-val').forEach(function(v){ v.textContent='5'; v.style.color='var(--amber)'; });
-  // Reset financial sliders to 0 (= "same as last year")
+  // Reset financial sliders to 0 (= "same as last year") and clear skip checkboxes
   ['guest','check','profit'].forEach(function(w){
     var s = document.getElementById('f-' + w + '-change');
     if (s) s.value = 0;
     var mv = document.getElementById('mv-' + w);
     if (mv) { mv.textContent = '0%'; mv.style.color = '#888'; }
+    var sk = document.getElementById('f-' + w + '-skip');
+    if (sk) sk.checked = false;
+    var card = document.getElementById('mc-' + w);
+    if (card) card.classList.remove('metric-disabled');
   });
   goStep(0);
 }
