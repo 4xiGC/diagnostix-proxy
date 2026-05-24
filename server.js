@@ -694,16 +694,27 @@ async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
 async function sendInternalSummaryEmail({ subscriber, report, reportNumber, survey }) {
   const INTERNAL_TO = 'hello@4xiconsulting.com';
   const baseUrl = process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app';
-  const link = baseUrl + '/report?token=' + subscriber.report_token;
+
+  // Subscriber object can arrive in two shapes:
+  //   - Supabase shape (snake_case): report_token, restaurant_name, first_name, plan_type
+  //   - In-memory shape (camelCase): reportToken, restaurantName, firstName, planType
+  // Read each field with a fallback so the email works in both flows.
+  const subField = (snake, camel) => subscriber[snake] !== undefined ? subscriber[snake] : subscriber[camel];
+  const reportTokenSafe = subField('report_token', 'reportToken') || '';
+  const restaurantNameSafe = subField('restaurant_name', 'restaurantName') || '';
+  const firstNameSafe = subField('first_name', 'firstName') || '';
+  const planTypeSafe = subField('plan_type', 'planType') || '';
+
+  const link = baseUrl + '/report?token=' + reportTokenSafe;
   const score = report?.healthCheckScore ?? 0;
   const verdict = report?.scoreVerdict || '';
-  const restaurant = subscriber.restaurant_name || '(unknown)';
+  const restaurant = restaurantNameSafe || '(unknown)';
   const location = (survey && survey.location) || subscriber.location || '';
   const cuisine = (survey && survey.cuisine) || '';
   const price = (survey && survey.price) || '';
-  const ownerName = subscriber.first_name || '';
+  const ownerName = firstNameSafe;
   const ownerEmail = subscriber.email || '';
-  const isOneOff = subscriber.plan_type === 'one_off';
+  const isOneOff = planTypeSafe === 'one_off';
 
   // Subject: [DiagnostiX] New {full|annual} report: {restaurant} ({location}) — Score {score}
   const planLabel = isOneOff ? 'full' : 'annual';
@@ -794,12 +805,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.9' });
+    res.json({ status: 'running', version: '8.9.10' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.9' });
+  res.json({ status: 'ok', version: '8.9.10' });
 });
 
 app.get('/test', async (req, res) => {
@@ -1163,7 +1174,7 @@ After listing all user-named competitors, you MUST add additional competitors fr
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.9',
+      version: '8.9.10',
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
       serperExtracted: compUserResults.map(r => ({
@@ -1368,7 +1379,18 @@ async function pushReportContextToHubSpot({ subscriber, report, reportNumber, re
   const token = process.env.HUBSPOT_TOKEN;
   if (!token || !subscriber?.email) return;
 
-  const isAnnual = subscriber.plan_type === 'annual';
+  // Subscriber can arrive as Supabase shape (snake_case) or in-memory shape (camelCase).
+  const subField = (snake, camel) => subscriber[snake] !== undefined ? subscriber[snake] : subscriber[camel];
+  const planTypeSafe = subField('plan_type', 'planType') || 'annual';
+  const reportTokenSafe = subField('report_token', 'reportToken') || '';
+  const amountPaidSafe = subField('amount_paid', 'amountPaid') || 0;
+  const subscribedAtRaw = subField('subscribed_at', 'subscribedAt');
+  // subscribedAt in-memory is a ms timestamp; subscribed_at in Supabase is ISO string.
+  const subscribedAtIso = typeof subscribedAtRaw === 'number'
+    ? new Date(subscribedAtRaw).toISOString()
+    : (subscribedAtRaw || new Date().toISOString());
+
+  const isAnnual = planTypeSafe === 'annual';
   const score = report?.healthCheckScore || 0;
   const baselineScore = baseline?.healthCheckScore || 0;
 
@@ -1391,7 +1413,7 @@ async function pushReportContextToHubSpot({ subscriber, report, reportNumber, re
 
   const lifecycle = (() => {
     if (!isAnnual) return 'one_off';
-    const daysSinceSubscribe = Math.floor((Date.now() - new Date(subscriber.subscribed_at).getTime()) / (24*60*60*1000));
+    const daysSinceSubscribe = Math.floor((Date.now() - new Date(subscribedAtIso).getTime()) / (24*60*60*1000));
     if (daysSinceSubscribe < 30) return 'new_buyer';
     if (daysSinceSubscribe >= 365) return 'lapsed';
     if (daysSinceSubscribe >= 305) return 'near_renewal';
@@ -1400,17 +1422,17 @@ async function pushReportContextToHubSpot({ subscriber, report, reportNumber, re
 
   const properties = {
     email: subscriber.email,
-    diagnostix_plan_type:           subscriber.plan_type || 'annual',
+    diagnostix_plan_type:           planTypeSafe,
     diagnostix_subscription_status: subscriber.active === false && isAnnual ? 'expired' : isAnnual ? 'active' : 'completed',
-    diagnostix_amount_paid_usd:     subscriber.amount_paid || 0,
+    diagnostix_amount_paid_usd:     amountPaidSafe,
     diagnostix_report_url:          reportUrl,
-    diagnostix_report_token:        subscriber.report_token,
+    diagnostix_report_token:        reportTokenSafe,
     diagnostix_reports_delivered:   reportNumber,
     diagnostix_latest_score:        score,
     diagnostix_score_trajectory:    trajectory,
     diagnostix_weakest_pillar:      weakestPillar,
     diagnostix_lifecycle_stage:     lifecycle,
-    diagnostix_subscribed_at:       new Date(subscriber.subscribed_at).toISOString().split('T')[0]
+    diagnostix_subscribed_at:       subscribedAtIso.split('T')[0]
   };
 
   if (reportNumber === 1) {
@@ -1486,12 +1508,21 @@ async function pushLastEngaged(email) {
 // ── CUSTOMER WELCOME / REPORT EMAIL ──────────────────────────
 async function sendCustomerReportEmail({ subscriber, report, reportNumber, survey }) {
   const baseUrl = process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app';
-  const link = baseUrl + '/report?token=' + subscriber.report_token;
+
+  // Subscriber object can arrive in two shapes (Supabase snake_case vs in-memory camelCase).
+  // Read each field with a fallback so the email works in both flows.
+  const subField = (snake, camel) => subscriber[snake] !== undefined ? subscriber[snake] : subscriber[camel];
+  const reportTokenSafe = subField('report_token', 'reportToken') || '';
+  const restaurantNameSafe = subField('restaurant_name', 'restaurantName') || 'your restaurant';
+  const firstNameSafe = subField('first_name', 'firstName') || 'there';
+  const planTypeSafe = subField('plan_type', 'planType') || '';
+
+  const link = baseUrl + '/report?token=' + reportTokenSafe;
   const score = report?.healthCheckScore ?? 0;
   const verdict = report?.scoreVerdict || '';
-  const restaurant = subscriber.restaurant_name || 'your restaurant';
-  const firstName = subscriber.first_name || 'there';
-  const isOneOff = subscriber.plan_type === 'one_off';
+  const restaurant = restaurantNameSafe;
+  const firstName = firstNameSafe;
+  const isOneOff = planTypeSafe === 'one_off';
 
   let subject, headline, intro;
   if (isOneOff) {
