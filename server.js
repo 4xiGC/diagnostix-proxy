@@ -470,12 +470,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.5' });
+    res.json({ status: 'running', version: '8.6' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.5' });
+  res.json({ status: 'ok', version: '8.6' });
 });
 
 app.get('/test', async (req, res) => {
@@ -590,7 +590,7 @@ When writing perceptionGap: 1-2 sentences ONLY if there is a meaningful divergen
     const tClaude = Date.now();
     const [p1, p2] = await Promise.all([
       claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${sv}\n\n${bmBlock}\n\nReturn JSON. Use WebData for scores. Use Reviewer Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what the reviewer thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between reviewer perception and reality). businessRealityAnalysis and perceptionGap follow the rules above. When business metrics are provided, ALSO populate pillarGapNarratives with one short sentence per relevant pairing (guest count ↔ Customer Sentiment pillar; average check ↔ Pricing & Accessibility pillar; profitability ↔ Brand Experience & Growth pillar). Each narrative should be 1 punchy sentence interpreting the gap or alignment between the financial metric and the qualitative pillar score. If a metric is not provided, return empty string "" for its narrative.\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real"},{"name":"Yelp","score":65,"note":"real"},{"name":"TripAdvisor","score":55,"note":"real"},{"name":"OpenTable","score":60,"note":"real"},{"name":"Social Media","score":50,"note":"real"},{"name":"Delivery Platforms","score":35,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence","businessRealityAnalysis":"","perceptionGap":"","pillarGapNarratives":{"guest":"","check":"","profit":""}}\nRules:good>=65 warn=45-64 bad<45 scoreVerdict=Excellent/Good/Fair/Needs Attention. NOTE: Do NOT change the healthCheckScore or pillar scores based on businessMetrics — the score remains qualitative+web-data driven. Financial metrics are reported separately via businessRealityAnalysis, perceptionGap, and pillarGapNarratives.`, { label: 'diagnose-p1' }),
-      claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${bmBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven SPECIFICALLY by the business metrics the user SHARED. Rules: (a) If the businessMetrics block says all metrics are "Not tracked (user opted out)", return empty array []. (b) Each item MUST reference only a metric the user actually shared — never reference a "Not tracked" metric or speculate about one. (c) Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific shared financial metric, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance (only for shared metrics): declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real","score":68,"note":"data"},{"name":"real","score":62,"note":"data"},{"name":"real","score":71,"note":"data"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`, { label: 'diagnose-p2', model: 'claude-haiku-4-5-20251001' })
+      claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${bmBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven SPECIFICALLY by the business metrics the user SHARED. Rules: (a) If the businessMetrics block says all metrics are "Not tracked (user opted out)", return empty array []. (b) Each item MUST reference only a metric the user actually shared — never reference a "Not tracked" metric or speculate about one. (c) Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific shared financial metric, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance (only for shared metrics): declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\nIMPORTANT — COMPETITORS schema: list 3 ACTUAL competing restaurants from the COMPETITORS web data (NOT the focal restaurant itself). For each, extract the average star rating from the scraped reviews (a number from 0 to 5; use null if not found in the data) and the review count (integer; use null if not found). Do NOT invent ratings. Do NOT include the focal restaurant in this list — it will be added by the renderer.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real competitor name","rating":4.5,"reviewCount":850,"note":"1 sentence on their position"},{"name":"real competitor name","rating":4.2,"reviewCount":340,"note":"1 sentence"},{"name":"real competitor name","rating":4.7,"reviewCount":1200,"note":"1 sentence"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`, { label: 'diagnose-p2', model: 'claude-haiku-4-5-20251001' })
     ]);
     console.log('[diagnose] both Claude calls complete in', Date.now() - tClaude, 'ms');
     console.log('[diagnose] p1 score:', p1.healthCheckScore);
@@ -1157,15 +1157,72 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
     </div>`;
   }).join('');
 
-  // Competitors as cards
-  const competitors = (report?.competitors || []).map((c, i) => {
-    const isMe = i === 0;
-    return `<div class="comp-card ${isMe ? 'comp-me' : 'comp-peer'}">
+  // Competitors as cards.
+  // Two card shapes, deliberately distinct so the comparison is honest:
+  //  - YOU card  : real DiagnostiX score on /100 (multi-dimensional diagnostic)
+  //  - PEER cards: public market rating (star avg) + review count from web scrape
+  // Different scales => different visual treatments. We never label a star rating as /100.
+  //
+  // Schema (new, v8.6+): { name, rating (0-5 or null), reviewCount (int or null), note }
+  // Legacy shape (pre-v8.6): { name, score, note }  — handled in fallback path so
+  // historical reports still render without crashing, even if the focal restaurant is
+  // included in the competitors array.
+  const competitorList = Array.isArray(report?.competitors) ? report.competitors : [];
+
+  // YOU card — always built from authoritative data, not from the AI's competitor list
+  const youCard = `<div class="comp-card comp-me">
+    <div class="comp-card-tag" style="background:var(--blue);color:#fff">YOU</div>
+    <div class="comp-name">${esc(restaurant)}</div>
+    <div class="comp-score">${score}<span class="comp-score-out">/100</span></div>
+    <div class="comp-metric-label">DiagnostiX HealthCheck Score</div>
+    <div class="comp-note">Full diagnostic across 6 pillars</div>
+  </div>`;
+
+  // PEER cards — filter out any competitor whose name matches the focal restaurant
+  // (older AI output sometimes included the focal restaurant itself as competitor #0).
+  const focalNameLower = String(restaurant || '').trim().toLowerCase();
+  const peers = competitorList.filter(c => {
+    const peerName = String(c?.name || '').trim().toLowerCase();
+    return peerName && peerName !== focalNameLower;
+  });
+
+  const peerCards = peers.slice(0, 5).map(c => {
+    // Prefer new shape (c.rating + c.reviewCount); fall back to legacy (c.score)
+    // but DO NOT pretend a legacy score is a /100 if it looks like a star rating (<=5).
+    const ratingRaw = (typeof c.rating === 'number') ? c.rating
+                    : (typeof c.score === 'number' && c.score > 0 && c.score <= 5) ? c.score
+                    : null;
+    const reviewCount = (typeof c.reviewCount === 'number') ? c.reviewCount
+                      : (typeof c.reviews === 'number') ? c.reviews
+                      : null;
+    const ratingDisplay = ratingRaw !== null ? ratingRaw.toFixed(1) : null;
+
+    // Star colour band: 4.5+ green, 4.0+ amber, below 4.0 red (industry-standard restaurant bands)
+    const ratingColor = ratingRaw === null ? '#999'
+                      : ratingRaw >= 4.5 ? '#00A651'
+                      : ratingRaw >= 4.0 ? '#F7941D'
+                      : '#ED1C24';
+
+    const reviewCountDisplay = reviewCount !== null
+      ? (reviewCount >= 1000 ? (reviewCount/1000).toFixed(1) + 'k' : String(reviewCount)) + ' reviews'
+      : 'review count n/a';
+
+    return `<div class="comp-card comp-peer">
+      <div class="comp-card-tag" style="background:#e8e3d8;color:#666">PEER</div>
       <div class="comp-name">${esc(c.name)}</div>
-      <div class="comp-score">${c.score > 0 ? c.score : '—'}<span class="comp-score-out">/100</span></div>
+      ${ratingDisplay
+        ? `<div class="comp-rating" style="color:${ratingColor}">
+             <span class="comp-rating-num">${ratingDisplay}</span><span class="comp-rating-star">★</span>
+             <span class="comp-rating-out">/ 5</span>
+           </div>`
+        : `<div class="comp-rating" style="color:#999"><span class="comp-rating-num" style="font-size:18px">Rating n/a</span></div>`
+      }
+      <div class="comp-metric-label">${esc(reviewCountDisplay)}</div>
       <div class="comp-note">${esc(c.note || '')}</div>
     </div>`;
   }).join('');
+
+  const competitors = youCard + peerCards;
 
   // Online presence channels
   const onlineChannels = (report?.onlinePresence?.channels || []).map(c => {
@@ -1551,6 +1608,25 @@ ul.bullet-list li{margin:4px 0}
 }
 .comp-score-out{font-size:13px;color:#999;font-weight:500;margin-left:2px}
 .comp-note{font-size:12px;color:#555;line-height:1.55}
+.comp-card{position:relative}
+.comp-card-tag{
+  position:absolute;top:10px;right:10px;
+  font-size:9px;font-weight:900;letter-spacing:1.5px;
+  padding:2px 7px;border-radius:3px;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.comp-rating{
+  font-family:'League Spartan',Arial,sans-serif;
+  font-weight:900;line-height:1;margin:6px 0 8px;
+  display:flex;align-items:baseline;gap:2px;
+}
+.comp-rating-num{font-size:28px}
+.comp-rating-star{font-size:20px;margin-left:2px}
+.comp-rating-out{font-size:13px;color:#999;font-weight:500;margin-left:6px}
+.comp-metric-label{
+  font-size:10px;letter-spacing:1.5px;color:#666;
+  text-transform:uppercase;font-weight:700;margin-bottom:6px;
+}
 
 /* Online presence */
 .pres-row{display:flex;align-items:center;gap:14px;margin:8px 0}
@@ -2087,7 +2163,7 @@ PREVIOUS ACTIONS: ${(baseline.report.actions||[]).map(a=>a.title).join('; ')}`;
 
     const p1 = await claude(`Restaurant:${restaurantName}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${baselineCtx}\n${prevCtx}\n\nThis is report ${reportNumber} of 3 for an annual subscriber. Return JSON:\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings and progress vs baseline","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":""},{"name":"Yelp","score":65,"note":""},{"name":"TripAdvisor","score":55,"note":""},{"name":"OpenTable","score":60,"note":""},{"name":"Social Media","score":50,"note":""},{"name":"Delivery Platforms","score":35,"note":""}]},"ownerSentimentSummary":"","sentimentGap":""}\nRules:good>=65 warn=45-64 bad<45`, { label: 'annual-p1' });
 
-    const p2 = await claude(`Restaurant:${restaurantName}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${baselineCtx}\n\nReturn JSON with progress tracking:\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":3,"sentiment":"negative"}],"strengths":["strength 1","strength 2","strength 3"],"risks":["risk 1","risk 2","risk 3"],"themes":{"positive":["t1","t2"],"negative":["t1"],"neutral":["t1"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real","score":68,"note":""},{"name":"real","score":62,"note":""},{"name":"real","score":71,"note":""}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"progress":{"overallChange":${(p1.healthCheckScore||70) - baseline.report.healthCheckScore},"pillarsProgress":{"cs":${(p1.pillars?.cs?.score||70) - (baseline.report.pillars?.cs?.score||70)},"pa":${(p1.pillars?.pa?.score||65) - (baseline.report.pillars?.pa?.score||65)},"es":${(p1.pillars?.es?.score||50) - (baseline.report.pillars?.es?.score||50)},"sm":${(p1.pillars?.sm?.score||55) - (baseline.report.pillars?.sm?.score||55)},"cp":${(p1.pillars?.cp?.score||70) - (baseline.report.pillars?.cp?.score||70)},"bg":${(p1.pillars?.bg?.score||65) - (baseline.report.pillars?.bg?.score||65)}},"completedActions":[],"ongoingPriorities":[],"progressNarrative":"2 sentences on what has improved and what still needs work"}}`, { label: 'annual-p2' });
+    const p2 = await claude(`Restaurant:${restaurantName}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${baselineCtx}\n\nReturn JSON with progress tracking. For competitors: list 3 ACTUAL competing restaurants from web data (NOT the focal restaurant). Use rating (0-5 star average from reviews, or null if not found) and reviewCount (integer, or null). Do NOT invent ratings.\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":3,"sentiment":"negative"}],"strengths":["strength 1","strength 2","strength 3"],"risks":["risk 1","risk 2","risk 3"],"themes":{"positive":["t1","t2"],"negative":["t1"],"neutral":["t1"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real competitor","rating":4.5,"reviewCount":850,"note":""},{"name":"real competitor","rating":4.2,"reviewCount":340,"note":""},{"name":"real competitor","rating":4.7,"reviewCount":1200,"note":""}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"progress":{"overallChange":${(p1.healthCheckScore||70) - baseline.report.healthCheckScore},"pillarsProgress":{"cs":${(p1.pillars?.cs?.score||70) - (baseline.report.pillars?.cs?.score||70)},"pa":${(p1.pillars?.pa?.score||65) - (baseline.report.pillars?.pa?.score||65)},"es":${(p1.pillars?.es?.score||50) - (baseline.report.pillars?.es?.score||50)},"sm":${(p1.pillars?.sm?.score||55) - (baseline.report.pillars?.sm?.score||55)},"cp":${(p1.pillars?.cp?.score||70) - (baseline.report.pillars?.cp?.score||70)},"bg":${(p1.pillars?.bg?.score||65) - (baseline.report.pillars?.bg?.score||65)}},"completedActions":[],"ongoingPriorities":[],"progressNarrative":"2 sentences on what has improved and what still needs work"}}`, { label: 'annual-p2' });
 
     const report = Object.assign({}, p1, p2, {
       reportNumber,
@@ -2207,4 +2283,4 @@ app.post('/trigger-annual-report', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`DiagnostiX v8.5 on port ${PORT}`));
+app.listen(PORT, () => console.log(`DiagnostiX v8.6 on port ${PORT}`));
