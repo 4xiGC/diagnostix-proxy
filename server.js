@@ -174,13 +174,18 @@ async function searchStructured(q, opts) {
     let reviewCount = null;
     let title = null;
 
-    // Knowledge graph — the gold standard for restaurant ratings
+    // Knowledge graph — the gold standard for restaurant ratings.
+    // Serper's KG can put the review count under any of: reviewCount, ratingCount, ratings.
     if (d.knowledgeGraph) {
       const kg = d.knowledgeGraph;
       title = kg.title || null;
       if (typeof kg.rating === 'number' && kg.rating >= 0 && kg.rating <= 5) rating = kg.rating;
-      if (typeof kg.reviewCount === 'number' && kg.reviewCount >= 0) reviewCount = kg.reviewCount;
-      text += `[${kg.title||''}] Rating:${kg.rating||'N/A'} (${kg.reviewCount||0} reviews) ${kg.description||''}\n`;
+      const kgCount = (typeof kg.reviewCount === 'number' && kg.reviewCount >= 0) ? kg.reviewCount
+                    : (typeof kg.ratingCount === 'number' && kg.ratingCount >= 0) ? kg.ratingCount
+                    : (typeof kg.ratings === 'number' && kg.ratings >= 0) ? kg.ratings
+                    : null;
+      if (kgCount !== null) reviewCount = kgCount;
+      text += `[${kg.title||''}] Rating:${kg.rating||'N/A'} (${kgCount||0} reviews) ${kg.description||''}\n`;
     }
 
     // Places block — Serper returns a local-business "places" array for
@@ -361,11 +366,15 @@ async function searchCompetitorsMultiple(opts) {
       // whose titles often contain "4.5 of 5 bubbles" or "4.5 stars" patterns.
       `${competitorName} ${searchLoc} reviews rating`,
       // Variant C: quoted name — strict matching for ambiguous names like "Left Bank"
-      `"${competitorName}" ${searchLoc}`
+      `"${competitorName}" ${searchLoc}`,
+      // Variant D: TripAdvisor-targeted — TripAdvisor pages have very consistent
+      // rating extraction via knowledgeGraph and snippet patterns like "4.5 of 5 bubbles".
+      `${competitorName} ${searchLoc} TripAdvisor`
     ];
     const t = Date.now();
     const results = await Promise.all(queries.map(q =>
       searchStructured(q, { label: `COMP-USER[${competitorName}]` })
+        .catch(e => { console.log(`[serper] COMP-USER[${competitorName}] error: ${e.message}`); return { text: '', rating: null, reviewCount: null, title: null }; })
     ));
     // Pick best signal across variants
     let bestRating = null, bestCount = null, bestTitle = null;
@@ -771,12 +780,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.6' });
+    res.json({ status: 'running', version: '8.9.7' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.6' });
+  res.json({ status: 'ok', version: '8.9.7' });
 });
 
 app.get('/test', async (req, res) => {
@@ -998,14 +1007,19 @@ After listing all user-named competitors, you MUST add additional competitors fr
 
         if (aiIdx >= 0) {
           // AI returned this competitor — promote it. Then upgrade with Serper
-          // data if AI returned null but Serper found a real rating.
+          // data: Serper's knowledgeGraph/places API data is more authoritative
+          // than the AI's text-parsing of the same source, so it ALWAYS wins
+          // when present — not just when the AI returned null.
           const entry = Object.assign({}, aiList[aiIdx]);
           if (serperData) {
-            if ((entry.rating === null || entry.rating === undefined) && serperData.rating !== null) {
+            if (serperData.rating !== null) {
+              if (entry.rating !== serperData.rating) {
+                console.log(`[diagnose] safety-net override ${entry.name}: rating ${entry.rating} → ${serperData.rating} (Serper)`);
+                overridden++;
+              }
               entry.rating = serperData.rating;
-              overridden++;
             }
-            if ((entry.reviewCount === null || entry.reviewCount === undefined) && serperData.reviewCount !== null) {
+            if (serperData.reviewCount !== null) {
               entry.reviewCount = serperData.reviewCount;
             }
             // Prefer Serper's resolved title (e.g. "Hog Island Oyster Co.") over user's input
@@ -1135,7 +1149,7 @@ After listing all user-named competitors, you MUST add additional competitors fr
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.6',
+      version: '8.9.7',
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
       serperExtracted: compUserResults.map(r => ({
