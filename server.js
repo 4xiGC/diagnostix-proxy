@@ -875,12 +875,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.12' });
+    res.json({ status: 'running', version: '8.9.13' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.12' });
+  res.json({ status: 'ok', version: '8.9.13' });
 });
 
 app.get('/test', async (req, res) => {
@@ -1064,8 +1064,8 @@ After listing all user-named competitors, you MUST add additional competitors fr
 COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors:
 1. CUISINE MATCH: Prefer competitors whose cuisine concept overlaps with the focal restaurant's cuisine. A "Peruvian-Chinese fusion" focal should match other Asian fusion, Pan-Asian, or premium fusion concepts — NOT random Japanese fast-casual places that share a cuisine word.
 2. TIER MATCH: Prefer competitors at a similar quality tier to the focal restaurant. If the focal is "fine-dining" or "upscale", REJECT competitors that are clearly fast-casual, budget, or low-quality. If the focal is "casual", do not include $$$$ fine-dining as a competitor.
-3. RATING FLOOR: Skip any competitor with a rating below 3.5 stars UNLESS the focal restaurant itself has a rating below 3.5. Low-rated places ranked outside the top of their city are NOT relevant competitors for a premium concept.
-4. REVIEW VOLUME FLOOR: Skip any competitor with fewer than 20 reviews. Small-review-count places aren't established enough to be meaningful competitive benchmarks.
+3. RATING FLOOR: Skip any competitor with a rating below 3.0 stars UNLESS the focal restaurant itself has a rating below 3.0. Very low-rated places are NOT relevant competitors.
+4. REVIEW VOLUME FLOOR: Skip any competitor with fewer than 5 reviews. Truly tiny listings without review data are not useful comparisons.
 5. AVOID OBVIOUS MISMATCHES: If you find yourself writing a note like "different concept" or "different cuisine" or "different tier" or "weak competitor" or "poor positioning" or "not a direct competitor" — DO NOT INCLUDE that restaurant. Find a better match in the data, or return fewer competitors.
 6. QUALITY OVER QUANTITY: Better to return 3 strong matches than 5 with weak ones. Aim for 5, but never pad with mismatches just to hit the count.`;
     }
@@ -1277,29 +1277,30 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
 
     // ── Quality filter (post-AI, post-backfill) ─────────────────────────
     // After the AI returns and Serper backfill runs, evaluate each non-user-named
-    // competitor against tier/quality floors. Rejects:
-    //   - Rating below 3.5 (unless focal restaurant also rates below 3.5)
-    //   - Review count below 20 (too small to be a meaningful benchmark)
-    //   - AI note containing self-disqualifying language ("different concept",
-    //     "different tier", "weak competitor", "not a direct competitor")
+    // competitor against quality floors. Rejects:
+    //   - Rating below 3.0 (unless focal restaurant also rates below 3.0)
+    //   - Review count below 5 (truly tiny no-info listings only)
+    //   - AI note containing self-disqualifying language that EXPLICITLY states
+    //     the restaurant is not a competitor (narrow regex set to avoid false
+    //     positives on benign descriptive language like "alternative" or
+    //     "smaller-scale")
     // User-named competitors are EXEMPT — owner knows their own market.
     try {
       if (Array.isArray(report.competitors) && report.competitors.length) {
         const focalRating = focalContext && typeof focalContext.rating === 'number' ? focalContext.rating : null;
-        const ratingFloor = (focalRating !== null && focalRating < 3.5) ? focalRating : 3.5;
+        const ratingFloor = (focalRating !== null && focalRating < 3.0) ? focalRating : 3.0;
         const userLowered = new Set(userCompetitors.map(n => n.toLowerCase()));
-        // Self-disqualifying phrases in the AI's note — when the AI itself admits
-        // the match is poor, we should reject the entry.
+        // Self-disqualifying phrases — narrowed to only the most damning explicit
+        // "not a competitor" statements. We trust the prompt rules to keep the AI
+        // from including bad matches; this filter is the last-line safety net.
         const disqualifyPatterns = [
-          /different\s*(?:concept|cuisine|tier|category|market|segment)/i,
-          /not\s*a?\s*direct\s*competitor/i,
-          /weak\s*competitor/i,
-          /poor\s*positioning/i,
-          /minimal\s*overlap/i,
-          /limited\s*overlap/i,
-          /tangential/i,
-          /loosely?\s*relat/i,
-          /distant\s*competitor/i
+          /not\s+a?\s*direct\s+competitor/i,
+          /not\s+(?:really\s+)?a\s+competitor/i,
+          /weak\s+competitor/i,
+          /poor\s+(?:positioning|match)/i,
+          /different\s+(?:concept|cuisine|category)\s+entirely/i,
+          /minimal\s+overlap/i,
+          /loosely?\s+related/i
         ];
         const before = report.competitors.length;
         const rejections = [];
@@ -1317,9 +1318,9 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
             rejections.push(`"${c.name}" (rating ${c.rating} < floor ${ratingFloor})`);
             return false;
           }
-          // Review volume floor check
-          if (typeof c.reviewCount === 'number' && c.reviewCount < 20 && c.reviewCount > 0) {
-            rejections.push(`"${c.name}" (${c.reviewCount} reviews < 20)`);
+          // Review volume floor — only kill truly tiny listings
+          if (typeof c.reviewCount === 'number' && c.reviewCount < 5 && c.reviewCount > 0) {
+            rejections.push(`"${c.name}" (${c.reviewCount} reviews < 5)`);
             return false;
           }
           // Self-disqualifying note text
@@ -1334,7 +1335,7 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
         });
         if (rejections.length) {
           console.log(`[diagnose] quality filter rejected ${rejections.length}: ${rejections.join(' | ')}`);
-          console.log(`[diagnose] quality filter: ${before} → ${report.competitors.length} remaining (floor=${ratingFloor})`);
+          console.log(`[diagnose] quality filter: ${before} → ${report.competitors.length} remaining (rating floor=${ratingFloor}, review floor=5)`);
         }
       }
     } catch (e) {
@@ -1344,7 +1345,7 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.12',
+      version: '8.9.13',
       focalContext: focalContext || null,
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
