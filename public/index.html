@@ -1161,20 +1161,24 @@ function renderReport(r, d) {
     var ratingRaw = interpretCompetitorRating(c);
     var reviewCount = interpretReviewCount(c);
     var hasRating = ratingRaw !== null;
-    var ratingDisplay = hasRating ? ratingRaw.toFixed(1) : '—';
     var ratingColor = !hasRating ? '#999'
                     : ratingRaw >= 4.5 ? '#00A651'
                     : ratingRaw >= 4.0 ? '#F7941D'
                     : '#ED1C24';
-    var reviewCountDisplay = reviewCount !== null
-      ? (reviewCount >= 1000 ? (reviewCount/1000).toFixed(1) + 'k' : String(reviewCount)) + ' reviews'
-      : 'Market rating';
+    var bigBlock = hasRating
+      ? '<div class="comp-big" style="color:' + ratingColor + '">' + ratingRaw.toFixed(1)
+        + '<span class="comp-big-scale"> / 5 ★</span></div>'
+      : '<div class="comp-no-rating">No public rating found</div>';
+    var metricLabel = hasRating
+      ? (reviewCount !== null
+          ? (reviewCount >= 1000 ? (reviewCount/1000).toFixed(1) + 'k' : String(reviewCount)) + ' reviews'
+          : 'Market rating')
+      : 'Profile only';
     return '<div class="comp-card comp-peer">'
       + '<div class="comp-card-tag" style="background:#e8e3d8;color:#666">PEER</div>'
       + '<div class="comp-name">' + (c.name || 'Unknown') + '</div>'
-      + '<div class="comp-big" style="color:' + ratingColor + '">' + ratingDisplay
-      + (hasRating ? '<span class="comp-big-scale"> / 5 ★</span>' : '') + '</div>'
-      + '<div class="comp-metric-label">' + reviewCountDisplay + '</div>'
+      + bigBlock
+      + '<div class="comp-metric-label">' + metricLabel + '</div>'
       + '<div class="comp-note">' + (c.note || '') + '</div>'
       + '</div>';
   }).join('');
