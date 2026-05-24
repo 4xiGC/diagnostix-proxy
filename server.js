@@ -183,29 +183,71 @@ async function searchStructured(q, opts) {
       text += `[${kg.title||''}] Rating:${kg.rating||'N/A'} (${kg.reviewCount||0} reviews) ${kg.description||''}\n`;
     }
 
-    // Organic results — also scan snippets for rating patterns when KG missed it
+    // Places block — Serper returns a local-business "places" array for
+    // location-intent queries. Each place has rating/ratingCount fields.
+    // For restaurant lookups this is often more reliable than knowledgeGraph.
+    if (Array.isArray(d.places) && d.places.length > 0) {
+      const p = d.places[0];
+      if (rating === null && typeof p.rating === 'number' && p.rating >= 0 && p.rating <= 5) {
+        rating = p.rating;
+      }
+      if (reviewCount === null && typeof p.ratingCount === 'number' && p.ratingCount >= 0) {
+        reviewCount = p.ratingCount;
+      }
+      if (!title && p.title) title = p.title;
+      // Add places summary to the text blob
+      d.places.slice(0, 3).forEach(pl => {
+        text += `[PLACE] ${pl.title||''} | rating=${pl.rating||'N/A'} | ${pl.ratingCount||0} reviews | ${pl.address||''}\n`;
+      });
+    }
+
+    // Organic results — also scan snippets for rating patterns when KG/places missed it
     (d.organic||[]).slice(0,8).forEach(i => {
-      text += `${i.title}: ${i.snippet||''}\n`;
-      // Fallback: pull rating from snippet text if KG didn't give us one
+      const titleTxt = String(i.title||'');
+      const snippetTxt = String(i.snippet||'');
+      text += `${titleTxt}: ${snippetTxt}\n`;
+
+      // Fallback: pull rating from snippet OR title (TripAdvisor often puts "4.5 of 5 bubbles" in title)
       if (rating === null) {
-        const snippet = String(i.snippet||'');
-        // Patterns: "4.5 stars", "Rating: 4.5", "4.5/5", "★★★★½ (4.5)", "(4.5/5)"
-        const m = snippet.match(/(?:rating[:\s]*|★\s*)(\d\.\d)(?:\s*\/\s*5|\s*stars|\s*★)?/i)
-              || snippet.match(/(\d\.\d)\s*(?:stars?|★|\/\s*5)/i)
-              || snippet.match(/\(\s*(\d\.\d)\s*\/\s*5\s*\)/);
+        const combined = `${titleTxt} ${snippetTxt}`;
+        // Patterns we now catch:
+        //   "4.5 stars" / "4.5 star"
+        //   "Rating: 4.5"
+        //   "4.5/5"
+        //   "(4.5/5)"
+        //   "4.5 of 5"
+        //   "4.5 out of 5"
+        //   "★★★★½ 4.5"
+        //   "⭐ 4.5"
+        //   "Rated 4.5"
+        //   Yelp-style "4.5 (888 reviews)"
+        //   TripAdvisor "4.5 of 5 bubbles"
+        const m = combined.match(/(\d\.\d)\s*(?:\/|of|out of)\s*5/i)
+              || combined.match(/rated?\s*[:\s]*(\d\.\d)/i)
+              || combined.match(/(?:★|⭐|☆)\s*(\d\.\d)/)
+              || combined.match(/(\d\.\d)\s*(?:stars?|★|⭐|bubbles?)/i)
+              || combined.match(/rating[:\s]+(\d\.\d)/i);
         if (m) {
           const n = parseFloat(m[1]);
           if (n >= 0 && n <= 5) rating = n;
         }
       }
-      // Fallback: pull review count from snippet (e.g. "1,234 reviews", "(642)", "850+ reviews")
+      // Fallback: pull review count — widened to handle "(2,400)", "2.4k reviews", etc.
       if (reviewCount === null) {
-        const snippet = String(i.snippet||'');
-        const m = snippet.match(/([\d,]+)\s*(?:reviews?|opiniones|reseñas)/i)
-              || snippet.match(/(\d[\d,]*)\s*\+\s*(?:reviews?|ratings?)/i);
+        const combined = `${titleTxt} ${snippetTxt}`;
+        // Direct count patterns
+        let m = combined.match(/([\d,]+)\s*(?:reviews?|ratings?|opiniones|reseñas)/i)
+             || combined.match(/(\d[\d,]*)\s*\+\s*(?:reviews?|ratings?)/i);
         if (m) {
           const n = parseInt(m[1].replace(/,/g, ''), 10);
           if (n > 0 && n < 1000000) reviewCount = n;
+        } else {
+          // k-suffixed: "2.4k reviews", "1.2K reviews"
+          const k = combined.match(/(\d+(?:\.\d+)?)\s*k\s*(?:reviews?|ratings?)/i);
+          if (k) {
+            const n = Math.round(parseFloat(k[1]) * 1000);
+            if (n > 0 && n < 1000000) reviewCount = n;
+          }
         }
       }
     });
@@ -307,10 +349,14 @@ async function searchCompetitorsMultiple(opts) {
   // best rating found across both — KG-first, then snippet patterns.
   async function lookupUserNamed(competitorName) {
     const queries = [
-      // Variant A: explicit review/rating intent — most likely to surface KG with rating
-      `${competitorName} restaurant ${searchLoc} reviews`,
-      // Variant B: quoted name + location — strict matching for ambiguous names like "Left Bank"
-      `"${competitorName}" ${searchLoc} restaurant`
+      // Variant A: Google Maps intent — most likely to return Serper's "places" array
+      // with structured rating/ratingCount fields (the cleanest source).
+      `${competitorName} restaurant ${searchLoc}`,
+      // Variant B: explicit review/rating intent — surfaces TripAdvisor/Yelp pages
+      // whose titles often contain "4.5 of 5 bubbles" or "4.5 stars" patterns.
+      `${competitorName} ${searchLoc} reviews rating`,
+      // Variant C: quoted name — strict matching for ambiguous names like "Left Bank"
+      `"${competitorName}" ${searchLoc}`
     ];
     const t = Date.now();
     const results = await Promise.all(queries.map(q =>
@@ -720,12 +766,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.3' });
+    res.json({ status: 'running', version: '8.9.4' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.3' });
+  res.json({ status: 'ok', version: '8.9.4' });
 });
 
 app.get('/test', async (req, res) => {
@@ -876,7 +922,7 @@ IMPERATIVE: Your competitors array MUST include every name above. For each:
 - Use the resolvedName from Serper if provided (it's more accurate, e.g. "Hog Island Oyster Co." instead of "Hog Island"); otherwise keep the user's input name.
 - Write a 1-sentence note describing the competitor's position relative to the focal restaurant.
 
-After listing all user-named competitors, you SHOULD add 2 additional competitors from the [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] sections to reach 5 total — but only if their NAMES appear verbatim in the web data. Aim for 5 strong competitors. If only 3-4 truly verifiable competitors exist, that's fine.`;
+After listing all user-named competitors, you MUST add additional competitors from the [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] sections until you reach 5 total competitors. Scan ALL sections for any restaurant name that appears verbatim in the data. Common patterns: restaurants mentioned in TripAdvisor "Top 10" lists, restaurants in "people also search for" sections, restaurants with Google Maps listings. Include any restaurant whose name is plausibly in the same tier/category as the focal restaurant. Aim for exactly 5. Only return fewer than 5 if you genuinely cannot find more verifiable competitor names in the entire web data — but the data typically contains many; look harder.`;
     } else {
       userCompBlock = '';
     }
@@ -990,7 +1036,7 @@ After listing all user-named competitors, you SHOULD add 2 additional competitor
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.3',
+      version: '8.9.4',
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
       serperExtracted: compUserResults.map(r => ({
