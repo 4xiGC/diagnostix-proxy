@@ -197,10 +197,27 @@ async function searchWithFallback(queries, opts) {
 async function searchCompetitorsMultiple(opts) {
   const { name, location, region, userCompetitors } = opts;
 
-  // Extract neighborhood (first comma-separated piece) for hyper-local searches.
+  // Parse "City/Neighborhood, State, Country" or "City, Country" location formats.
+  // Real inputs include:
+  //   "Larkspur Landing, CA, USA"  → city=Larkspur Landing, state=CA
+  //   "Vitacura, Santiago, Chile"   → city=Vitacura, state=Santiago
+  //   "Santiago, Chile"             → city=Santiago, state=null
+  //   "Brooklyn, NY"                → city=Brooklyn, state=NY
+  // The first part is always the local descriptor (neighborhood or city).
+  // The last part is the country. Anything in between is state/region.
   const locParts = String(location || '').split(',').map(s => s.trim()).filter(Boolean);
-  const neighborhood = locParts.length > 0 ? locParts[0] : location;
-  const city = locParts.length > 1 ? locParts[1] : location;
+  const localArea = locParts.length > 0 ? locParts[0] : '';
+  const stateOrRegion = locParts.length >= 3 ? locParts[locParts.length - 2] : '';
+  // Build the strongest location string for search queries: prefer "City, State"
+  // (e.g. "Larkspur Landing, CA") over bare "City" because it dramatically
+  // narrows results for ambiguous restaurant names like "Left Bank" or "RH".
+  const searchLoc = stateOrRegion
+    ? `${localArea}, ${stateOrRegion}`
+    : localArea || String(location || '');
+  // Neighborhood-level queries use just the first part when 3+ parts exist.
+  const neighborhood = (locParts.length >= 3) ? localArea : '';
+
+  console.log(`[serper] COMP-MULTI locale: searchLoc="${searchLoc}", neighborhood="${neighborhood || '(none)'}"`);
 
   // Layer 1: User-supplied competitors. Each name gets its own search to
   // surface that specific restaurant's review data. Cap at 3 to bound cost.
@@ -210,9 +227,9 @@ async function searchCompetitorsMultiple(opts) {
   const userSearches = userNames.map(competitorName =>
     searchWithFallback(
       [
-        `${competitorName} ${city} reviews rating TripAdvisor Google`,
-        `${competitorName} ${city} restaurant`,
-        `${competitorName} restaurant`
+        `${competitorName} ${searchLoc} reviews rating TripAdvisor Yelp`,
+        `${competitorName} restaurant ${searchLoc}`,
+        `"${competitorName}" ${searchLoc}`
       ],
       { label: `COMP-USER[${competitorName}]` }
     )
@@ -224,34 +241,33 @@ async function searchCompetitorsMultiple(opts) {
     searchWithFallback(
       region === 'LATAM'
         ? [
-            `restaurantes similares a ${name} ${city}`,
-            `alternativas a ${name} ${city}`,
-            `restaurants like ${name} ${city}`
+            `restaurantes similares a ${name} ${searchLoc}`,
+            `alternativas a ${name} ${searchLoc}`,
+            `restaurants like ${name} ${searchLoc}`
           ]
         : [
-            `restaurants like ${name} ${city}`,
-            `restaurants similar to ${name} ${city}`,
-            `alternatives to ${name} ${city}`
+            `restaurants like ${name} ${searchLoc}`,
+            `restaurants similar to ${name} ${searchLoc}`,
+            `alternatives to ${name} ${searchLoc}`
           ],
       { label: 'COMP-SIMILAR' }
     )
   ];
 
-  // Layer 3: Neighborhood-narrowed. Vitacura is much more useful than Santiago
-  // for finding direct local competitors. Falls back gracefully when there's
-  // no neighborhood in the location string.
-  const neighborhoodSearches = (neighborhood && neighborhood !== city) ? [
+  // Layer 3: Neighborhood-narrowed (only when location has 3+ parts and the
+  // first part is a true neighborhood rather than a city).
+  const neighborhoodSearches = neighborhood ? [
     searchWithFallback(
       region === 'LATAM'
         ? [
-            `mejores restaurantes ${neighborhood} ${city}`,
-            `restaurantes top ${neighborhood}`,
-            `dónde comer ${neighborhood} ${city}`
+            `mejores restaurantes ${neighborhood} ${stateOrRegion}`,
+            `restaurantes ${neighborhood}`,
+            `dónde comer ${neighborhood}`
           ]
         : [
-            `best restaurants ${neighborhood} ${city}`,
+            `best restaurants ${neighborhood} ${stateOrRegion}`,
             `top restaurants ${neighborhood}`,
-            `where to eat ${neighborhood} ${city}`
+            `where to eat ${neighborhood}`
           ],
       { label: 'COMP-NEIGHBORHOOD' }
     )
@@ -263,14 +279,14 @@ async function searchCompetitorsMultiple(opts) {
     searchWithFallback(
       region === 'LATAM'
         ? [
-            `mejores restaurantes ${city} TripAdvisor`,
-            `top restaurants ${city}`,
-            `restaurantes recomendados ${city}`
+            `mejores restaurantes ${searchLoc} TripAdvisor`,
+            `top restaurants ${searchLoc}`,
+            `restaurantes recomendados ${searchLoc}`
           ]
         : [
-            `top restaurants ${city} TripAdvisor`,
-            `best restaurants ${city}`,
-            `highly rated restaurants ${city}`
+            `top restaurants ${searchLoc} TripAdvisor`,
+            `best restaurants ${searchLoc}`,
+            `highly rated restaurants ${searchLoc}`
           ],
       { label: 'COMP-TOP' }
     )
@@ -595,12 +611,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9' });
+    res.json({ status: 'running', version: '8.9.2' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9' });
+  res.json({ status: 'ok', version: '8.9.2' });
 });
 
 app.get('/test', async (req, res) => {
@@ -725,11 +741,27 @@ When writing businessRealityAnalysis: 2-3 sentences that EXPLICITLY weave the SH
 When writing perceptionGap: 1-2 sentences ONLY if there is a meaningful divergence between reviewer self-perception and the shared financial reality. If broadly aligned, or if fewer than 2 metrics were shared, return empty string "".`;
     }
     console.log('[diagnose] business metrics:', fmtPct(guestN), '|', fmtPct(checkN), '|', fmtPct(profitN), '| provided:', providedCount + '/3');
+
+    // Build USER-NAMED COMPETITORS block — a structured, separate hand-off so
+    // the AI cannot miss or skip these. They appear in their own clearly labeled
+    // section right at the top of the COMPETITORS data, with an explicit
+    // imperative instruction. This is belt-and-braces with the prompt rules.
+    let userCompBlock;
+    if (userCompetitors.length) {
+      const list = userCompetitors.map((n, i) => `  ${i+1}. ${n}`).join('\n');
+      userCompBlock = `USER-NAMED COMPETITORS (the restaurant owner explicitly identified these as their direct competitors — these MUST appear in your competitors array):
+${list}
+
+IMPERATIVE: Your competitors array MUST include every name above. For each, extract rating and reviewCount from the [USER-NAMED: X] sections of the COMPETITORS web data below. If a specific rating or reviewCount cannot be found in the web data, set that field to null but STILL include the competitor with a 1-sentence note. Do not drop these names under any circumstance. After listing all user-named competitors, you may add up to 2 additional competitors from the [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] sections to reach 3-5 total.`;
+    } else {
+      userCompBlock = '';
+    }
+
     console.log('[diagnose] claude part1 + part2 in parallel (p2 uses Haiku for speed)...');
     const tClaude = Date.now();
     const [p1, p2] = await Promise.all([
       claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${sv}\n\n${bmBlock}\n\nReturn JSON. Use WebData for scores. Use Reviewer Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what the reviewer thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between reviewer perception and reality). businessRealityAnalysis and perceptionGap follow the rules above. When business metrics are provided, ALSO populate pillarGapNarratives with one short sentence per relevant pairing (guest count ↔ Customer Sentiment pillar; average check ↔ Pricing & Accessibility pillar; profitability ↔ Brand Experience & Growth pillar). Each narrative should be 1 punchy sentence interpreting the gap or alignment between the financial metric and the qualitative pillar score. If a metric is not provided, return empty string "" for its narrative.\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real"},{"name":"Yelp","score":65,"note":"real"},{"name":"TripAdvisor","score":55,"note":"real"},{"name":"OpenTable","score":60,"note":"real"},{"name":"Social Media","score":50,"note":"real"},{"name":"Delivery Platforms","score":35,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence","businessRealityAnalysis":"","perceptionGap":"","pillarGapNarratives":{"guest":"","check":"","profit":""}}\nRules:good>=65 warn=45-64 bad<45 scoreVerdict=Excellent/Good/Fair/Needs Attention. NOTE: Do NOT change the healthCheckScore or pillar scores based on businessMetrics — the score remains qualitative+web-data driven. Financial metrics are reported separately via businessRealityAnalysis, perceptionGap, and pillarGapNarratives.`, { label: 'diagnose-p1' }),
-      claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,4500)}\n\n${bmBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven SPECIFICALLY by the business metrics the user SHARED. Rules: (a) If the businessMetrics block says all metrics are "Not tracked (user opted out)", return empty array []. (b) Each item MUST reference only a metric the user actually shared — never reference a "Not tracked" metric or speculate about one. (c) Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific shared financial metric, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance (only for shared metrics): declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\nIMPORTANT — COMPETITORS schema: list 3 TO 5 actual competing restaurants from the COMPETITORS web data (NOT the focal restaurant itself). The COMPETITORS web data is organised into LABELED SECTIONS: [USER-NAMED: X] (the restaurant owner identified X as a direct competitor — HIGHEST PRIORITY, always include each user-named competitor if you can find any data about them); [SIMILAR-TO] (restaurants with concept overlap surfaced via \"restaurants like X\" queries — SECOND PRIORITY); [NEIGHBORHOOD] (restaurants in the same neighborhood/district — THIRD PRIORITY, only include if plausibly similar tier/cuisine); [TOP-IN-CITY] (broad city-level results — LOWEST PRIORITY, only use if other sections thin). RULES: (1) Only include competitors whose NAMES appear VERBATIM in the web data — never invent names like \"Restaurant Market\" or generic placeholders. (2) Fewer real competitors is better than padded fakes. If you only have 3 strong, return 3. Do not pad to 5 with weak matches. (3) Skip restaurants that are clearly a different tier (fast-food when focal is fine-dining) or different cuisine concept. (4) For each named competitor, ACTIVELY SEARCH the web data for star ratings (Google, TripAdvisor, Yelp ratings typically appear as \"4.5\", \"4.5/5\", \"4.5 stars\", or similar). Convert to a number 0-5. Only use null if you genuinely cannot find any rating signal — do not default to null out of excessive caution. (5) Same for reviewCount — look for \"850 reviews\", \"1.2k reviews\", \"(642)\" patterns. Convert k-suffixed numbers (1.2k → 1200). Only null if truly absent. (6) Do NOT include the focal restaurant in this list — it will be added by the renderer.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real competitor name","rating":4.5,"reviewCount":850,"note":"1 sentence on their position"},{"name":"real competitor name","rating":4.2,"reviewCount":340,"note":"1 sentence"},{"name":"real competitor name","rating":4.7,"reviewCount":1200,"note":"1 sentence"},{"name":"real competitor name","rating":4.0,"reviewCount":520,"note":"1 sentence"},{"name":"real competitor name","rating":4.3,"reviewCount":890,"note":"1 sentence"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`, { label: 'diagnose-p2', model: 'claude-haiku-4-5-20251001' })
+      claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,4500)}\n\n${bmBlock}\n\n${userCompBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven SPECIFICALLY by the business metrics the user SHARED. Rules: (a) If the businessMetrics block says all metrics are "Not tracked (user opted out)", return empty array []. (b) Each item MUST reference only a metric the user actually shared — never reference a "Not tracked" metric or speculate about one. (c) Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific shared financial metric, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance (only for shared metrics): declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\nIMPORTANT — COMPETITORS schema: list 3 TO 5 actual competing restaurants from the COMPETITORS web data (NOT the focal restaurant itself). The COMPETITORS web data is organised into LABELED SECTIONS: [USER-NAMED: X] (the restaurant owner identified X as a direct competitor — HIGHEST PRIORITY, always include each user-named competitor if you can find any data about them); [SIMILAR-TO] (restaurants with concept overlap surfaced via \"restaurants like X\" queries — SECOND PRIORITY); [NEIGHBORHOOD] (restaurants in the same neighborhood/district — THIRD PRIORITY, only include if plausibly similar tier/cuisine); [TOP-IN-CITY] (broad city-level results — LOWEST PRIORITY, only use if other sections thin). RULES: (1) Only include competitors whose NAMES appear VERBATIM in the web data — never invent names like \"Restaurant Market\" or generic placeholders. (2) Fewer real competitors is better than padded fakes. If you only have 3 strong, return 3. Do not pad to 5 with weak matches. (3) Skip restaurants that are clearly a different tier (fast-food when focal is fine-dining) or different cuisine concept. (4) For each named competitor, ACTIVELY SEARCH the web data for star ratings (Google, TripAdvisor, Yelp ratings typically appear as \"4.5\", \"4.5/5\", \"4.5 stars\", or similar). Convert to a number 0-5. Only use null if you genuinely cannot find any rating signal — do not default to null out of excessive caution. (5) Same for reviewCount — look for \"850 reviews\", \"1.2k reviews\", \"(642)\" patterns. Convert k-suffixed numbers (1.2k → 1200). Only null if truly absent. (6) Do NOT include the focal restaurant in this list — it will be added by the renderer.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real competitor name","rating":4.5,"reviewCount":850,"note":"1 sentence on their position"},{"name":"real competitor name","rating":4.2,"reviewCount":340,"note":"1 sentence"},{"name":"real competitor name","rating":4.7,"reviewCount":1200,"note":"1 sentence"},{"name":"real competitor name","rating":4.0,"reviewCount":520,"note":"1 sentence"},{"name":"real competitor name","rating":4.3,"reviewCount":890,"note":"1 sentence"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`, { label: 'diagnose-p2', model: 'claude-haiku-4-5-20251001' })
     ]);
     console.log('[diagnose] both Claude calls complete in', Date.now() - tClaude, 'ms');
     console.log('[diagnose] p1 score:', p1.healthCheckScore);
@@ -744,6 +776,86 @@ When writing perceptionGap: 1-2 sentences ONLY if there is a meaningful divergen
     }
     const report = Object.assign({}, p1, p2);
     if (!report.healthCheckScore || !report.pillars) throw new Error('missing fields: '+Object.keys(report).join(','));
+
+    // ── User-named competitor safety net ─────────────────────────────────
+    // Even with explicit imperative prompts, Haiku occasionally drops
+    // user-named competitors. This guarantees they always appear in the
+    // final response, in the order the user listed them.
+    //
+    // Strategy:
+    //   1. Build a map of competitors the AI returned, keyed by lowercased name.
+    //   2. For each user-named competitor (in input order):
+    //      - If AI returned a match, promote that entry to the top of the array.
+    //      - If AI did NOT return a match, synthesize a placeholder entry
+    //        (rating: null, note: "Owner-identified direct competitor").
+    //   3. Fill remaining slots with AI's other competitors (up to 5 total).
+    if (userCompetitors.length && Array.isArray(report.competitors)) {
+      const aiList = report.competitors.slice();
+      const norm = (str) => String(str || '').trim().toLowerCase();
+      // Fuzzy name match: AI may return "Hog Island Oyster Co." when user
+      // typed "Hog Island". Match if either contains the other as a substring.
+      const findAiMatch = (userName) => {
+        const u = norm(userName);
+        for (let i = 0; i < aiList.length; i++) {
+          const a = norm(aiList[i] && aiList[i].name);
+          if (!a) continue;
+          if (a === u || a.includes(u) || u.includes(a)) return i;
+        }
+        return -1;
+      };
+
+      const merged = [];
+      const usedAiIdx = new Set();
+      let synthesized = 0;
+      let promoted = 0;
+
+      for (const userName of userCompetitors) {
+        const aiIdx = findAiMatch(userName);
+        if (aiIdx >= 0) {
+          // AI returned this competitor — promote it to the top
+          merged.push(aiList[aiIdx]);
+          usedAiIdx.add(aiIdx);
+          promoted++;
+        } else {
+          // AI dropped this competitor — synthesize a placeholder so it still
+          // appears in the report. Owner identified it as a direct competitor;
+          // user can see it even when public data is thin.
+          merged.push({
+            name: userName,
+            rating: null,
+            reviewCount: null,
+            note: 'Owner-identified direct competitor; public review data was limited in this scrape.'
+          });
+          synthesized++;
+        }
+      }
+      // Fill remaining slots with AI's other competitors (up to 5 total)
+      for (let i = 0; i < aiList.length && merged.length < 5; i++) {
+        if (!usedAiIdx.has(i)) merged.push(aiList[i]);
+      }
+      report.competitors = merged;
+      console.log(`[diagnose] user-competitor safety net: ${promoted} promoted, ${synthesized} synthesized, ${merged.length} total`);
+    }
+
+    // _debug: attach scraping provenance so issues are diagnosable from the
+    // browser DevTools network tab without needing Railway log access.
+    // Stripped before email/PDF rendering — only present in the JSON API response.
+    report._debug = {
+      version: '8.9.2',
+      userCompetitorsReceived: userCompetitorsRaw,
+      userCompetitorsParsed: userCompetitors,
+      aiReturnedCompetitorNames: Array.isArray(p2.competitors)
+        ? p2.competitors.map(c => c && c.name).filter(Boolean)
+        : [],
+      aiReturnedCompetitorCount: Array.isArray(p2.competitors) ? p2.competitors.length : 0,
+      finalCompetitorNames: Array.isArray(report.competitors)
+        ? report.competitors.map(c => c && c.name).filter(Boolean)
+        : [],
+      competitorWebDataChars: (co || '').length,
+      competitorSectionLabels: (co || '').match(/\[(USER-NAMED|SIMILAR-TO|NEIGHBORHOOD|TOP-IN-CITY)[^\]]*\]/g) || []
+    };
+    console.log('[diagnose] _debug:', JSON.stringify(report._debug));
+
     console.log('[diagnose] SUCCESS score:', report.healthCheckScore);
     return res.status(200).json(report);
   } catch(e) {
