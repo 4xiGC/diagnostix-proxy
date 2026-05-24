@@ -1115,20 +1115,67 @@ function renderReport(r, d) {
   var negT=((r.themes&&r.themes.negative)||[]).map(function(t){return'<span class="tag neg">'+t+'</span>';}).join('');
   var neuT=((r.themes&&r.themes.neutral)||[]).map(function(t){return'<span class="tag neu">'+t+'</span>';}).join('');
 
-  var compCards=(r.competitors||[]).map(function(c,i){
-    var cls=i===0?'me':'peer';
-    var scl=c.score>=65?'g':'w';
-    return '<div class="comp-card '+cls+'">'
-      +'<div class="comp-name">'+c.name+'</div>'
-      +'<div class="comp-score '+scl+'">'+c.score+' <span style="font-size:11px;color:#999">/100</span></div>'
-      +'<div class="comp-detail">'+c.note+'</div></div>';
+// Competitor cards — v8.7 uniform layout with forgiving rating interpreter
+  function interpretCompetitorRating(c) {
+    if (typeof c.rating === 'number' && c.rating >= 0 && c.rating <= 5) return c.rating;
+    if (typeof c.rating === 'string') {
+      var m = c.rating.match(/(\d+(?:\.\d+)?)/);
+      if (m) {
+        var n = parseFloat(m[1]);
+        if (n >= 0 && n <= 5)  return n;
+        if (n > 5 && n <= 100) return n / 20;
+      }
+    }
+    if (typeof c.score === 'number' && c.score >= 0 && c.score <= 5) return c.score;
+    if (typeof c.score === 'number' && c.score > 5 && c.score <= 100) return c.score / 20;
+    return null;
+  }
+  function interpretReviewCount(c) {
+    if (typeof c.reviewCount === 'number' && c.reviewCount >= 0) return c.reviewCount;
+    if (typeof c.reviewCount === 'string') {
+      var m = c.reviewCount.match(/(\d[\d,]*)/);
+      if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+    }
+    return null;
+  }
+  var focalNameLower = (d.name || '').trim().toLowerCase();
+  var peers = (r.competitors || []).filter(function(c) {
+    var peerName = (c.name || '').trim().toLowerCase();
+    return peerName && peerName !== focalNameLower;
+  });
+  var youColor = r.healthCheckScore >= 65 ? '#00A651'
+               : r.healthCheckScore >= 45 ? '#F7941D'
+               : '#ED1C24';
+  var youCard = '<div class="comp-card comp-you">'
+    + '<div class="comp-card-tag" style="background:#1B1464;color:#fff">YOU</div>'
+    + '<div class="comp-name">' + (d.name || 'Your restaurant') + '</div>'
+    + '<div class="comp-big" style="color:' + youColor + '">' + (r.healthCheckScore || 0)
+    + '<span class="comp-big-scale">/100</span></div>'
+    + '<div class="comp-metric-label">DiagnostiX HealthCheck Score</div>'
+    + '<div class="comp-note">Your overall performance</div>'
+    + '</div>';
+  var peerCards = peers.slice(0, 5).map(function(c) {
+    var ratingRaw = interpretCompetitorRating(c);
+    var reviewCount = interpretReviewCount(c);
+    var hasRating = ratingRaw !== null;
+    var ratingDisplay = hasRating ? ratingRaw.toFixed(1) : '—';
+    var ratingColor = !hasRating ? '#999'
+                    : ratingRaw >= 4.5 ? '#00A651'
+                    : ratingRaw >= 4.0 ? '#F7941D'
+                    : '#ED1C24';
+    var reviewCountDisplay = reviewCount !== null
+      ? (reviewCount >= 1000 ? (reviewCount/1000).toFixed(1) + 'k' : String(reviewCount)) + ' reviews'
+      : 'Market rating';
+    return '<div class="comp-card comp-peer">'
+      + '<div class="comp-card-tag" style="background:#e8e3d8;color:#666">PEER</div>'
+      + '<div class="comp-name">' + (c.name || 'Unknown') + '</div>'
+      + '<div class="comp-big" style="color:' + ratingColor + '">' + ratingDisplay
+      + (hasRating ? '<span class="comp-big-scale"> / 5 ★</span>' : '') + '</div>'
+      + '<div class="comp-metric-label">' + reviewCountDisplay + '</div>'
+      + '<div class="comp-note">' + (c.note || '') + '</div>'
+      + '</div>';
   }).join('');
-  // Add subject restaurant card first
-  compCards = '<div class="comp-card me">'
-    +'<div class="comp-name" style="color:var(--gold)">'+d.name+'</div>'
-    +'<div class="comp-score g">'+(r.healthCheckScore||0)+' <span style="font-size:11px;color:#999">/100</span></div>'
-    +'<div class="comp-detail">Your HealthCheck Score</div></div>'
-    + compCards;
+  var compCards = youCard + peerCards;
 
   var actPriority={urgent:'Urgent &mdash; high impact',['30days']:'30 days &mdash; medium impact',ongoing:'Ongoing &mdash; compounding'};
   var actBadge={urgent:'hi',['30days']:'med',ongoing:'lo'};
