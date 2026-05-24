@@ -725,15 +725,29 @@ async function sendInternalSummaryEmail({ subscriber, report, reportNumber, surv
   // Business metrics — show each metric, or "(not tracked)" when user opted out.
   // This tells you at a glance whether the user shared financials or skipped them,
   // distinct from "flat YoY" (which is also a legitimate response of 0%).
+  //
+  // Source precedence:
+  //   1. survey.businessMetrics (camelCase) — the canonical survey shape, always present in-flight
+  //   2. subscriber.guest_count_change (snake_case) — Supabase column shape, present when loaded from DB
+  //   3. subscriber.guestCountChange (camelCase) — in-memory subscriber object, present in customer email flow
+  // Reading from all three sources ensures metrics show up consistently regardless of
+  // whether the email is generated from a live submission, a re-send, or a webhook trigger.
   const fmtBM = (v) => {
     if (v === null || v === undefined || !isFinite(v)) return '<span style="color:#999;font-style:italic">not tracked</span>';
     const sign = v >= 0 ? '+' : '';
     const col = v < 0 ? '#C0392B' : v > 0 ? '#2E7D52' : '#666';
     return `<span style="color:${col};font-weight:700">${sign}${v}%</span>`;
   };
-  const guestBM  = (typeof subscriber.guest_count_change   === 'number') ? subscriber.guest_count_change   : null;
-  const checkBM  = (typeof subscriber.avg_check_change     === 'number') ? subscriber.avg_check_change     : null;
-  const profitBM = (typeof subscriber.profitability_change === 'number') ? subscriber.profitability_change : null;
+  const surveyBM = (survey && survey.businessMetrics) || {};
+  const pickBM = (surveyKey, snakeKey, camelKey) => {
+    if (typeof surveyBM[surveyKey] === 'number') return surveyBM[surveyKey];
+    if (typeof subscriber[snakeKey] === 'number') return subscriber[snakeKey];
+    if (typeof subscriber[camelKey] === 'number') return subscriber[camelKey];
+    return null;
+  };
+  const guestBM  = pickBM('guestCountChange',    'guest_count_change',   'guestCountChange');
+  const checkBM  = pickBM('avgCheckChange',      'avg_check_change',     'avgCheckChange');
+  const profitBM = pickBM('profitabilityChange', 'profitability_change', 'profitabilityChange');
   const bmShared = [guestBM, checkBM, profitBM].filter(v => v !== null).length;
   const bmRow = `<strong>Business metrics:</strong> ${bmShared}/3 shared
     <pre style="font-family:'SF Mono',Consolas,Menlo,monospace;font-size:13px;background:#f7f5f0;padding:10px 14px;border-radius:6px;margin:6px 0 14px;white-space:pre-wrap;line-height:1.7">  Guest count:    ${fmtBM(guestBM)}
@@ -780,12 +794,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.7' });
+    res.json({ status: 'running', version: '8.9.8' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.7' });
+  res.json({ status: 'ok', version: '8.9.8' });
 });
 
 app.get('/test', async (req, res) => {
@@ -1149,7 +1163,7 @@ After listing all user-named competitors, you MUST add additional competitors fr
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.7',
+      version: '8.9.8',
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
       serperExtracted: compUserResults.map(r => ({
@@ -1880,11 +1894,20 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   ` : '';
 
   // Business reality block — financial metrics + pillar pairings + AI's analysis.
-  // Renders only when at least one financial metric is present on the subscriber row.
+  // Renders only when at least one financial metric is present.
   // Color bands: red when worse than -5%, amber -5% to 0%, green >= 0%. Profitability widens slightly.
-  const guestChg  = (typeof subscriber.guest_count_change   === 'number') ? subscriber.guest_count_change   : null;
-  const checkChg  = (typeof subscriber.avg_check_change     === 'number') ? subscriber.avg_check_change     : null;
-  const profitChg = (typeof subscriber.profitability_change === 'number') ? subscriber.profitability_change : null;
+  // Source precedence (same as internal email): survey.businessMetrics first,
+  // then subscriber snake_case (Supabase row), then subscriber camelCase (in-memory).
+  const surveyBMC = (survey && survey.businessMetrics) || {};
+  const pickBMC = (surveyKey, snakeKey, camelKey) => {
+    if (typeof surveyBMC[surveyKey] === 'number') return surveyBMC[surveyKey];
+    if (typeof subscriber[snakeKey] === 'number') return subscriber[snakeKey];
+    if (typeof subscriber[camelKey] === 'number') return subscriber[camelKey];
+    return null;
+  };
+  const guestChg  = pickBMC('guestCountChange',    'guest_count_change',   'guestCountChange');
+  const checkChg  = pickBMC('avgCheckChange',      'avg_check_change',     'avgCheckChange');
+  const profitChg = pickBMC('profitabilityChange', 'profitability_change', 'profitabilityChange');
   const hasAnyBM = guestChg !== null || checkChg !== null || profitChg !== null;
   const businessAnalysis = report?.businessRealityAnalysis || '';
   const perceptionGap    = report?.perceptionGap || '';
