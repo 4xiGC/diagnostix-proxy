@@ -470,12 +470,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.6' });
+    res.json({ status: 'running', version: '8.7' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.6' });
+  res.json({ status: 'ok', version: '8.7' });
 });
 
 app.get('/test', async (req, res) => {
@@ -595,6 +595,14 @@ When writing perceptionGap: 1-2 sentences ONLY if there is a meaningful divergen
     console.log('[diagnose] both Claude calls complete in', Date.now() - tClaude, 'ms');
     console.log('[diagnose] p1 score:', p1.healthCheckScore);
     console.log('[diagnose] p2 actions:', p2.actions?.length);
+    // Log competitor shape — helps diagnose renderer issues from logs alone.
+    if (Array.isArray(p2.competitors) && p2.competitors.length) {
+      const shapes = p2.competitors.slice(0,3).map(c => {
+        const keys = Object.keys(c || {}).sort().join(',');
+        return `{${keys}}`;
+      }).join(' ');
+      console.log('[diagnose] p2 competitors shape:', shapes);
+    }
     const report = Object.assign({}, p1, p2);
     if (!report.healthCheckScore || !report.pillars) throw new Error('missing fields: '+Object.keys(report).join(','));
     console.log('[diagnose] SUCCESS score:', report.healthCheckScore);
@@ -1157,29 +1165,63 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
     </div>`;
   }).join('');
 
-  // Competitors as cards.
-  // Two card shapes, deliberately distinct so the comparison is honest:
-  //  - YOU card  : real DiagnostiX score on /100 (multi-dimensional diagnostic)
-  //  - PEER cards: public market rating (star avg) + review count from web scrape
-  // Different scales => different visual treatments. We never label a star rating as /100.
+  // Competitors — uniform card layout for visual consistency.
+  // Every card has the same shape: big number on top, scale label, then metadata
+  // and note. Different scales are visually denoted via the scale-suffix ("/100"
+  // vs "/5 ★") and the small tag ("YOU" vs "PEER"). This way the eye can scan
+  // all 6 cards as one comparison set without scale-confusion sleight-of-hand.
   //
-  // Schema (new, v8.6+): { name, rating (0-5 or null), reviewCount (int or null), note }
-  // Legacy shape (pre-v8.6): { name, score, note }  — handled in fallback path so
-  // historical reports still render without crashing, even if the focal restaurant is
-  // included in the competitors array.
+  // Aggressive shape interpreter — the AI sometimes returns the rating in different
+  // fields depending on which model ran and whether it inferred the new schema or
+  // hung on to the legacy one. Order of preference:
+  //   1. c.rating  (number 0-5)     → new schema, treat as stars
+  //   2. c.score   (number 0-5)     → legacy shape, looks like stars → stars
+  //   3. c.score   (number > 5)     → legacy shape, looks like a /100 score → stars (÷20)
+  //   4. nothing parseable          → show "—" and let the note explain
+  // This keeps cards looking complete instead of saying "undefined" or "Rating n/a".
+
   const competitorList = Array.isArray(report?.competitors) ? report.competitors : [];
+
+  // Helper: turn whatever the AI gave us into a {rating0to5, source} pair.
+  function interpretCompetitorRating(c) {
+    if (typeof c?.rating === 'number' && isFinite(c.rating)) {
+      // Clamp to 0–5 in case the AI returned something weird.
+      return { rating: Math.max(0, Math.min(5, c.rating)), source: 'rating' };
+    }
+    if (typeof c?.score === 'number' && isFinite(c.score)) {
+      if (c.score > 0 && c.score <= 5) return { rating: c.score, source: 'score-as-stars' };
+      if (c.score > 5 && c.score <= 100) return { rating: c.score / 20, source: 'score-as-100' };
+    }
+    // Sometimes the AI puts a string like "4.5★" or "4.5 stars" — last-ditch parse.
+    const m = typeof c?.rating === 'string' ? c.rating.match(/([0-5](?:\.\d)?)/)
+           : typeof c?.score  === 'string' ? c.score.match(/([0-5](?:\.\d)?)/)
+           : null;
+    if (m) return { rating: parseFloat(m[1]), source: 'string-parse' };
+    return { rating: null, source: 'none' };
+  }
+
+  function interpretReviewCount(c) {
+    if (typeof c?.reviewCount === 'number' && isFinite(c.reviewCount)) return Math.round(c.reviewCount);
+    if (typeof c?.reviews === 'number' && isFinite(c.reviews)) return Math.round(c.reviews);
+    // String fallback: "1,237 reviews" or just "1237"
+    const s = c?.reviewCount || c?.reviews;
+    if (typeof s === 'string') {
+      const m = s.replace(/,/g, '').match(/(\d+)/);
+      if (m) return parseInt(m[1], 10);
+    }
+    return null;
+  }
 
   // YOU card — always built from authoritative data, not from the AI's competitor list
   const youCard = `<div class="comp-card comp-me">
     <div class="comp-card-tag" style="background:var(--blue);color:#fff">YOU</div>
     <div class="comp-name">${esc(restaurant)}</div>
-    <div class="comp-score">${score}<span class="comp-score-out">/100</span></div>
+    <div class="comp-big">${score}<span class="comp-big-scale">/100</span></div>
     <div class="comp-metric-label">DiagnostiX HealthCheck Score</div>
     <div class="comp-note">Full diagnostic across 6 pillars</div>
   </div>`;
 
   // PEER cards — filter out any competitor whose name matches the focal restaurant
-  // (older AI output sometimes included the focal restaurant itself as competitor #0).
   const focalNameLower = String(restaurant || '').trim().toLowerCase();
   const peers = competitorList.filter(c => {
     const peerName = String(c?.name || '').trim().toLowerCase();
@@ -1187,36 +1229,25 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   });
 
   const peerCards = peers.slice(0, 5).map(c => {
-    // Prefer new shape (c.rating + c.reviewCount); fall back to legacy (c.score)
-    // but DO NOT pretend a legacy score is a /100 if it looks like a star rating (<=5).
-    const ratingRaw = (typeof c.rating === 'number') ? c.rating
-                    : (typeof c.score === 'number' && c.score > 0 && c.score <= 5) ? c.score
-                    : null;
-    const reviewCount = (typeof c.reviewCount === 'number') ? c.reviewCount
-                      : (typeof c.reviews === 'number') ? c.reviews
-                      : null;
-    const ratingDisplay = ratingRaw !== null ? ratingRaw.toFixed(1) : null;
+    const { rating: ratingRaw } = interpretCompetitorRating(c);
+    const reviewCount = interpretReviewCount(c);
+    const hasRating = ratingRaw !== null;
+    const ratingDisplay = hasRating ? ratingRaw.toFixed(1) : '—';
 
-    // Star colour band: 4.5+ green, 4.0+ amber, below 4.0 red (industry-standard restaurant bands)
-    const ratingColor = ratingRaw === null ? '#999'
+    // Star colour band: 4.5+ green, 4.0+ amber, below 4.0 red, none grey.
+    const ratingColor = !hasRating ? '#999'
                       : ratingRaw >= 4.5 ? '#00A651'
                       : ratingRaw >= 4.0 ? '#F7941D'
                       : '#ED1C24';
 
     const reviewCountDisplay = reviewCount !== null
       ? (reviewCount >= 1000 ? (reviewCount/1000).toFixed(1) + 'k' : String(reviewCount)) + ' reviews'
-      : 'review count n/a';
+      : 'Market rating';
 
     return `<div class="comp-card comp-peer">
       <div class="comp-card-tag" style="background:#e8e3d8;color:#666">PEER</div>
-      <div class="comp-name">${esc(c.name)}</div>
-      ${ratingDisplay
-        ? `<div class="comp-rating" style="color:${ratingColor}">
-             <span class="comp-rating-num">${ratingDisplay}</span><span class="comp-rating-star">★</span>
-             <span class="comp-rating-out">/ 5</span>
-           </div>`
-        : `<div class="comp-rating" style="color:#999"><span class="comp-rating-num" style="font-size:18px">Rating n/a</span></div>`
-      }
+      <div class="comp-name">${esc(c.name || 'Unknown')}</div>
+      <div class="comp-big" style="color:${ratingColor}">${ratingDisplay}${hasRating ? '<span class="comp-big-scale"> / 5 ★</span>' : ''}</div>
       <div class="comp-metric-label">${esc(reviewCountDisplay)}</div>
       <div class="comp-note">${esc(c.note || '')}</div>
     </div>`;
@@ -1601,31 +1632,27 @@ ul.bullet-list li{margin:4px 0}
 }
 .comp-me{border-top-color:var(--blue)}
 .comp-name{font-weight:900;font-size:14px;color:var(--navy);letter-spacing:.3px}
-.comp-score{
-  font-family:'League Spartan',Arial,sans-serif;
-  font-size:28px;font-weight:900;color:var(--navy);
-  line-height:1;margin:6px 0 8px;
-}
-.comp-score-out{font-size:13px;color:#999;font-weight:500;margin-left:2px}
 .comp-note{font-size:12px;color:#555;line-height:1.55}
-.comp-card{position:relative}
+.comp-card{position:relative;padding-top:22px}
 .comp-card-tag{
   position:absolute;top:10px;right:10px;
   font-size:9px;font-weight:900;letter-spacing:1.5px;
   padding:2px 7px;border-radius:3px;
   -webkit-print-color-adjust:exact;print-color-adjust:exact;
 }
-.comp-rating{
+/* Unified big-number style — same visual prominence for YOU /100 and PEER /5 ★ */
+.comp-big{
   font-family:'League Spartan',Arial,sans-serif;
-  font-weight:900;line-height:1;margin:6px 0 8px;
-  display:flex;align-items:baseline;gap:2px;
+  font-size:30px;font-weight:900;color:var(--navy);
+  line-height:1;margin:8px 0 6px;
+  letter-spacing:-0.5px;
 }
-.comp-rating-num{font-size:28px}
-.comp-rating-star{font-size:20px;margin-left:2px}
-.comp-rating-out{font-size:13px;color:#999;font-weight:500;margin-left:6px}
+.comp-big-scale{
+  font-size:13px;color:#999;font-weight:500;margin-left:3px;letter-spacing:0;
+}
 .comp-metric-label{
   font-size:10px;letter-spacing:1.5px;color:#666;
-  text-transform:uppercase;font-weight:700;margin-bottom:6px;
+  text-transform:uppercase;font-weight:700;margin-bottom:8px;
 }
 
 /* Online presence */
@@ -2283,4 +2310,4 @@ app.post('/trigger-annual-report', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`DiagnostiX v8.6 on port ${PORT}`));
+app.listen(PORT, () => console.log(`DiagnostiX v8.7 on port ${PORT}`));
