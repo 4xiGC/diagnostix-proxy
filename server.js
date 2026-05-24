@@ -805,12 +805,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.10' });
+    res.json({ status: 'running', version: '8.9.11' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.10' });
+  res.json({ status: 'ok', version: '8.9.11' });
 });
 
 app.get('/test', async (req, res) => {
@@ -1174,7 +1174,7 @@ After listing all user-named competitors, you MUST add additional competitors fr
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.10',
+      version: '8.9.11',
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
       serperExtracted: compUserResults.map(r => ({
@@ -1966,9 +1966,11 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   // Business reality block — financial metrics + pillar pairings + AI's analysis.
   // Renders only when at least one financial metric is present.
   // Color bands: red when worse than -5%, amber -5% to 0%, green >= 0%. Profitability widens slightly.
-  // Source precedence (same as internal email): survey.businessMetrics first,
-  // then subscriber snake_case (Supabase row), then subscriber camelCase (in-memory).
-  const surveyBMC = (survey && survey.businessMetrics) || {};
+  // Source precedence: survey.businessMetrics first (when passed), then subscriber
+  // snake_case (Supabase row), then subscriber camelCase (in-memory).
+  // NOTE: when called from /report viewer endpoint, `survey` is not in scope —
+  // typeof check below handles that gracefully without throwing ReferenceError.
+  const surveyBMC = (typeof survey !== 'undefined' && survey && survey.businessMetrics) || {};
   const pickBMC = (surveyKey, snakeKey, camelKey) => {
     if (typeof surveyBMC[surveyKey] === 'number') return surveyBMC[surveyKey];
     if (typeof subscriber[snakeKey] === 'number') return subscriber[snakeKey];
