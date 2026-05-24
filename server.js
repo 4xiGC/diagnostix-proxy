@@ -794,12 +794,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.8' });
+    res.json({ status: 'running', version: '8.9.9' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.8' });
+  res.json({ status: 'ok', version: '8.9.9' });
 });
 
 app.get('/test', async (req, res) => {
@@ -1163,7 +1163,7 @@ After listing all user-named competitors, you MUST add additional competitors fr
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.8',
+      version: '8.9.9',
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
       serperExtracted: compUserResults.map(r => ({
@@ -1619,20 +1619,59 @@ app.get('/report', async (req, res) => {
 
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_KEY;
-  try {
-    const r = await fetch(
-      url + '/rest/v1/subscribers?report_token=eq.' + encodeURIComponent(token) + '&select=*',
-      { headers: { 'apikey': key, 'Authorization': 'Bearer ' + key } }
-    );
-    const rows = await r.json();
-    const sub = Array.isArray(rows) ? rows[0] : null;
-    if (!sub) {
-      return res.status(404).send(renderErrorPage(
-        'Report not found',
-        'We could not find a report matching this link. It may have been revoked. Please contact support.'
-      ));
-    }
 
+  // Try Supabase first (primary store), fall back to in-memory annualSubscribers
+  // Map. The in-memory fallback covers two cases:
+  //   1. Race condition — Supabase write hasn't propagated yet when user clicks link
+  //   2. Supabase unconfigured — local dev or env vars missing
+  let sub = null;
+  if (url && key) {
+    try {
+      const r = await fetch(
+        url + '/rest/v1/subscribers?report_token=eq.' + encodeURIComponent(token) + '&select=*',
+        { headers: { 'apikey': key, 'Authorization': 'Bearer ' + key } }
+      );
+      const rows = await r.json();
+      sub = Array.isArray(rows) ? rows[0] : null;
+      if (sub) console.log(`[/report] found in Supabase: ${sub.email}`);
+    } catch(e) {
+      console.log('[/report] Supabase lookup error:', e.message);
+    }
+  }
+
+  // Fallback to in-memory store (annualSubscribers Map is keyed by report_token)
+  if (!sub) {
+    const memSub = annualSubscribers.get(token);
+    if (memSub) {
+      console.log(`[/report] found in-memory fallback: ${memSub.email}`);
+      // Adapt in-memory shape (camelCase) to expected snake_case shape used downstream
+      sub = {
+        email:                memSub.email,
+        first_name:           memSub.firstName,
+        restaurant_name:      memSub.restaurantName,
+        location:             memSub.location,
+        website:              memSub.website,
+        report_token:         memSub.reportToken,
+        plan_type:            memSub.planType,
+        amount_paid:          memSub.amountPaid,
+        baseline_score:       memSub.reports?.[0]?.report?.healthCheckScore || 0,
+        baseline_report:      memSub.reports?.[0]?.report || null,
+        guest_count_change:   memSub.guestCountChange,
+        avg_check_change:     memSub.avgCheckChange,
+        profitability_change: memSub.profitabilityChange
+      };
+    }
+  }
+
+  if (!sub) {
+    console.log(`[/report] token not found anywhere: ${token.slice(0, 8)}...`);
+    return res.status(404).send(renderErrorPage(
+      'Report not found',
+      'We could not find a report matching this link. It may have been revoked. Please contact support.'
+    ));
+  }
+
+  try {
     let report = sub.baseline_report;
     let reportLabel = sub.plan_type === 'one_off' ? 'Full Report' : 'Baseline Report (Day 0)';
     if (sub.report_2) { report = sub.report_2; reportLabel = 'Report 2 — Month 4'; }
@@ -1644,7 +1683,7 @@ app.get('/report', async (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     return res.send(html);
   } catch(e) {
-    console.log('[/report] error:', e.message);
+    console.log('[/report] render error:', e.message);
     return res.status(500).send(renderErrorPage(
       'Something went wrong',
       'We could not load your report right now. Please try again in a few minutes.'
@@ -2504,9 +2543,11 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
     profitabilityChange
   };
 
-  if (isAnnual) {
-    annualSubscribers.set(reportToken, subscriber);
-  }
+  // Always cache the subscriber in-memory so /report endpoint has a fallback
+  // when Supabase lookup fails (race condition between save + email link click,
+  // or when Supabase is unconfigured). The Map name is historical — it now
+  // holds all plan types.
+  annualSubscribers.set(reportToken, subscriber);
 
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_KEY;
