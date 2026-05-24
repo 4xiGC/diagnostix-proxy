@@ -303,6 +303,60 @@ async function searchWithFallback(queries, opts) {
   return 'no data';
 }
 
+// ── detectFocalContext() — extract cuisine + price tier from focal restaurant ──
+// Fast pre-scan via searchStructured() that pulls the restaurant's basic
+// Google Knowledge Graph + organic snippets, then text-mines for cuisine
+// (e.g. "Peruvian-Chinese fusion", "Japanese", "steakhouse") and price tier
+// signals (e.g. "$$$$", "fine dining", "upscale", "casual", "fast-casual",
+// "high-end", "budget"). Returns:
+//   { cuisine: string|null, tier: 'fine-dining'|'upscale-casual'|'casual'|'budget'|null }
+//
+// Used to build smarter, tier-aware competitor search queries so we don't
+// match a premium fusion concept against random low-rated places.
+async function detectFocalContext({ name, location }) {
+  const t = Date.now();
+  // One quick search — the focal restaurant's main listing is usually enough.
+  const result = await searchStructured(`${name} restaurant ${location}`, { label: 'FOCAL-CTX' })
+    .catch(e => ({ text: '', rating: null, reviewCount: null, title: null }));
+  const text = String(result.text || '').toLowerCase();
+
+  // Cuisine detection — scan for common cuisine words. Order matters: more
+  // specific compound terms first (e.g. "peruvian-chinese fusion" before
+  // either "peruvian" or "chinese" or "fusion" alone).
+  const cuisinePatterns = [
+    /peruvian[- ]chinese\s*fusion/, /asian\s*fusion/, /pan[- ]asian/, /latin\s*fusion/,
+    /steakhouse/, /churrascaria/, /seafood/, /sushi\s*bar/, /omakase/,
+    /italian/, /trattoria/, /pizzeria/, /french/, /bistro/, /brasserie/,
+    /japanese/, /chinese/, /thai/, /vietnamese/, /korean/, /indian/,
+    /mexican/, /peruvian/, /argentinian/, /brazilian/, /spanish/, /tapas/,
+    /mediterranean/, /lebanese/, /greek/, /turkish/,
+    /american/, /barbecue|bbq/, /burger/, /vegan/, /vegetarian/,
+    /farm[- ]to[- ]table/, /seasonal/, /tasting\s*menu/,
+    /breakfast/, /brunch/, /cafe/, /bakery/, /pastry/, /dessert/
+  ];
+  let cuisine = null;
+  for (const pat of cuisinePatterns) {
+    const m = text.match(pat);
+    if (m) { cuisine = m[0]; break; }
+  }
+
+  // Tier detection — price markers + tier keywords.
+  // Order: most-specific first. Fall through to default null when no signal.
+  let tier = null;
+  if (/\$\$\$\$|fine[- ]dining|tasting\s*menu|haute\s*cuisine|michelin/.test(text)) {
+    tier = 'fine-dining';
+  } else if (/\$\$\$|upscale|premium|high[- ]end|elegant|sophisticated|refined/.test(text)) {
+    tier = 'upscale-casual';
+  } else if (/\$\$|casual\s*dining|mid[- ]range|family[- ]friendly/.test(text)) {
+    tier = 'casual';
+  } else if (/\$(?!\$)|fast[- ]casual|budget|cheap|affordable|takeout/.test(text)) {
+    tier = 'budget';
+  }
+
+  console.log(`[serper] FOCAL-CTX detected: cuisine="${cuisine || '(none)'}", tier="${tier || '(none)'}", rating=${result.rating}, ${Date.now()-t}ms`);
+  return { cuisine, tier, rating: result.rating, reviewCount: result.reviewCount };
+}
+
 // ── searchCompetitorsMultiple() — multi-pronged competitor discovery ─────
 // Replaces the old single-query competitor search with 5 parallel layers:
 //   1. User-supplied competitors (highest trust) — each name searched individually
@@ -320,7 +374,7 @@ async function searchWithFallback(queries, opts) {
 // Total elapsed is roughly the slowest single layer, not the sum, so cost is
 // minimal vs the old single search.
 async function searchCompetitorsMultiple(opts) {
-  const { name, location, region, userCompetitors } = opts;
+  const { name, location, region, userCompetitors, focalContext } = opts;
 
   // Parse "City/Neighborhood, State, Country" or "City, Country" location formats.
   // Real inputs include:
@@ -342,7 +396,23 @@ async function searchCompetitorsMultiple(opts) {
   // Neighborhood-level queries use just the first part when 3+ parts exist.
   const neighborhood = (locParts.length >= 3) ? localArea : '';
 
-  console.log(`[serper] COMP-MULTI locale: searchLoc="${searchLoc}", neighborhood="${neighborhood || '(none)'}"`);
+  // Build cuisine + tier descriptors to inject into similar/neighborhood/top queries.
+  // E.g. focal is "fine-dining peruvian-chinese fusion" → queries become
+  // "best fine-dining peruvian-chinese fusion restaurants Vitacura" instead of
+  // a generic "best restaurants Vitacura".
+  const fc = focalContext || {};
+  const cuisineDesc = fc.cuisine ? fc.cuisine.trim() : '';
+  const tierDesc = fc.tier === 'fine-dining' ? (region === 'LATAM' ? 'alta cocina' : 'fine dining')
+                 : fc.tier === 'upscale-casual' ? (region === 'LATAM' ? 'premium' : 'upscale')
+                 : fc.tier === 'casual' ? (region === 'LATAM' ? 'casual' : 'casual')
+                 : fc.tier === 'budget' ? (region === 'LATAM' ? 'económico' : 'budget')
+                 : '';
+  // Combined descriptor for query injection (skip empties cleanly)
+  const tierCuisineEn = [tierDesc, cuisineDesc].filter(Boolean).join(' ').trim();
+  // Spanish doesn't use cuisine adjective the same way — keep tier+cuisine readable
+  const tierCuisineEs = [tierDesc, cuisineDesc].filter(Boolean).join(' ').trim();
+
+  console.log(`[serper] COMP-MULTI locale: searchLoc="${searchLoc}", neighborhood="${neighborhood || '(none)'}", focal="${tierCuisineEn || '(generic)'}"`);
 
   // Layer 1: User-supplied competitors. Each name gets 2 parallel searches
   // using searchStructured() which extracts rating/reviewCount directly from
@@ -398,37 +468,38 @@ async function searchCompetitorsMultiple(opts) {
 
   const userSearches = userNames.map(n => lookupUserNamed(n));
 
-  // Layer 2: "Similar to X" — Google often surfaces "people also search for"
-  // panels here, which are great signals for direct concept-overlap competitors.
+  // Layer 2: "Similar to X" + cuisine/tier-narrowed — Google often surfaces "people also
+  // search for" panels here, which are great signals for direct concept-overlap competitors.
+  // When we know the focal restaurant's cuisine/tier, narrow the queries to filter out
+  // mismatched concepts (e.g. avoid surfacing budget burger spots when focal is fine-dining sushi).
   const similarSearches = [
     searchWithFallback(
       region === 'LATAM'
         ? [
             `restaurantes similares a ${name} ${searchLoc}`,
-            `alternativas a ${name} ${searchLoc}`,
+            tierCuisineEs ? `mejores restaurantes ${tierCuisineEs} ${searchLoc}` : `alternativas a ${name} ${searchLoc}`,
             `restaurants like ${name} ${searchLoc}`
           ]
         : [
             `restaurants like ${name} ${searchLoc}`,
-            `restaurants similar to ${name} ${searchLoc}`,
+            tierCuisineEn ? `best ${tierCuisineEn} restaurants ${searchLoc}` : `restaurants similar to ${name} ${searchLoc}`,
             `alternatives to ${name} ${searchLoc}`
           ],
       { label: 'COMP-SIMILAR' }
     )
   ];
 
-  // Layer 3: Neighborhood-narrowed (only when location has 3+ parts and the
-  // first part is a true neighborhood rather than a city).
+  // Layer 3: Neighborhood-narrowed + cuisine/tier-aware (only when location has 3+ parts).
   const neighborhoodSearches = neighborhood ? [
     searchWithFallback(
       region === 'LATAM'
         ? [
-            `mejores restaurantes ${neighborhood} ${stateOrRegion}`,
+            tierCuisineEs ? `mejores restaurantes ${tierCuisineEs} ${neighborhood} ${stateOrRegion}` : `mejores restaurantes ${neighborhood} ${stateOrRegion}`,
             `restaurantes ${neighborhood}`,
             `dónde comer ${neighborhood}`
           ]
         : [
-            `best restaurants ${neighborhood} ${stateOrRegion}`,
+            tierCuisineEn ? `best ${tierCuisineEn} restaurants ${neighborhood} ${stateOrRegion}` : `best restaurants ${neighborhood} ${stateOrRegion}`,
             `top restaurants ${neighborhood}`,
             `where to eat ${neighborhood}`
           ],
@@ -436,18 +507,17 @@ async function searchCompetitorsMultiple(opts) {
     )
   ] : [];
 
-  // Layer 4: Broad "top restaurants" — last-mile fallback to ensure we always
-  // have at least one usable result even when other layers fail.
+  // Layer 4: Broad "top restaurants" + cuisine/tier-aware — last-mile fallback.
   const topSearches = [
     searchWithFallback(
       region === 'LATAM'
         ? [
-            `mejores restaurantes ${searchLoc} TripAdvisor`,
+            tierCuisineEs ? `mejores restaurantes ${tierCuisineEs} ${searchLoc} TripAdvisor` : `mejores restaurantes ${searchLoc} TripAdvisor`,
             `top restaurants ${searchLoc}`,
             `restaurantes recomendados ${searchLoc}`
           ]
         : [
-            `top restaurants ${searchLoc} TripAdvisor`,
+            tierCuisineEn ? `top ${tierCuisineEn} restaurants ${searchLoc} TripAdvisor` : `top restaurants ${searchLoc} TripAdvisor`,
             `best restaurants ${searchLoc}`,
             `highly rated restaurants ${searchLoc}`
           ],
@@ -805,12 +875,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.11' });
+    res.json({ status: 'running', version: '8.9.12' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.11' });
+  res.json({ status: 'ok', version: '8.9.12' });
 });
 
 app.get('/test', async (req, res) => {
@@ -868,13 +938,24 @@ app.post('/diagnose', async (req, res) => {
     }
 
     console.log('[diagnose] searching...');
-    const [g,rv,st,so,dl,compResult] = await Promise.all([
+    // Run focal-context detection in parallel with the other 5 searches.
+    // The competitor search waits for focal context to complete before
+    // launching (so it can build tier-aware queries), then runs its
+    // sub-layers in parallel internally. Net overhead: one extra Serper call
+    // (~700ms) added serially before the competitor batch.
+    const focalCtxPromise = detectFocalContext({ name, location });
+    const compSearchPromise = (async () => {
+      const focalContext = await focalCtxPromise;
+      return searchCompetitorsMultiple({ name, location, region, userCompetitors, focalContext });
+    })();
+    const [g,rv,st,so,dl,compResult,focalContext] = await Promise.all([
       searchWithFallback(queries.GOOGLE,      { label: 'GOOGLE' }),
       searchWithFallback(queries.REVIEWS,     { label: 'REVIEWS' }),
       searchWithFallback(queries.STAFF,       { label: 'STAFF' }),
       searchWithFallback(queries.SOCIAL,      { label: 'SOCIAL' }),
       searchWithFallback(queries.DELIVERY,    { label: 'DELIVERY' }),
-      searchCompetitorsMultiple({ name, location, region, userCompetitors })
+      compSearchPromise,
+      focalCtxPromise
     ]);
     const co = compResult.merged;
     const compUserResults = compResult.userResults || [];
@@ -961,16 +1042,39 @@ IMPERATIVE: Your competitors array MUST include every name above. For each:
 - Use the resolvedName from Serper if provided (it's more accurate, e.g. "Hog Island Oyster Co." instead of "Hog Island"); otherwise keep the user's input name.
 - Write a 1-sentence note describing the competitor's position relative to the focal restaurant.
 
-After listing all user-named competitors, you MUST add additional competitors from the [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] sections until you reach 5 total competitors. Scan ALL sections for any restaurant name that appears verbatim in the data. Common patterns: restaurants mentioned in TripAdvisor "Top 10" lists, restaurants in "people also search for" sections, restaurants with Google Maps listings. Include any restaurant whose name is plausibly in the same tier/category as the focal restaurant. Aim for exactly 5. Only return fewer than 5 if you genuinely cannot find more verifiable competitor names in the entire web data — but the data typically contains many; look harder.`;
+After listing all user-named competitors, you MUST add additional competitors from the [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] sections until you reach 5 total competitors. Follow the FOCAL PROFILE tier/cuisine matching rules below.`;
     } else {
       userCompBlock = '';
+    }
+
+    // Build FOCAL PROFILE block — gives the AI explicit cuisine + tier signals
+    // detected from the focal restaurant's own Serper data, plus matching rules.
+    // This is what turns "find any restaurants in Vitacura" into "find similar-tier
+    // similar-cuisine restaurants in Vitacura" and rejects obvious mismatches like
+    // a 2.0-star traditional Japanese place being compared to a premium fusion concept.
+    let focalProfileBlock = '';
+    if (focalContext && (focalContext.cuisine || focalContext.tier)) {
+      const detected = [];
+      if (focalContext.cuisine) detected.push(`Cuisine: ${focalContext.cuisine}`);
+      if (focalContext.tier)    detected.push(`Tier: ${focalContext.tier}`);
+      if (focalContext.rating !== null && focalContext.rating !== undefined) detected.push(`Focal rating: ${focalContext.rating}`);
+      focalProfileBlock = `FOCAL RESTAURANT PROFILE (detected from web data):
+  ${detected.join(' | ')}
+
+COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors:
+1. CUISINE MATCH: Prefer competitors whose cuisine concept overlaps with the focal restaurant's cuisine. A "Peruvian-Chinese fusion" focal should match other Asian fusion, Pan-Asian, or premium fusion concepts — NOT random Japanese fast-casual places that share a cuisine word.
+2. TIER MATCH: Prefer competitors at a similar quality tier to the focal restaurant. If the focal is "fine-dining" or "upscale", REJECT competitors that are clearly fast-casual, budget, or low-quality. If the focal is "casual", do not include $$$$ fine-dining as a competitor.
+3. RATING FLOOR: Skip any competitor with a rating below 3.5 stars UNLESS the focal restaurant itself has a rating below 3.5. Low-rated places ranked outside the top of their city are NOT relevant competitors for a premium concept.
+4. REVIEW VOLUME FLOOR: Skip any competitor with fewer than 20 reviews. Small-review-count places aren't established enough to be meaningful competitive benchmarks.
+5. AVOID OBVIOUS MISMATCHES: If you find yourself writing a note like "different concept" or "different cuisine" or "different tier" or "weak competitor" or "poor positioning" or "not a direct competitor" — DO NOT INCLUDE that restaurant. Find a better match in the data, or return fewer competitors.
+6. QUALITY OVER QUANTITY: Better to return 3 strong matches than 5 with weak ones. Aim for 5, but never pad with mismatches just to hit the count.`;
     }
 
     console.log('[diagnose] claude part1 + part2 in parallel (p2 uses Haiku for speed)...');
     const tClaude = Date.now();
     const [p1, p2] = await Promise.all([
       claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${sv}\n\n${bmBlock}\n\nReturn JSON. Use WebData for scores. Use Reviewer Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what the reviewer thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between reviewer perception and reality). businessRealityAnalysis and perceptionGap follow the rules above. When business metrics are provided, ALSO populate pillarGapNarratives with one short sentence per relevant pairing (guest count ↔ Customer Sentiment pillar; average check ↔ Pricing & Accessibility pillar; profitability ↔ Brand Experience & Growth pillar). Each narrative should be 1 punchy sentence interpreting the gap or alignment between the financial metric and the qualitative pillar score. If a metric is not provided, return empty string "" for its narrative.\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real"},{"name":"Yelp","score":65,"note":"real"},{"name":"TripAdvisor","score":55,"note":"real"},{"name":"OpenTable","score":60,"note":"real"},{"name":"Social Media","score":50,"note":"real"},{"name":"Delivery Platforms","score":35,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence","businessRealityAnalysis":"","perceptionGap":"","pillarGapNarratives":{"guest":"","check":"","profit":""}}\nRules:good>=65 warn=45-64 bad<45 scoreVerdict=Excellent/Good/Fair/Needs Attention. NOTE: Do NOT change the healthCheckScore or pillar scores based on businessMetrics — the score remains qualitative+web-data driven. Financial metrics are reported separately via businessRealityAnalysis, perceptionGap, and pillarGapNarratives.`, { label: 'diagnose-p1' }),
-      claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,4500)}\n\n${bmBlock}\n\n${userCompBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven SPECIFICALLY by the business metrics the user SHARED. Rules: (a) If the businessMetrics block says all metrics are "Not tracked (user opted out)", return empty array []. (b) Each item MUST reference only a metric the user actually shared — never reference a "Not tracked" metric or speculate about one. (c) Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific shared financial metric, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance (only for shared metrics): declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\nIMPORTANT — COMPETITORS schema: list 3 TO 5 actual competing restaurants from the COMPETITORS web data (NOT the focal restaurant itself). The COMPETITORS web data is organised into LABELED SECTIONS: [USER-NAMED: X] (the restaurant owner identified X as a direct competitor — HIGHEST PRIORITY, always include each user-named competitor if you can find any data about them); [SIMILAR-TO] (restaurants with concept overlap surfaced via \"restaurants like X\" queries — SECOND PRIORITY); [NEIGHBORHOOD] (restaurants in the same neighborhood/district — THIRD PRIORITY, only include if plausibly similar tier/cuisine); [TOP-IN-CITY] (broad city-level results — LOWEST PRIORITY, only use if other sections thin). RULES: (1) Only include competitors whose NAMES appear VERBATIM in the web data — never invent names like \"Restaurant Market\" or generic placeholders. (2) Fewer real competitors is better than padded fakes. If you only have 3 strong, return 3. Do not pad to 5 with weak matches. (3) Skip restaurants that are clearly a different tier (fast-food when focal is fine-dining) or different cuisine concept. (4) For each named competitor, ACTIVELY SEARCH the web data for star ratings (Google, TripAdvisor, Yelp ratings typically appear as \"4.5\", \"4.5/5\", \"4.5 stars\", or similar). Convert to a number 0-5. Only use null if you genuinely cannot find any rating signal — do not default to null out of excessive caution. (5) Same for reviewCount — look for \"850 reviews\", \"1.2k reviews\", \"(642)\" patterns. Convert k-suffixed numbers (1.2k → 1200). Only null if truly absent. (6) Do NOT include the focal restaurant in this list — it will be added by the renderer.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real competitor name","rating":4.5,"reviewCount":850,"note":"1 sentence on their position"},{"name":"real competitor name","rating":4.2,"reviewCount":340,"note":"1 sentence"},{"name":"real competitor name","rating":4.7,"reviewCount":1200,"note":"1 sentence"},{"name":"real competitor name","rating":4.0,"reviewCount":520,"note":"1 sentence"},{"name":"real competitor name","rating":4.3,"reviewCount":890,"note":"1 sentence"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`, { label: 'diagnose-p2', model: 'claude-haiku-4-5-20251001' })
+      claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,4500)}\n\n${bmBlock}\n\n${userCompBlock}\n\n${focalProfileBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven SPECIFICALLY by the business metrics the user SHARED. Rules: (a) If the businessMetrics block says all metrics are "Not tracked (user opted out)", return empty array []. (b) Each item MUST reference only a metric the user actually shared — never reference a "Not tracked" metric or speculate about one. (c) Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific shared financial metric, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance (only for shared metrics): declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\nIMPORTANT — COMPETITORS schema: list 3 TO 5 actual competing restaurants from the COMPETITORS web data (NOT the focal restaurant itself). The COMPETITORS web data is organised into LABELED SECTIONS: [USER-NAMED: X] (the restaurant owner identified X as a direct competitor — HIGHEST PRIORITY, always include each user-named competitor if you can find any data about them); [SIMILAR-TO] (restaurants with concept overlap surfaced via \"restaurants like X\" queries — SECOND PRIORITY); [NEIGHBORHOOD] (restaurants in the same neighborhood/district — THIRD PRIORITY, only include if plausibly similar tier/cuisine); [TOP-IN-CITY] (broad city-level results — LOWEST PRIORITY, only use if other sections thin). RULES: (1) Only include competitors whose NAMES appear VERBATIM in the web data — never invent names like \"Restaurant Market\" or generic placeholders. (2) Fewer real competitors is better than padded fakes. If you only have 3 strong, return 3. Do not pad to 5 with weak matches. (3) Skip restaurants that are clearly a different tier (fast-food when focal is fine-dining) or different cuisine concept. (4) For each named competitor, ACTIVELY SEARCH the web data for star ratings (Google, TripAdvisor, Yelp ratings typically appear as \"4.5\", \"4.5/5\", \"4.5 stars\", or similar). Convert to a number 0-5. Only use null if you genuinely cannot find any rating signal — do not default to null out of excessive caution. (5) Same for reviewCount — look for \"850 reviews\", \"1.2k reviews\", \"(642)\" patterns. Convert k-suffixed numbers (1.2k → 1200). Only null if truly absent. (6) Do NOT include the focal restaurant in this list — it will be added by the renderer.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real competitor name","rating":4.5,"reviewCount":850,"note":"1 sentence on their position"},{"name":"real competitor name","rating":4.2,"reviewCount":340,"note":"1 sentence"},{"name":"real competitor name","rating":4.7,"reviewCount":1200,"note":"1 sentence"},{"name":"real competitor name","rating":4.0,"reviewCount":520,"note":"1 sentence"},{"name":"real competitor name","rating":4.3,"reviewCount":890,"note":"1 sentence"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`, { label: 'diagnose-p2', model: 'claude-haiku-4-5-20251001' })
     ]);
     console.log('[diagnose] both Claude calls complete in', Date.now() - tClaude, 'ms');
     console.log('[diagnose] p1 score:', p1.healthCheckScore);
@@ -1171,10 +1275,77 @@ After listing all user-named competitors, you MUST add additional competitors fr
       console.error('[diagnose] AI-competitor backfill FAILED (continuing without backfill):', e.message);
     }
 
+    // ── Quality filter (post-AI, post-backfill) ─────────────────────────
+    // After the AI returns and Serper backfill runs, evaluate each non-user-named
+    // competitor against tier/quality floors. Rejects:
+    //   - Rating below 3.5 (unless focal restaurant also rates below 3.5)
+    //   - Review count below 20 (too small to be a meaningful benchmark)
+    //   - AI note containing self-disqualifying language ("different concept",
+    //     "different tier", "weak competitor", "not a direct competitor")
+    // User-named competitors are EXEMPT — owner knows their own market.
+    try {
+      if (Array.isArray(report.competitors) && report.competitors.length) {
+        const focalRating = focalContext && typeof focalContext.rating === 'number' ? focalContext.rating : null;
+        const ratingFloor = (focalRating !== null && focalRating < 3.5) ? focalRating : 3.5;
+        const userLowered = new Set(userCompetitors.map(n => n.toLowerCase()));
+        // Self-disqualifying phrases in the AI's note — when the AI itself admits
+        // the match is poor, we should reject the entry.
+        const disqualifyPatterns = [
+          /different\s*(?:concept|cuisine|tier|category|market|segment)/i,
+          /not\s*a?\s*direct\s*competitor/i,
+          /weak\s*competitor/i,
+          /poor\s*positioning/i,
+          /minimal\s*overlap/i,
+          /limited\s*overlap/i,
+          /tangential/i,
+          /loosely?\s*relat/i,
+          /distant\s*competitor/i
+        ];
+        const before = report.competitors.length;
+        const rejections = [];
+        report.competitors = report.competitors.filter(c => {
+          const nLower = String(c.name || '').trim().toLowerCase();
+          // User-named entries are exempt
+          let isUserNamed = false;
+          for (const u of userLowered) {
+            if (nLower === u || nLower.includes(u) || u.includes(nLower)) { isUserNamed = true; break; }
+          }
+          if (isUserNamed) return true;
+
+          // Rating floor check (only applies when we have a rating)
+          if (typeof c.rating === 'number' && c.rating < ratingFloor) {
+            rejections.push(`"${c.name}" (rating ${c.rating} < floor ${ratingFloor})`);
+            return false;
+          }
+          // Review volume floor check
+          if (typeof c.reviewCount === 'number' && c.reviewCount < 20 && c.reviewCount > 0) {
+            rejections.push(`"${c.name}" (${c.reviewCount} reviews < 20)`);
+            return false;
+          }
+          // Self-disqualifying note text
+          const note = String(c.note || '');
+          for (const pat of disqualifyPatterns) {
+            if (pat.test(note)) {
+              rejections.push(`"${c.name}" (note self-disqualifies: ${pat.source})`);
+              return false;
+            }
+          }
+          return true;
+        });
+        if (rejections.length) {
+          console.log(`[diagnose] quality filter rejected ${rejections.length}: ${rejections.join(' | ')}`);
+          console.log(`[diagnose] quality filter: ${before} → ${report.competitors.length} remaining (floor=${ratingFloor})`);
+        }
+      }
+    } catch (e) {
+      console.error('[diagnose] quality filter FAILED (continuing):', e.message);
+    }
+
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.11',
+      version: '8.9.12',
+      focalContext: focalContext || null,
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
       serperExtracted: compUserResults.map(r => ({
