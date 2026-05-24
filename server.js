@@ -233,20 +233,25 @@ async function searchStructured(q, opts) {
         }
       }
       // Fallback: pull review count — widened to handle "(2,400)", "2.4k reviews", etc.
+      // Tightened: reject single-digit "1" matches from "#1" rank patterns; minimum 3 reviews.
       if (reviewCount === null) {
         const combined = `${titleTxt} ${snippetTxt}`;
-        // Direct count patterns
-        let m = combined.match(/([\d,]+)\s*(?:reviews?|ratings?|opiniones|reseñas)/i)
-             || combined.match(/(\d[\d,]*)\s*\+\s*(?:reviews?|ratings?)/i);
-        if (m) {
-          const n = parseInt(m[1].replace(/,/g, ''), 10);
-          if (n > 0 && n < 1000000) reviewCount = n;
-        } else {
-          // k-suffixed: "2.4k reviews", "1.2K reviews"
-          const k = combined.match(/(\d+(?:\.\d+)?)\s*k\s*(?:reviews?|ratings?)/i);
-          if (k) {
-            const n = Math.round(parseFloat(k[1]) * 1000);
-            if (n > 0 && n < 1000000) reviewCount = n;
+        // Reject if the snippet's primary context is a rank like "#1", "No. 1", "Top 1"
+        // — those would otherwise get picked up by our number-followed-by-"reviews" regex
+        // if the snippet structure is "Rated #1 with reviews".
+        const rejectPattern = /(?:#\s*|No\.?\s*|Top\s*)1\s*(?:of|in|restaurant|place)/i;
+        if (!rejectPattern.test(combined)) {
+          let m = combined.match(/([\d,]+)\s*(?:reviews?|ratings?|opiniones|reseñas)/i)
+               || combined.match(/(\d[\d,]*)\s*\+\s*(?:reviews?|ratings?)/i);
+          if (m) {
+            const n = parseInt(m[1].replace(/,/g, ''), 10);
+            if (n >= 3 && n < 1000000) reviewCount = n;
+          } else {
+            const k = combined.match(/(\d+(?:\.\d+)?)\s*k\s*(?:reviews?|ratings?)/i);
+            if (k) {
+              const n = Math.round(parseFloat(k[1]) * 1000);
+              if (n >= 3 && n < 1000000) reviewCount = n;
+            }
           }
         }
       }
@@ -766,12 +771,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.4' });
+    res.json({ status: 'running', version: '8.9.5' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.4' });
+  res.json({ status: 'ok', version: '8.9.5' });
 });
 
 app.get('/test', async (req, res) => {
@@ -1033,10 +1038,87 @@ After listing all user-named competitors, you MUST add additional competitors fr
       console.log(`[diagnose] user-competitor safety net: ${promoted} promoted, ${synthesized} synthesized, ${overridden} ratings overridden from Serper, ${merged.length} total`);
     }
 
+    // ── Non-restaurant name filter ─────────────────────────────────
+    // The AI occasionally invents location/district names ("Marin Country Mart
+    // Dining District", "Restaurant Row") that aren't actual restaurants.
+    // Reject any name that matches obvious non-restaurant patterns.
+    // User-named entries are exempt — owners may have typed an actual venue
+    // name that overlaps these patterns.
+    if (Array.isArray(report.competitors) && report.competitors.length) {
+      const nonRestaurantPattern = /\b(district|center|centre|mall|plaza|square|complex|landing|village)\b/i;
+      const userLowered = new Set(userCompetitors.map(n => n.toLowerCase()));
+      const before = report.competitors.length;
+      report.competitors = report.competitors.filter(c => {
+        const n = String(c.name || '').trim();
+        if (!n) return false;
+        // Exempt user-named entries — owner knows their own market
+        if (userLowered.has(n.toLowerCase())) return true;
+        // Reject if name is JUST a district/mall/etc. with no specific restaurant
+        // identifier. "Marin Country Mart Dining District" → reject.
+        // "Hog Island at Marin Country Mart" → keep (contains a restaurant name).
+        // Heuristic: reject if the pattern matches AND the name has fewer than 4 words
+        // AND doesn't contain typical restaurant words.
+        if (nonRestaurantPattern.test(n)) {
+          const wordCount = n.split(/\s+/).length;
+          const restaurantSignal = /\b(restaurant|cafe|bistro|bar|grill|kitchen|eatery|tavern|bakery|pizzeria|trattoria)\b/i;
+          if (wordCount <= 5 && !restaurantSignal.test(n)) {
+            console.log(`[diagnose] non-restaurant filter: rejected "${n}"`);
+            return false;
+          }
+        }
+        return true;
+      });
+      if (report.competitors.length !== before) {
+        console.log(`[diagnose] non-restaurant filter: ${before - report.competitors.length} entries rejected, ${report.competitors.length} remain`);
+      }
+    }
+
+    // ── AI-discovered competitor Serper backfill ─────────────────────────
+    // After the user-named safety net runs, the array may still contain
+    // AI-discovered competitors (like "Farmhouse Local") with null ratings.
+    // Run Serper structured lookup on each of those names so they show real
+    // ratings instead of "NO PUBLIC RATING FOUND". Runs in parallel.
+    if (Array.isArray(report.competitors) && report.competitors.length) {
+      const userLoweredSet = new Set(userCompetitors.map(n => n.toLowerCase()));
+      const needsBackfill = report.competitors
+        .map((c, idx) => ({ c, idx }))
+        .filter(({ c }) => {
+          const isUserNamed = userLoweredSet.has(String(c.name || '').trim().toLowerCase());
+          const hasNullRating = (c.rating === null || c.rating === undefined);
+          return !isUserNamed && hasNullRating && c.name;
+        });
+
+      if (needsBackfill.length) {
+        const t = Date.now();
+        console.log(`[diagnose] AI-competitor backfill: looking up ${needsBackfill.length} names via Serper`);
+        // Use city-only locale (faster, less rejection on overly-specific neighborhood matches)
+        const locParts = String(location || '').split(',').map(s => s.trim()).filter(Boolean);
+        const cityLoc = locParts.length >= 3 ? `${locParts[0]}, ${locParts[locParts.length - 2]}` : (locParts[0] || location);
+        const lookups = await Promise.all(
+          needsBackfill.map(({ c }) =>
+            searchStructured(`${c.name} restaurant ${cityLoc}`, { label: `BACKFILL[${c.name}]` })
+          )
+        );
+        let backfilled = 0;
+        needsBackfill.forEach(({ idx }, i) => {
+          const lookup = lookups[i];
+          if (lookup.rating !== null) {
+            report.competitors[idx].rating = lookup.rating;
+            if (lookup.reviewCount !== null) report.competitors[idx].reviewCount = lookup.reviewCount;
+            if (lookup.title && lookup.title.length > report.competitors[idx].name.length) {
+              report.competitors[idx].name = lookup.title;
+            }
+            backfilled++;
+          }
+        });
+        console.log(`[diagnose] AI-competitor backfill: ${backfilled}/${needsBackfill.length} got ratings, ${Date.now() - t}ms`);
+      }
+    }
+
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.4',
+      version: '8.9.5',
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
       serperExtracted: compUserResults.map(r => ({
