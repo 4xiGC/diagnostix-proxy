@@ -150,6 +150,79 @@ async function search(q, opts) {
   }
 }
 
+// searchStructured() — variant of search() that returns BOTH the text blob AND
+// the structured rating data when Serper provides it via knowledgeGraph.
+// Used specifically for user-named competitor lookups where we want the
+// star rating extracted authoritatively rather than text-parsed by the AI.
+//
+// Returns: { text: string, rating: number|null, reviewCount: number|null, title: string|null }
+async function searchStructured(q, opts) {
+  opts = opts || {};
+  const label = opts.label || 'search';
+  const sk = process.env.SERPER_API_KEY;
+  if (!sk) { console.log(`[serper] ${label} q="${q}" → NO API KEY`); return { text: 'no api key', rating: null, reviewCount: null, title: null }; }
+  const t0 = Date.now();
+  try {
+    const r = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': sk, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q, num: 10 })
+    });
+    const d = await r.json();
+    let text = '';
+    let rating = null;
+    let reviewCount = null;
+    let title = null;
+
+    // Knowledge graph — the gold standard for restaurant ratings
+    if (d.knowledgeGraph) {
+      const kg = d.knowledgeGraph;
+      title = kg.title || null;
+      if (typeof kg.rating === 'number' && kg.rating >= 0 && kg.rating <= 5) rating = kg.rating;
+      if (typeof kg.reviewCount === 'number' && kg.reviewCount >= 0) reviewCount = kg.reviewCount;
+      text += `[${kg.title||''}] Rating:${kg.rating||'N/A'} (${kg.reviewCount||0} reviews) ${kg.description||''}\n`;
+    }
+
+    // Organic results — also scan snippets for rating patterns when KG missed it
+    (d.organic||[]).slice(0,8).forEach(i => {
+      text += `${i.title}: ${i.snippet||''}\n`;
+      // Fallback: pull rating from snippet text if KG didn't give us one
+      if (rating === null) {
+        const snippet = String(i.snippet||'');
+        // Patterns: "4.5 stars", "Rating: 4.5", "4.5/5", "★★★★½ (4.5)", "(4.5/5)"
+        const m = snippet.match(/(?:rating[:\s]*|★\s*)(\d\.\d)(?:\s*\/\s*5|\s*stars|\s*★)?/i)
+              || snippet.match(/(\d\.\d)\s*(?:stars?|★|\/\s*5)/i)
+              || snippet.match(/\(\s*(\d\.\d)\s*\/\s*5\s*\)/);
+        if (m) {
+          const n = parseFloat(m[1]);
+          if (n >= 0 && n <= 5) rating = n;
+        }
+      }
+      // Fallback: pull review count from snippet (e.g. "1,234 reviews", "(642)", "850+ reviews")
+      if (reviewCount === null) {
+        const snippet = String(i.snippet||'');
+        const m = snippet.match(/([\d,]+)\s*(?:reviews?|opiniones|reseñas)/i)
+              || snippet.match(/(\d[\d,]*)\s*\+\s*(?:reviews?|ratings?)/i);
+        if (m) {
+          const n = parseInt(m[1].replace(/,/g, ''), 10);
+          if (n > 0 && n < 1000000) reviewCount = n;
+        }
+      }
+    });
+
+    const ms = Date.now() - t0;
+    text = text || 'no data';
+    const ratingFlag = rating !== null ? ` rating=${rating}` : '';
+    const countFlag = reviewCount !== null ? ` count=${reviewCount}` : '';
+    console.log(`[serper] ${label} q="${q.slice(0,80)}" → ${text.length}ch ${ms}ms${ratingFlag}${countFlag}`);
+    return { text, rating, reviewCount, title };
+  } catch(e) {
+    const ms = Date.now() - t0;
+    console.log(`[serper] ${label} q="${q.slice(0,80)}" → ERR ${ms}ms ${e.message}`);
+    return { text: 'err:'+e.message, rating: null, reviewCount: null, title: null };
+  }
+}
+
 // searchWithFallback() — try progressive queries until one yields substantive content.
 // `queries` is an array ordered from most-specific to most-general.
 // Returns the first result with > MIN_CHARS of content. If all fall below threshold,
@@ -219,21 +292,51 @@ async function searchCompetitorsMultiple(opts) {
 
   console.log(`[serper] COMP-MULTI locale: searchLoc="${searchLoc}", neighborhood="${neighborhood || '(none)'}"`);
 
-  // Layer 1: User-supplied competitors. Each name gets its own search to
-  // surface that specific restaurant's review data. Cap at 3 to bound cost.
+  // Layer 1: User-supplied competitors. Each name gets 2 parallel searches
+  // using searchStructured() which extracts rating/reviewCount directly from
+  // Serper's knowledgeGraph and from organic-result snippets. This is more
+  // reliable than asking the AI to text-parse the same data, and gives us
+  // authoritative rating data we can inject directly into the response.
+  //
+  // Returns structured per-competitor data alongside the text blob.
   const userNames = Array.isArray(userCompetitors)
     ? userCompetitors.slice(0, 3).filter(n => n && n.trim().length >= 3)
     : [];
-  const userSearches = userNames.map(competitorName =>
-    searchWithFallback(
-      [
-        `${competitorName} ${searchLoc} reviews rating TripAdvisor Yelp`,
-        `${competitorName} restaurant ${searchLoc}`,
-        `"${competitorName}" ${searchLoc}`
-      ],
-      { label: `COMP-USER[${competitorName}]` }
-    )
-  );
+
+  // Run 2 query variants per user-named competitor in parallel. We keep the
+  // best rating found across both — KG-first, then snippet patterns.
+  async function lookupUserNamed(competitorName) {
+    const queries = [
+      // Variant A: explicit review/rating intent — most likely to surface KG with rating
+      `${competitorName} restaurant ${searchLoc} reviews`,
+      // Variant B: quoted name + location — strict matching for ambiguous names like "Left Bank"
+      `"${competitorName}" ${searchLoc} restaurant`
+    ];
+    const t = Date.now();
+    const results = await Promise.all(queries.map(q =>
+      searchStructured(q, { label: `COMP-USER[${competitorName}]` })
+    ));
+    // Pick best signal across variants
+    let bestRating = null, bestCount = null, bestTitle = null;
+    const textChunks = [];
+    for (const r of results) {
+      textChunks.push(r.text || '');
+      if (r.rating !== null && bestRating === null) bestRating = r.rating;
+      if (r.reviewCount !== null && (bestCount === null || r.reviewCount > bestCount)) bestCount = r.reviewCount;
+      if (r.title && !bestTitle) bestTitle = r.title;
+    }
+    const text = textChunks.join('\n---\n');
+    console.log(`[serper] COMP-USER[${competitorName}] aggregated: rating=${bestRating} count=${bestCount} title="${bestTitle||''}" ${Date.now()-t}ms`);
+    return {
+      userName: competitorName,
+      resolvedTitle: bestTitle,
+      rating: bestRating,
+      reviewCount: bestCount,
+      text
+    };
+  }
+
+  const userSearches = userNames.map(n => lookupUserNamed(n));
 
   // Layer 2: "Similar to X" — Google often surfaces "people also search for"
   // panels here, which are great signals for direct concept-overlap competitors.
@@ -294,9 +397,11 @@ async function searchCompetitorsMultiple(opts) {
 
   // Run all layers in parallel — cost is approximately the slowest single
   // layer, not the sum, because Promise.all multiplexes the Serper requests.
+  // userSearches resolve to structured objects { userName, rating, reviewCount, text };
+  // other layers resolve to plain text strings.
   const t0 = Date.now();
-  const results = await Promise.all([
-    ...userSearches,
+  const [userResults, ...otherResults] = await Promise.all([
+    Promise.all(userSearches),
     ...similarSearches,
     ...neighborhoodSearches,
     ...topSearches
@@ -306,17 +411,21 @@ async function searchCompetitorsMultiple(opts) {
   // Stitch together with provenance labels so the AI can see which pile each
   // chunk came from. User-supplied names get priority placement at the top.
   const sections = [];
-  let idx = 0;
-  for (let i = 0; i < userNames.length; i++) {
-    sections.push(`[USER-NAMED: ${userNames[i]}]\n${results[idx++]}`);
+  let otherIdx = 0;
+  for (const userResult of userResults) {
+    const ratingHint = (userResult.rating !== null || userResult.reviewCount !== null)
+      ? ` (extracted rating=${userResult.rating ?? 'n/a'}, reviews=${userResult.reviewCount ?? 'n/a'})`
+      : '';
+    sections.push(`[USER-NAMED: ${userResult.userName}]${ratingHint}\n${userResult.text}`);
   }
-  sections.push(`[SIMILAR-TO]\n${results[idx++]}`);
-  if (neighborhoodSearches.length) sections.push(`[NEIGHBORHOOD]\n${results[idx++]}`);
-  sections.push(`[TOP-IN-CITY]\n${results[idx++]}`);
+  sections.push(`[SIMILAR-TO]\n${otherResults[otherIdx++]}`);
+  if (neighborhoodSearches.length) sections.push(`[NEIGHBORHOOD]\n${otherResults[otherIdx++]}`);
+  sections.push(`[TOP-IN-CITY]\n${otherResults[otherIdx++]}`);
 
   const merged = sections.join('\n\n---\n\n');
-  console.log(`[serper] COMP-MULTI: ${sections.length} layers, ${userNames.length} user-named, ${elapsed}ms, ${merged.length}ch`);
-  return { merged, userNames };
+  const ratingsFound = userResults.filter(r => r.rating !== null).length;
+  console.log(`[serper] COMP-MULTI: ${sections.length} layers, ${userNames.length} user-named (${ratingsFound} with ratings), ${elapsed}ms, ${merged.length}ch`);
+  return { merged, userNames, userResults };
 }
 
 // ── claude() — JSON-output wrapper around Anthropic /v1/messages ─────
@@ -611,12 +720,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.2' });
+    res.json({ status: 'running', version: '8.9.3' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.2' });
+  res.json({ status: 'ok', version: '8.9.3' });
 });
 
 app.get('/test', async (req, res) => {
@@ -683,6 +792,7 @@ app.post('/diagnose', async (req, res) => {
       searchCompetitorsMultiple({ name, location, region, userCompetitors })
     ]);
     const co = compResult.merged;
+    const compUserResults = compResult.userResults || [];
     const web = `GOOGLE:${g}\nREVIEWS:${rv}\nSTAFF:${st}\nSOCIAL:${so}\nDELIVERY:${dl}\nCOMPETITORS:${co}`;
     // Scraping summary: count which categories returned 'no data' so empty-report cases are visible in logs.
     const cats = { GOOGLE:g, REVIEWS:rv, STAFF:st, SOCIAL:so, DELIVERY:dl, COMPETITORS:co };
@@ -746,13 +856,27 @@ When writing perceptionGap: 1-2 sentences ONLY if there is a meaningful divergen
     // the AI cannot miss or skip these. They appear in their own clearly labeled
     // section right at the top of the COMPETITORS data, with an explicit
     // imperative instruction. This is belt-and-braces with the prompt rules.
+    // Includes pre-extracted rating/reviewCount hints from Serper's structured
+    // API response so the AI has authoritative values rather than having to
+    // text-parse them out of snippets.
     let userCompBlock;
     if (userCompetitors.length) {
-      const list = userCompetitors.map((n, i) => `  ${i+1}. ${n}`).join('\n');
+      const list = compUserResults.map((r, i) => {
+        const hint = (r.rating !== null || r.reviewCount !== null)
+          ? ` [EXTRACTED FROM SERPER: rating=${r.rating ?? 'null'}, reviewCount=${r.reviewCount ?? 'null'}${r.resolvedTitle ? `, resolvedName="${r.resolvedTitle}"` : ''}]`
+          : ' [NO STRUCTURED RATING DATA — check the [USER-NAMED] web data section below for snippets]';
+        return `  ${i+1}. ${r.userName}${hint}`;
+      }).join('\n');
       userCompBlock = `USER-NAMED COMPETITORS (the restaurant owner explicitly identified these as their direct competitors — these MUST appear in your competitors array):
 ${list}
 
-IMPERATIVE: Your competitors array MUST include every name above. For each, extract rating and reviewCount from the [USER-NAMED: X] sections of the COMPETITORS web data below. If a specific rating or reviewCount cannot be found in the web data, set that field to null but STILL include the competitor with a 1-sentence note. Do not drop these names under any circumstance. After listing all user-named competitors, you may add up to 2 additional competitors from the [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] sections to reach 3-5 total.`;
+IMPERATIVE: Your competitors array MUST include every name above. For each:
+- If a rating/reviewCount value is shown in [EXTRACTED FROM SERPER: ...] above, USE THOSE EXACT VALUES — they came directly from Google's knowledge graph. Do NOT override them with null.
+- If the EXTRACTED block shows "null" for rating, scan the [USER-NAMED: X] section in the COMPETITORS web data for any rating signal (4.5/5, 4.5 stars, etc) and extract it. Only use null if you genuinely cannot find any signal anywhere.
+- Use the resolvedName from Serper if provided (it's more accurate, e.g. "Hog Island Oyster Co." instead of "Hog Island"); otherwise keep the user's input name.
+- Write a 1-sentence note describing the competitor's position relative to the focal restaurant.
+
+After listing all user-named competitors, you SHOULD add 2 additional competitors from the [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] sections to reach 5 total — but only if their NAMES appear verbatim in the web data. Aim for 5 strong competitors. If only 3-4 truly verifiable competitors exist, that's fine.`;
     } else {
       userCompBlock = '';
     }
@@ -785,9 +909,11 @@ IMPERATIVE: Your competitors array MUST include every name above. For each, extr
     // Strategy:
     //   1. Build a map of competitors the AI returned, keyed by lowercased name.
     //   2. For each user-named competitor (in input order):
-    //      - If AI returned a match, promote that entry to the top of the array.
-    //      - If AI did NOT return a match, synthesize a placeholder entry
-    //        (rating: null, note: "Owner-identified direct competitor").
+    //      - If AI returned a match, promote that entry to the top.
+    //        Then override its rating/reviewCount with the Serper-extracted
+    //        values IF AI gave null but Serper has authoritative data.
+    //      - If AI did NOT return a match, synthesize a card using the
+    //        Serper-extracted rating data (or null when none was found).
     //   3. Fill remaining slots with AI's other competitors (up to 5 total).
     if (userCompetitors.length && Array.isArray(report.competitors)) {
       const aiList = report.competitors.slice();
@@ -803,28 +929,52 @@ IMPERATIVE: Your competitors array MUST include every name above. For each, extr
         }
         return -1;
       };
+      // Build a quick lookup from user-name → Serper-extracted result
+      const serperByName = new Map();
+      for (const r of compUserResults) {
+        serperByName.set(norm(r.userName), r);
+      }
 
       const merged = [];
       const usedAiIdx = new Set();
       let synthesized = 0;
       let promoted = 0;
+      let overridden = 0;
 
       for (const userName of userCompetitors) {
         const aiIdx = findAiMatch(userName);
+        const serperData = serperByName.get(norm(userName));
+
         if (aiIdx >= 0) {
-          // AI returned this competitor — promote it to the top
-          merged.push(aiList[aiIdx]);
+          // AI returned this competitor — promote it. Then upgrade with Serper
+          // data if AI returned null but Serper found a real rating.
+          const entry = Object.assign({}, aiList[aiIdx]);
+          if (serperData) {
+            if ((entry.rating === null || entry.rating === undefined) && serperData.rating !== null) {
+              entry.rating = serperData.rating;
+              overridden++;
+            }
+            if ((entry.reviewCount === null || entry.reviewCount === undefined) && serperData.reviewCount !== null) {
+              entry.reviewCount = serperData.reviewCount;
+            }
+            // Prefer Serper's resolved title (e.g. "Hog Island Oyster Co.") over user's input
+            if (serperData.resolvedTitle && norm(entry.name).length < norm(serperData.resolvedTitle).length) {
+              entry.name = serperData.resolvedTitle;
+            }
+          }
+          merged.push(entry);
           usedAiIdx.add(aiIdx);
           promoted++;
         } else {
-          // AI dropped this competitor — synthesize a placeholder so it still
-          // appears in the report. Owner identified it as a direct competitor;
-          // user can see it even when public data is thin.
+          // AI dropped this competitor — synthesize using Serper data when available.
+          const displayName = (serperData && serperData.resolvedTitle) || userName;
           merged.push({
-            name: userName,
-            rating: null,
-            reviewCount: null,
-            note: 'Owner-identified direct competitor; public review data was limited in this scrape.'
+            name: displayName,
+            rating: serperData ? serperData.rating : null,
+            reviewCount: serperData ? serperData.reviewCount : null,
+            note: (serperData && serperData.rating !== null)
+              ? 'Owner-identified direct competitor — rating data extracted from public review platforms.'
+              : 'Owner-identified direct competitor; public review data was limited in this scrape.'
           });
           synthesized++;
         }
@@ -834,22 +984,27 @@ IMPERATIVE: Your competitors array MUST include every name above. For each, extr
         if (!usedAiIdx.has(i)) merged.push(aiList[i]);
       }
       report.competitors = merged;
-      console.log(`[diagnose] user-competitor safety net: ${promoted} promoted, ${synthesized} synthesized, ${merged.length} total`);
+      console.log(`[diagnose] user-competitor safety net: ${promoted} promoted, ${synthesized} synthesized, ${overridden} ratings overridden from Serper, ${merged.length} total`);
     }
 
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
-    // Stripped before email/PDF rendering — only present in the JSON API response.
     report._debug = {
-      version: '8.9.2',
+      version: '8.9.3',
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
+      serperExtracted: compUserResults.map(r => ({
+        name: r.userName,
+        resolvedTitle: r.resolvedTitle,
+        rating: r.rating,
+        reviewCount: r.reviewCount
+      })),
       aiReturnedCompetitorNames: Array.isArray(p2.competitors)
         ? p2.competitors.map(c => c && c.name).filter(Boolean)
         : [],
       aiReturnedCompetitorCount: Array.isArray(p2.competitors) ? p2.competitors.length : 0,
-      finalCompetitorNames: Array.isArray(report.competitors)
-        ? report.competitors.map(c => c && c.name).filter(Boolean)
+      finalCompetitors: Array.isArray(report.competitors)
+        ? report.competitors.map(c => ({ name: c.name, rating: c.rating, reviewCount: c.reviewCount }))
         : [],
       competitorWebDataChars: (co || '').length,
       competitorSectionLabels: (co || '').match(/\[(USER-NAMED|SIMILAR-TO|NEIGHBORHOOD|TOP-IN-CITY)[^\]]*\]/g) || []
