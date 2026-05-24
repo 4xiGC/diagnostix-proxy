@@ -324,6 +324,11 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
     <label class="flbl">Website <span style="font-size:10px;color:#aaa;text-transform:none;letter-spacing:0">(optional)</span></label>
     <input class="finput" id="f-web" type="url" placeholder="https://yourrestaurant.com" maxlength="150">
   </div>
+  <div class="field">
+    <label class="flbl">Main Competitors <span style="font-size:10px;color:#aaa;text-transform:none;letter-spacing:0">(optional, but recommended)</span></label>
+    <input class="finput" id="f-comp" type="text" placeholder="e.g. Hog Island Oyster Co. Marin, Scoma's Sausalito, Left Bank Larkspur" maxlength="200">
+    <div style="font-size:11px;color:#aaa;margin-top:5px;line-height:1.5">Name 1&ndash;3 nearby restaurants you consider competition. <strong style="color:#888">Be specific</strong> &mdash; include the neighbourhood or full name (e.g. <em>&ldquo;Hog Island Oyster Co. Marin&rdquo;</em> not just <em>&ldquo;Hog Island&rdquo;</em>) so we can match the right business in our competitive analysis.</div>
+  </div>
   </div>
   <div class="privacy">
     <b>&#128274; Privacy:</b> Your data is used solely to generate your HealthCheck report. We never sell or share your information.
@@ -677,7 +682,7 @@ function gatherData() {
     contactName: document.getElementById('f-cname').value.trim(),
     email:       document.getElementById('f-email').value.trim(),
     website:     document.getElementById('f-web').value.trim(),
-    competitors: document.getElementById('f-comp').value.trim(),
+    competitors: (document.getElementById('f-comp') ? document.getElementById('f-comp').value.trim() : ''),
     sentiment:   JSON.parse(JSON.stringify(qVals)),
     businessMetrics: {
       guestCountChange:    guestChange,
