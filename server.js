@@ -1015,12 +1015,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.21' });
+    res.json({ status: 'running', version: '8.9.22' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.21' });
+  res.json({ status: 'ok', version: '8.9.22' });
 });
 
 app.get('/test', async (req, res) => {
@@ -1654,7 +1654,7 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.21',
+      version: '8.9.22',
       focalContext: focalContext || null,
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
@@ -4254,4 +4254,4 @@ table{width:100%;border-collapse:collapse}
 // END EVP ASSESSMENT MODULE
 // ═══════════════════════════════════════════════════════════════════
 
-app.listen(PORT, () => console.log(`DiagnostiX v8.9.21 + EVP v1.0 on port ${PORT}`));
+app.listen(PORT, () => console.log(`DiagnostiX v8.9.22 + EVP v1.0 on port ${PORT}`));
