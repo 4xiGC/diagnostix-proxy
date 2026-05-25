@@ -59,6 +59,7 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .finput{width:100%;background:#fff;border:1.5px solid var(--sur-border);border-radius:6px;padding:11px 13px;color:var(--sur-text);font-family:'League Spartan',sans-serif;font-size:14px;outline:none;transition:border-color 0.2s}
 .finput:focus{border-color:var(--gold)}
 .finput::placeholder{color:#aaa}
+.loc-input{flex:1 1 0;min-width:0}
 .privacy{background:#fff;border:1px solid var(--sur-border);border-radius:6px;padding:10px 14px;margin-top:1rem;font-size:11px;color:#888;line-height:1.6}
 .privacy b{color:var(--sur-gold)}
 .err{color:var(--red);font-size:12px;margin-top:6px;display:none;font-weight:700}
@@ -256,6 +257,8 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   .comp-grid{grid-template-columns:1fr}
   .plan-grid{grid-template-columns:1fr}
   .owner-grid{grid-template-columns:repeat(2,1fr)}
+  .loc-row{flex-direction:column}
+  .loc-input{flex:1 1 100%}
 }
 </style>
 </head>
@@ -303,10 +306,10 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
     </div>
     <div class="field">
       <label class="flbl">Location</label>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <input class="finput" id="f-loc-city"    type="text" placeholder="City"    maxlength="60" style="flex:1;min-width:0">
-        <input class="finput" id="f-loc-state"   type="text" placeholder="State"   maxlength="60" style="flex:1;min-width:0">
-        <input class="finput" id="f-loc-country" type="text" placeholder="Country" maxlength="60" style="flex:1;min-width:0">
+      <div class="loc-row" style="display:flex;gap:8px;flex-wrap:wrap">
+        <input class="finput loc-input" id="f-loc-city"    type="text" placeholder="City"    maxlength="60">
+        <input class="finput loc-input" id="f-loc-state"   type="text" placeholder="State"   maxlength="60">
+        <input class="finput loc-input" id="f-loc-country" type="text" placeholder="Country" maxlength="60">
       </div>
     </div>
   </div>
