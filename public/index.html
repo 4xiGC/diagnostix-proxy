@@ -55,6 +55,7 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .s-sub{font-size:13px;color:var(--sur-muted);line-height:1.65;margin-bottom:1.6rem}
 .field{margin-bottom:1rem}
 .field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:1rem}
+.field-row-single{grid-template-columns:1fr}
 .flbl{font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:var(--sur-gold);margin-bottom:5px;display:block;font-weight:700}
 .finput{width:100%;background:#fff;border:1.5px solid var(--sur-border);border-radius:6px;padding:11px 13px;color:var(--sur-text);font-family:'League Spartan',sans-serif;font-size:14px;outline:none;transition:border-color 0.2s}
 .finput:focus{border-color:var(--gold)}
@@ -307,11 +308,13 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 
   <div id="e0" class="err" style="display:none;margin-bottom:1rem"></div>
 
-  <div class="field-row">
+  <div class="field-row field-row-single">
     <div class="field">
       <label class="flbl">Restaurant Name <span style="color:var(--red)">*</span></label>
       <input class="finput" id="f-name" type="text" placeholder="e.g. The Corner Bistro" maxlength="80">
     </div>
+  </div>
+  <div class="field-row field-row-single">
     <div class="field">
       <label class="flbl">Location <span style="color:var(--red)">*</span></label>
       <div class="loc-row">
