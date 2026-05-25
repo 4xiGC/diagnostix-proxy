@@ -325,9 +325,25 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
     <input class="finput" id="f-web" type="url" placeholder="https://yourrestaurant.com" maxlength="150">
   </div>
   <div class="field">
-    <label class="flbl">Main Competitors <span style="font-size:10px;color:#aaa;text-transform:none;letter-spacing:0">(optional, but recommended)</span></label>
-    <input class="finput" id="f-comp" type="text" placeholder="e.g. Hog Island Oyster Co. Marin, Scoma's Sausalito, Left Bank Larkspur" maxlength="200">
-    <div style="font-size:11px;color:#aaa;margin-top:5px;line-height:1.5">Name 1&ndash;3 nearby restaurants you consider competition. <strong style="color:#888">Be specific</strong> &mdash; include the neighbourhood or full name (e.g. <em>&ldquo;Hog Island Oyster Co. Marin&rdquo;</em> not just <em>&ldquo;Hog Island&rdquo;</em>) so we can match the right business in our competitive analysis.</div>
+    <label class="flbl">
+      Main Competitors
+      <span style="font-size:10px;color:var(--magenta);text-transform:none;letter-spacing:0;font-weight:700">(strongly recommended &mdash; 3 names = best report)</span>
+    </label>
+    <input class="finput" id="f-comp" type="text"
+           placeholder="e.g. Hog Island Oyster Co. Marin, Scoma's Sausalito, Left Bank Larkspur"
+           maxlength="240"
+           oninput="onCompetitorInput()"
+           onblur="onCompetitorBlur()">
+    <div id="comp-hint" style="font-size:11px;color:#888;margin-top:6px;line-height:1.55;transition:color 0.2s">
+      Type the names of <strong style="color:#666">3 nearby restaurants</strong> you consider direct competition, separated by commas.
+      <strong style="color:#666">Spell them carefully and be specific</strong> &mdash;
+      <em>&ldquo;Hog Island Oyster Co. Marin&rdquo;</em> works far better than just <em>&ldquo;Hog Island&rdquo;</em>
+      because we match against Google Maps and TripAdvisor by exact name.
+      <span id="comp-counter" style="display:inline-block;margin-left:4px;padding:1px 8px;border-radius:10px;font-weight:700;font-size:10px;letter-spacing:0.04em;background:#ede9e2;color:#999">0 / 3 NAMES</span>
+    </div>
+    <div id="comp-warn" style="display:none;margin-top:8px;padding:9px 12px;background:#fff5e0;border-left:3px solid #F7941D;border-radius:4px;font-size:11px;color:#7a4a00;line-height:1.5">
+      <strong>Quick tip:</strong> <span id="comp-warn-msg">Reports with only 0&ndash;2 named competitors are noticeably less accurate. Adding a third name lets us cross-check ratings against Google Maps and build a much sharper competitive context. You can still continue, but the report will be less precise.</span>
+    </div>
   </div>
   </div>
   <div class="privacy">
@@ -612,6 +628,25 @@ function goStep(n) {
       return;
     }
     document.getElementById('e0').style.display = 'none';
+
+    // Soft-nudge: if fewer than 3 competitors named, ask user to confirm proceeding.
+    // We remember the confirmation in sessionStorage so the dialog only appears once.
+    var compNames = parseCompetitorNames();
+    if (compNames.length < 3 && !sessionStorage.getItem('dx_comp_nudge_ack')) {
+      var pluralN = compNames.length === 1 ? 'just 1 competitor' : compNames.length + ' competitors';
+      var msg = compNames.length === 0
+        ? 'You haven\'t named any competitors yet.\n\nReports without named competitors are noticeably less accurate in the Competitive Context section. We strongly recommend naming 3 nearby restaurants you consider direct competition before continuing.\n\nClick OK to go back and add competitors, or Cancel to proceed anyway.'
+        : 'You\'ve named ' + pluralN + '.\n\nReports with 3+ named competitors are noticeably sharper because we cross-check each against Google Maps. Adding one or two more would meaningfully improve your report.\n\nClick OK to go back and add more, or Cancel to proceed with what you have.';
+      var goBack = confirm(msg);
+      if (goBack) {
+        // User chose to go back — keep them on step 0, focus the competitor field
+        var compField = document.getElementById('f-comp');
+        if (compField) { compField.focus(); compField.scrollIntoView({behavior:'smooth', block:'center'}); }
+        return;
+      }
+      // User chose to proceed — remember so we don't nudge again
+      sessionStorage.setItem('dx_comp_nudge_ack', '1');
+    }
   }
   document.querySelectorAll('.panel').forEach(function(p,i){ p.classList.toggle('active', i===n); });
   for(var i=0;i<4;i++){
@@ -621,6 +656,49 @@ function goStep(n) {
   var labels=['Step 1 of 2 \u2014 Your Restaurant','Step 2 of 2 \u2014 Reviewer Sentiment','Analysing\u2026','Report Ready'];
   document.getElementById('step-lbl').textContent = labels[n]||'';
   window.scrollTo(0,0);
+}
+
+// ── COMPETITOR INPUT — soft-nudge UX ─────────────────────────
+// Parses the comma-separated competitor field, counts distinct names, and
+// updates a small counter chip plus a warm warning when count < 3. Does
+// NOT block submission — owners with unusual markets can proceed with 0–2.
+function parseCompetitorNames() {
+  var raw = (document.getElementById('f-comp') || {}).value || '';
+  return raw.split(/[,;]/).map(function(s){ return s.trim(); }).filter(function(s){ return s.length >= 3 && s.length <= 60; });
+}
+function onCompetitorInput() {
+  var names = parseCompetitorNames();
+  var n = names.length;
+  var chip = document.getElementById('comp-counter');
+  if (chip) {
+    chip.textContent = n + ' / 3 NAMES';
+    if (n >= 3) {
+      chip.style.background = '#d4ecd5';
+      chip.style.color = '#00733a';
+    } else if (n >= 1) {
+      chip.style.background = '#fff1d6';
+      chip.style.color = '#7a4a00';
+    } else {
+      chip.style.background = '#ede9e2';
+      chip.style.color = '#999';
+    }
+  }
+}
+function onCompetitorBlur() {
+  // Show the warm warning only after the user has finished typing AND has fewer than 3
+  var names = parseCompetitorNames();
+  var warn = document.getElementById('comp-warn');
+  var msg  = document.getElementById('comp-warn-msg');
+  if (!warn || !msg) return;
+  if (names.length === 0) {
+    msg.textContent = 'Reports built without named competitors lose significant precision in the Competitive Context section. Adding even one name helps; three is ideal. You can still proceed.';
+    warn.style.display = 'block';
+  } else if (names.length < 3) {
+    msg.textContent = 'You\'ve named ' + names.length + '. Reports with 3+ named competitors are noticeably sharper because we cross-check each against Google Maps. You can still proceed.';
+    warn.style.display = 'block';
+  } else {
+    warn.style.display = 'none';
+  }
 }
 
 // ── GATHER DATA ───────────────────────────────────────────────
