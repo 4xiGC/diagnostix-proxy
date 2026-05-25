@@ -275,6 +275,132 @@ async function searchStructured(q, opts) {
   }
 }
 
+// ── fetchPlacesNearby() — Google Places API authoritative competitor source ─
+// Replaces text-mined Serper results for AUTO-DISCOVERED competitors with
+// structured Google Maps data. Returns an array of nearby restaurants with:
+//   { name, rating (0-5), reviewCount, priceLevel (1-4), types[], vicinity, distance }
+//
+// Two-stage call:
+//   1. Geocode the focal restaurant's location string → lat/lng
+//   2. Nearby Search within RADIUS_METERS of that point, type=restaurant
+//
+// Falls back to empty array (no error thrown) when:
+//   - GOOGLE_PLACES_API_KEY not configured
+//   - Geocoding returns no results
+//   - Nearby Search returns no results or rate-limits
+//
+// Cost: 1 Geocoding call ($0.005) + 1 Nearby Search call ($0.032) per report.
+// At 1000 reports/month: ~$37. Negligible vs. quality gain.
+async function fetchPlacesNearby(opts) {
+  const { name, location } = opts;
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) {
+    console.log('[places] GOOGLE_PLACES_API_KEY not set — auto-discovery falling back to Serper only');
+    return { places: [], focalRating: null, focalReviewCount: null, focalLatLng: null };
+  }
+
+  const t0 = Date.now();
+
+  // ── Stage 1: Geocode the focal restaurant ─────────────────────────────
+  // We geocode "name, location" rather than just location so the lat/lng lands
+  // on the actual restaurant when possible (gives us the focal's own rating
+  // as a bonus side-effect).
+  let lat = null, lng = null, focalRating = null, focalReviewCount = null;
+  try {
+    const geocodeQuery = `${name}, ${location}`;
+    // Use Places Find Place From Text — better than Geocoding API for restaurants
+    // because it returns the restaurant's place_id which we can use to fetch
+    // the focal's own rating in the same shot.
+    const findUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(geocodeQuery)}&inputtype=textquery&fields=place_id,geometry,name,rating,user_ratings_total,price_level,types&key=${apiKey}`;
+    const fr = await fetch(findUrl);
+    const fd = await fr.json();
+    if (fd.status === 'OK' && Array.isArray(fd.candidates) && fd.candidates.length > 0) {
+      const top = fd.candidates[0];
+      lat = top.geometry?.location?.lat ?? null;
+      lng = top.geometry?.location?.lng ?? null;
+      if (typeof top.rating === 'number') focalRating = top.rating;
+      if (typeof top.user_ratings_total === 'number') focalReviewCount = top.user_ratings_total;
+      console.log(`[places] geocoded focal: name="${top.name||name}", lat=${lat?.toFixed(4)}, lng=${lng?.toFixed(4)}, rating=${focalRating ?? 'n/a'}, reviews=${focalReviewCount ?? 'n/a'}`);
+    } else if (fd.status === 'ZERO_RESULTS') {
+      console.log(`[places] geocode ZERO_RESULTS for "${geocodeQuery}" — falling back to location-only geocode`);
+      // Fallback: geocode just the location string
+      const locUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(location)}&key=${apiKey}`;
+      const lr = await fetch(locUrl);
+      const ld = await lr.json();
+      if (ld.status === 'OK' && Array.isArray(ld.results) && ld.results.length > 0) {
+        lat = ld.results[0].geometry?.location?.lat ?? null;
+        lng = ld.results[0].geometry?.location?.lng ?? null;
+        console.log(`[places] geocoded location-only: lat=${lat?.toFixed(4)}, lng=${lng?.toFixed(4)}`);
+      }
+    } else {
+      console.log(`[places] geocode failed: status=${fd.status}, error="${fd.error_message || 'unknown'}"`);
+    }
+  } catch (e) {
+    console.log(`[places] geocode threw: ${e.message}`);
+  }
+
+  if (lat === null || lng === null) {
+    console.log(`[places] no usable lat/lng — returning empty places`);
+    return { places: [], focalRating, focalReviewCount, focalLatLng: null };
+  }
+
+  // ── Stage 2: Nearby Search within radius ──────────────────────────────
+  // Default radius: 2km. Good for dense urban areas (Vitacura, Manhattan, SF).
+  // For sparse areas this still returns useful matches; Google sorts by
+  // prominence so the top results are typically the most relevant peers.
+  const RADIUS_METERS = 2000;
+  let places = [];
+  try {
+    const nearbyUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${RADIUS_METERS}&type=restaurant&key=${apiKey}`;
+    const nr = await fetch(nearbyUrl);
+    const nd = await nr.json();
+    if (nd.status === 'OK' && Array.isArray(nd.results)) {
+      places = nd.results.map(p => ({
+        name: p.name || '',
+        rating: typeof p.rating === 'number' ? p.rating : null,
+        reviewCount: typeof p.user_ratings_total === 'number' ? p.user_ratings_total : null,
+        priceLevel: typeof p.price_level === 'number' ? p.price_level : null,
+        types: Array.isArray(p.types) ? p.types : [],
+        vicinity: p.vicinity || '',
+        placeId: p.place_id || '',
+        lat: p.geometry?.location?.lat ?? null,
+        lng: p.geometry?.location?.lng ?? null,
+        // Haversine distance from focal in meters (rough but useful for sorting)
+        distance: (() => {
+          const pLat = p.geometry?.location?.lat;
+          const pLng = p.geometry?.location?.lng;
+          if (pLat == null || pLng == null) return null;
+          const R = 6371000;
+          const φ1 = lat * Math.PI/180, φ2 = pLat * Math.PI/180;
+          const Δφ = (pLat-lat) * Math.PI/180;
+          const Δλ = (pLng-lng) * Math.PI/180;
+          const a = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+          return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+        })()
+      }));
+      console.log(`[places] nearby search: ${places.length} restaurants within ${RADIUS_METERS}m, ${Date.now()-t0}ms`);
+    } else {
+      console.log(`[places] nearby search failed: status=${nd.status}, error="${nd.error_message || 'unknown'}"`);
+    }
+  } catch (e) {
+    console.log(`[places] nearby search threw: ${e.message}`);
+  }
+
+  // Drop the focal itself from the peer list (it'll typically be the closest match by name)
+  const focalNorm = String(name).trim().toLowerCase();
+  const filtered = places.filter(p => {
+    const pNorm = String(p.name).trim().toLowerCase();
+    return pNorm !== focalNorm && !pNorm.includes(focalNorm) && !focalNorm.includes(pNorm);
+  });
+
+  return {
+    places: filtered,
+    focalRating,
+    focalReviewCount,
+    focalLatLng: { lat, lng }
+  };
+}
+
 // searchWithFallback() — try progressive queries until one yields substantive content.
 // `queries` is an array ordered from most-specific to most-general.
 // Returns the first result with > MIN_CHARS of content. If all fall below threshold,
@@ -529,9 +655,13 @@ async function searchCompetitorsMultiple(opts) {
   // layer, not the sum, because Promise.all multiplexes the Serper requests.
   // userSearches resolve to structured objects { userName, rating, reviewCount, text };
   // other layers resolve to plain text strings.
+  // placesPromise resolves to { places, focalRating, focalReviewCount, focalLatLng } —
+  // Google Places is the AUTHORITATIVE source for auto-discovered competitors.
+  const placesPromise = fetchPlacesNearby({ name, location });
   const t0 = Date.now();
-  const [userResults, ...otherResults] = await Promise.all([
+  const [userResults, placesData, ...otherResults] = await Promise.all([
     Promise.all(userSearches),
+    placesPromise,
     ...similarSearches,
     ...neighborhoodSearches,
     ...topSearches
@@ -548,14 +678,24 @@ async function searchCompetitorsMultiple(opts) {
       : '';
     sections.push(`[USER-NAMED: ${userResult.userName}]${ratingHint}\n${userResult.text}`);
   }
+  // [GOOGLE-PLACES] section — formatted as readable lines per restaurant so
+  // the AI can use any of these for auto-discovery if it prefers them over
+  // text-mined Serper hits. Authoritative ratings make these the gold source.
+  if (placesData && placesData.places && placesData.places.length > 0) {
+    const placesLines = placesData.places.slice(0, 15).map((p, i) =>
+      `${i+1}. ${p.name} | rating=${p.rating ?? 'n/a'} | reviews=${p.reviewCount ?? 'n/a'} | priceLevel=${p.priceLevel ?? 'n/a'} | distance=${p.distance ?? 'n/a'}m | types=${(p.types || []).slice(0,3).join(',')}`
+    ).join('\n');
+    sections.push(`[GOOGLE-PLACES] (authoritative — use these names verbatim; ratings are from Google Maps directly)\n${placesLines}`);
+  }
   sections.push(`[SIMILAR-TO]\n${otherResults[otherIdx++]}`);
   if (neighborhoodSearches.length) sections.push(`[NEIGHBORHOOD]\n${otherResults[otherIdx++]}`);
   sections.push(`[TOP-IN-CITY]\n${otherResults[otherIdx++]}`);
 
   const merged = sections.join('\n\n---\n\n');
   const ratingsFound = userResults.filter(r => r.rating !== null).length;
-  console.log(`[serper] COMP-MULTI: ${sections.length} layers, ${userNames.length} user-named (${ratingsFound} with ratings), ${elapsed}ms, ${merged.length}ch`);
-  return { merged, userNames, userResults };
+  const placesCount = placesData?.places?.length || 0;
+  console.log(`[serper] COMP-MULTI: ${sections.length} layers, ${userNames.length} user-named (${ratingsFound} with ratings), ${placesCount} Google Places nearby, ${elapsed}ms, ${merged.length}ch`);
+  return { merged, userNames, userResults, placesData };
 }
 
 // ── claude() — JSON-output wrapper around Anthropic /v1/messages ─────
@@ -875,12 +1015,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.13' });
+    res.json({ status: 'running', version: '8.9.16' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.13' });
+  res.json({ status: 'ok', version: '8.9.16' });
 });
 
 app.get('/test', async (req, res) => {
@@ -959,6 +1099,7 @@ app.post('/diagnose', async (req, res) => {
     ]);
     const co = compResult.merged;
     const compUserResults = compResult.userResults || [];
+    const compPlacesData = compResult.placesData || { places: [], focalRating: null, focalReviewCount: null };
     const web = `GOOGLE:${g}\nREVIEWS:${rv}\nSTAFF:${st}\nSOCIAL:${so}\nDELIVERY:${dl}\nCOMPETITORS:${co}`;
     // Scraping summary: count which categories returned 'no data' so empty-report cases are visible in logs.
     const cats = { GOOGLE:g, REVIEWS:rv, STAFF:st, SOCIAL:so, DELIVERY:dl, COMPETITORS:co };
@@ -1042,7 +1183,7 @@ IMPERATIVE: Your competitors array MUST include every name above. For each:
 - Use the resolvedName from Serper if provided (it's more accurate, e.g. "Hog Island Oyster Co." instead of "Hog Island"); otherwise keep the user's input name.
 - Write a 1-sentence note describing the competitor's position relative to the focal restaurant.
 
-After listing all user-named competitors, you MUST add additional competitors from the [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] sections until you reach 5 total competitors. Follow the FOCAL PROFILE tier/cuisine matching rules below.`;
+After listing all user-named competitors, you MUST add UP TO 2 auto-discovered competitors from the [GOOGLE-PLACES] section first (these are AUTHORITATIVE — the names, ratings, and review counts come from Google Maps directly; use them VERBATIM and do not modify the numbers). If [GOOGLE-PLACES] does not have 2 strong tier/cuisine matches, fall back to [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] for the remainder. Target: 3 user-named + up to 2 auto-discovered = 5 total (minimum 3). Follow the FOCAL PROFILE tier/cuisine matching rules below.`;
     } else {
       userCompBlock = '';
     }
@@ -1074,7 +1215,7 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
     const tClaude = Date.now();
     const [p1, p2] = await Promise.all([
       claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,2500)}\n\n${sv}\n\n${bmBlock}\n\nReturn JSON. Use WebData for scores. Use Reviewer Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what the reviewer thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between reviewer perception and reality). businessRealityAnalysis and perceptionGap follow the rules above. When business metrics are provided, ALSO populate pillarGapNarratives with one short sentence per relevant pairing (guest count ↔ Customer Sentiment pillar; average check ↔ Pricing & Accessibility pillar; profitability ↔ Brand Experience & Growth pillar). Each narrative should be 1 punchy sentence interpreting the gap or alignment between the financial metric and the qualitative pillar score. If a metric is not provided, return empty string "" for its narrative.\n{"healthCheckScore":72,"scoreVerdict":"Good","cuisineDetected":"from data","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings","pillars":{"cs":{"score":75,"label":"Customer Sentiment","status":"good"},"pa":{"score":65,"label":"Pricing & Accessibility","status":"good"},"es":{"score":48,"label":"Employee Sentiment","status":"warn"},"sm":{"score":55,"label":"Social Media Impact","status":"warn"},"cp":{"score":70,"label":"Competitive Positioning","status":"good"},"bg":{"score":68,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":62,"channels":[{"name":"Google Business","score":80,"note":"real"},{"name":"Yelp","score":65,"note":"real"},{"name":"TripAdvisor","score":55,"note":"real"},{"name":"OpenTable","score":60,"note":"real"},{"name":"Social Media","score":50,"note":"real"},{"name":"Delivery Platforms","score":35,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence","businessRealityAnalysis":"","perceptionGap":"","pillarGapNarratives":{"guest":"","check":"","profit":""}}\nRules:good>=65 warn=45-64 bad<45 scoreVerdict=Excellent/Good/Fair/Needs Attention. NOTE: Do NOT change the healthCheckScore or pillar scores based on businessMetrics — the score remains qualitative+web-data driven. Financial metrics are reported separately via businessRealityAnalysis, perceptionGap, and pillarGapNarratives.`, { label: 'diagnose-p1' }),
-      claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,4500)}\n\n${bmBlock}\n\n${userCompBlock}\n\n${focalProfileBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven SPECIFICALLY by the business metrics the user SHARED. Rules: (a) If the businessMetrics block says all metrics are "Not tracked (user opted out)", return empty array []. (b) Each item MUST reference only a metric the user actually shared — never reference a "Not tracked" metric or speculate about one. (c) Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific shared financial metric, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance (only for shared metrics): declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\nIMPORTANT — COMPETITORS schema: list 3 TO 5 actual competing restaurants from the COMPETITORS web data (NOT the focal restaurant itself). The COMPETITORS web data is organised into LABELED SECTIONS: [USER-NAMED: X] (the restaurant owner identified X as a direct competitor — HIGHEST PRIORITY, always include each user-named competitor if you can find any data about them); [SIMILAR-TO] (restaurants with concept overlap surfaced via \"restaurants like X\" queries — SECOND PRIORITY); [NEIGHBORHOOD] (restaurants in the same neighborhood/district — THIRD PRIORITY, only include if plausibly similar tier/cuisine); [TOP-IN-CITY] (broad city-level results — LOWEST PRIORITY, only use if other sections thin). RULES: (1) Only include competitors whose NAMES appear VERBATIM in the web data — never invent names like \"Restaurant Market\" or generic placeholders. (2) Fewer real competitors is better than padded fakes. If you only have 3 strong, return 3. Do not pad to 5 with weak matches. (3) Skip restaurants that are clearly a different tier (fast-food when focal is fine-dining) or different cuisine concept. (4) For each named competitor, ACTIVELY SEARCH the web data for star ratings (Google, TripAdvisor, Yelp ratings typically appear as \"4.5\", \"4.5/5\", \"4.5 stars\", or similar). Convert to a number 0-5. Only use null if you genuinely cannot find any rating signal — do not default to null out of excessive caution. (5) Same for reviewCount — look for \"850 reviews\", \"1.2k reviews\", \"(642)\" patterns. Convert k-suffixed numbers (1.2k → 1200). Only null if truly absent. (6) Do NOT include the focal restaurant in this list — it will be added by the renderer.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real competitor name","rating":4.5,"reviewCount":850,"note":"1 sentence on their position"},{"name":"real competitor name","rating":4.2,"reviewCount":340,"note":"1 sentence"},{"name":"real competitor name","rating":4.7,"reviewCount":1200,"note":"1 sentence"},{"name":"real competitor name","rating":4.0,"reviewCount":520,"note":"1 sentence"},{"name":"real competitor name","rating":4.3,"reviewCount":890,"note":"1 sentence"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`, { label: 'diagnose-p2', model: 'claude-haiku-4-5-20251001' })
+      claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${name}\nLocation:${location}\nWebData:\n${web.slice(0,4500)}\n\n${bmBlock}\n\n${userCompBlock}\n\n${focalProfileBlock}\n\nReturn JSON with real data.\n\nIMPORTANT — TWO DISTINCT ACTION LISTS:\n1. "actions" — 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions" — 2-3 COMMERCIAL/FINANCIAL recommendations driven SPECIFICALLY by the business metrics the user SHARED. Rules: (a) If the businessMetrics block says all metrics are "Not tracked (user opted out)", return empty array []. (b) Each item MUST reference only a metric the user actually shared — never reference a "Not tracked" metric or speculate about one. (c) Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific shared financial metric, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance (only for shared metrics): declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\nIMPORTANT — COMPETITORS schema: list 3 TO 5 actual competing restaurants (minimum 3, maximum 5) from the COMPETITORS web data (NOT the focal restaurant itself). The COMPETITORS web data is organised into LABELED SECTIONS in priority order: [USER-NAMED: X] (the restaurant owner identified X as a direct competitor — TOP PRIORITY, always include each user-named competitor if any data exists); [GOOGLE-PLACES] (nearby restaurants from Google Maps within 2km — AUTHORITATIVE source for auto-discovered competitors, ratings/reviewCounts here come directly from Google so use them VERBATIM and do not modify the numbers); [SIMILAR-TO] (concept overlap surfaced via \"restaurants like X\" queries); [NEIGHBORHOOD] (neighborhood/district results); [TOP-IN-CITY] (broad city-level fallback). RULES: (1) Only include competitors whose NAMES appear VERBATIM in the web data — never invent names like \"Restaurant Market\" or generic placeholders. (2) Fewer real competitors is better than padded fakes. If you only have 3 strong, return 3. Do not pad to 5 with weak matches. (3) Skip restaurants that are clearly a different tier (fast-food when focal is fine-dining) or different cuisine concept. (4) For each named competitor, ACTIVELY SEARCH the web data for star ratings (Google, TripAdvisor, Yelp ratings typically appear as \"4.5\", \"4.5/5\", \"4.5 stars\", or similar). Convert to a number 0-5. Only use null if you genuinely cannot find any rating signal — do not default to null out of excessive caution. (5) Same for reviewCount — look for \"850 reviews\", \"1.2k reviews\", \"(642)\" patterns. Convert k-suffixed numbers (1.2k → 1200). Only null if truly absent. (6) Do NOT include the focal restaurant in this list — it will be added by the renderer.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":5,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":4,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":3,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":2,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real competitor name","rating":4.5,"reviewCount":850,"note":"1 sentence on their position"},{"name":"real competitor name","rating":4.2,"reviewCount":340,"note":"1 sentence"},{"name":"real competitor name","rating":4.7,"reviewCount":1200,"note":"1 sentence"},{"name":"real competitor name","rating":4.0,"reviewCount":520,"note":"1 sentence"},{"name":"real competitor name","rating":4.3,"reviewCount":890,"note":"1 sentence"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}`, { label: 'diagnose-p2', model: 'claude-haiku-4-5-20251001' })
     ]);
     console.log('[diagnose] both Claude calls complete in', Date.now() - tClaude, 'ms');
     console.log('[diagnose] p1 score:', p1.healthCheckScore);
@@ -1222,10 +1363,13 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
       }
     }
 
-    // ── AI-discovered competitor Serper backfill ─────────────────────────
+    // ── AI-discovered competitor backfill — Places first, Serper fallback ──
     // After the user-named safety net runs, the array may still contain
-    // AI-discovered competitors (like "Farmhouse Local") with null ratings.
-    // Run Serper structured lookup on each so they show real ratings.
+    // AI-discovered competitors with null ratings. We backfill in two stages:
+    //   1. Match by name against compPlacesData.places (FREE — already fetched
+    //      in the parallel scrape) — most accurate, no extra API call needed.
+    //   2. For names that didn't match Places, fall back to Serper structured
+    //      lookup (slower but works when Places didn't surface the venue).
     // Wrapped in try/catch — any error here MUST NOT empty report.competitors.
     try {
       if (Array.isArray(report.competitors) && report.competitors.length) {
@@ -1245,30 +1389,72 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
 
         if (needsBackfill.length) {
           const t = Date.now();
-          console.log(`[diagnose] AI-competitor backfill: looking up ${needsBackfill.length} names via Serper`);
-          const locParts = String(location || '').split(',').map(s => s.trim()).filter(Boolean);
-          const cityLoc = locParts.length >= 3 ? `${locParts[0]}, ${locParts[locParts.length - 2]}` : (locParts[0] || location);
-          const lookups = await Promise.all(
-            needsBackfill.map(({ c }) =>
-              searchStructured(`${c.name} restaurant ${cityLoc}`, { label: `BACKFILL[${c.name}]` })
-                .catch(e => { console.log(`[diagnose] BACKFILL[${c.name}] error: ${e.message}`); return { text: '', rating: null, reviewCount: null, title: null }; })
-            )
-          );
-          let backfilled = 0;
-          needsBackfill.forEach(({ idx }, i) => {
-            const lookup = lookups[i] || {};
-            if (lookup.rating !== null && lookup.rating !== undefined) {
-              report.competitors[idx].rating = lookup.rating;
-              if (lookup.reviewCount !== null && lookup.reviewCount !== undefined) {
-                report.competitors[idx].reviewCount = lookup.reviewCount;
+
+          // Stage 1: Match against Google Places by fuzzy name (substring both ways)
+          const placesByLower = new Map();
+          for (const p of (compPlacesData.places || [])) {
+            placesByLower.set(String(p.name || '').trim().toLowerCase(), p);
+          }
+          const findPlacesMatch = (compName) => {
+            const cLower = String(compName || '').trim().toLowerCase();
+            // Exact match first
+            if (placesByLower.has(cLower)) return placesByLower.get(cLower);
+            // Substring match (handles "Hog Island" → "Hog Island Oyster Co.")
+            for (const [pLower, p] of placesByLower.entries()) {
+              if (cLower.length >= 3 && pLower.length >= 3 && (cLower.includes(pLower) || pLower.includes(cLower))) {
+                return p;
               }
-              if (lookup.title && lookup.title.length > report.competitors[idx].name.length) {
-                report.competitors[idx].name = lookup.title;
-              }
-              backfilled++;
             }
-          });
-          console.log(`[diagnose] AI-competitor backfill: ${backfilled}/${needsBackfill.length} got ratings, ${Date.now() - t}ms`);
+            return null;
+          };
+
+          let backfilledFromPlaces = 0;
+          const stillNeedsSerper = [];
+          for (const item of needsBackfill) {
+            const placeMatch = findPlacesMatch(item.c.name);
+            if (placeMatch && placeMatch.rating !== null) {
+              report.competitors[item.idx].rating = placeMatch.rating;
+              if (placeMatch.reviewCount !== null) {
+                report.competitors[item.idx].reviewCount = placeMatch.reviewCount;
+              }
+              // Upgrade name to Places' canonical form when longer/more specific
+              if (placeMatch.name && placeMatch.name.length > String(item.c.name).length) {
+                report.competitors[item.idx].name = placeMatch.name;
+              }
+              backfilledFromPlaces++;
+            } else {
+              stillNeedsSerper.push(item);
+            }
+          }
+          console.log(`[diagnose] AI-competitor backfill: ${backfilledFromPlaces}/${needsBackfill.length} matched in Google Places`);
+
+          // Stage 2: Serper fallback for names that didn't match Places
+          if (stillNeedsSerper.length) {
+            console.log(`[diagnose] AI-competitor backfill: looking up ${stillNeedsSerper.length} remaining names via Serper`);
+            const locParts = String(location || '').split(',').map(s => s.trim()).filter(Boolean);
+            const cityLoc = locParts.length >= 3 ? `${locParts[0]}, ${locParts[locParts.length - 2]}` : (locParts[0] || location);
+            const lookups = await Promise.all(
+              stillNeedsSerper.map(({ c }) =>
+                searchStructured(`${c.name} restaurant ${cityLoc}`, { label: `BACKFILL[${c.name}]` })
+                  .catch(e => { console.log(`[diagnose] BACKFILL[${c.name}] error: ${e.message}`); return { text: '', rating: null, reviewCount: null, title: null }; })
+              )
+            );
+            let backfilledFromSerper = 0;
+            stillNeedsSerper.forEach(({ idx }, i) => {
+              const lookup = lookups[i] || {};
+              if (lookup.rating !== null && lookup.rating !== undefined) {
+                report.competitors[idx].rating = lookup.rating;
+                if (lookup.reviewCount !== null && lookup.reviewCount !== undefined) {
+                  report.competitors[idx].reviewCount = lookup.reviewCount;
+                }
+                if (lookup.title && lookup.title.length > report.competitors[idx].name.length) {
+                  report.competitors[idx].name = lookup.title;
+                }
+                backfilledFromSerper++;
+              }
+            });
+            console.log(`[diagnose] AI-competitor backfill: ${backfilledFromSerper}/${stillNeedsSerper.length} matched via Serper, total ${Date.now() - t}ms`);
+          }
         }
       }
     } catch (e) {
@@ -1345,7 +1531,7 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.13',
+      version: '8.9.16',
       focalContext: focalContext || null,
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
@@ -1355,6 +1541,14 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
         rating: r.rating,
         reviewCount: r.reviewCount
       })),
+      googlePlaces: {
+        count: compPlacesData.places?.length || 0,
+        focalLatLng: compPlacesData.focalLatLng || null,
+        topNearby: (compPlacesData.places || []).slice(0, 10).map(p => ({
+          name: p.name, rating: p.rating, reviewCount: p.reviewCount,
+          priceLevel: p.priceLevel, distance: p.distance
+        }))
+      },
       aiReturnedCompetitorNames: Array.isArray(p2.competitors)
         ? p2.competitors.map(c => c && c.name).filter(Boolean)
         : [],
@@ -1363,7 +1557,7 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
         ? report.competitors.map(c => ({ name: c.name, rating: c.rating, reviewCount: c.reviewCount }))
         : [],
       competitorWebDataChars: (co || '').length,
-      competitorSectionLabels: (co || '').match(/\[(USER-NAMED|SIMILAR-TO|NEIGHBORHOOD|TOP-IN-CITY)[^\]]*\]/g) || []
+      competitorSectionLabels: (co || '').match(/\[(USER-NAMED|GOOGLE-PLACES|SIMILAR-TO|NEIGHBORHOOD|TOP-IN-CITY)[^\]]*\]/g) || []
     };
     console.log('[diagnose] _debug:', JSON.stringify(report._debug));
 
@@ -3154,4 +3348,652 @@ app.post('/trigger-annual-report', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`DiagnostiX v8.7 on port ${PORT}`));
+// ═══════════════════════════════════════════════════════════════════
+// EVP ASSESSMENT MODULE — v1.0
+// ───────────────────────────────────────────────────────────────────
+// Sister service to DiagnostiX. Produces Employer Brand & Employee Value
+// Proposition assessments for B2B advisory clients (e.g., Sodexo pitching
+// Goldman Sachs). Mirrors the Sodexo/Goldman deck structure: heatmap,
+// 4-box matrix, peer benchmarking, verbatim quotes, strategic gaps.
+//
+// Endpoints:
+//   POST /evp/diagnose  → run assessment
+//   GET  /evp           → survey form (served via static index-evp.html)
+//   GET  /evp/report?token=...  → persistent report viewer
+//
+// Storage: separate Supabase table `evp_subscribers` (not implemented in v1.0
+// — uses in-memory store only). Pattern matches DiagnostiX so DB upgrade is trivial.
+// ═══════════════════════════════════════════════════════════════════
+
+const evpStore = new Map();  // token → { company, report, savedAt }
+
+// ── EVP attribute catalogue ──────────────────────────────────────────
+// 15 fixed attributes scored on importance + delivery, gap drives priority.
+// Importance baselines come from industry-standard EVP research; the AI
+// adjusts them based on sector + cohort context.
+const EVP_ATTRIBUTES = [
+  { id: 'comp',       label: 'Compensation & carry',         baselineImportance: 91 },
+  { id: 'career',     label: 'Career acceleration',          baselineImportance: 86 },
+  { id: 'prestige',   label: 'Prestige & brand',             baselineImportance: 82 },
+  { id: 'exit',       label: 'Exit opportunity quality',     baselineImportance: 80 },
+  { id: 'wlb',        label: 'Work-life balance',            baselineImportance: 82 },
+  { id: 'alumni',     label: 'Alumni network value',         baselineImportance: 70 },
+  { id: 'rto',        label: 'Earn the commute (RTO)',       baselineImportance: 78 },
+  { id: 'wellbeing',  label: 'Wellbeing support',            baselineImportance: 76 },
+  { id: 'dining',     label: 'Workplace dining quality',     baselineImportance: 74 },
+  { id: 'manager',    label: 'Manager quality',              baselineImportance: 88 },
+  { id: 'hospitality',label: 'Hospitality & environment',    baselineImportance: 71 },
+  { id: 'learning',   label: 'Learning & development',       baselineImportance: 72 },
+  { id: 'tech',       label: 'Technology & tools',           baselineImportance: 68 },
+  { id: 'mobility',   label: 'Internal mobility',            baselineImportance: 65 },
+  { id: 'dei',        label: 'DEI & belonging',              baselineImportance: 62 }
+];
+
+// ── EVP listening channels — Tier 1 (always run) ─────────────────────
+// Each channel is a search-query builder that targets a specific source.
+// Returns text blobs for AI synthesis. Mirrors the multi-layer Serper
+// pattern from DiagnostiX competitor search.
+function buildEvpQueries(company, country, sector) {
+  const c = company;
+  const loc = country || '';
+  return {
+    GLASSDOOR: [
+      `${c} Glassdoor reviews ratings work-life balance compensation`,
+      `${c} Glassdoor employee reviews ${loc}`,
+      `${c} Glassdoor culture management benefits`
+    ],
+    INDEED: [
+      `${c} Indeed employee reviews ${loc}`,
+      `${c} Indeed work happiness score benefits`,
+      `${c} Indeed salaries ratings`
+    ],
+    GREATPLACE: [
+      `${c} "Great Place to Work" certified trust index`,
+      `${c} Best Workplaces ranking certified`,
+      `${c} Great Place to Work survey results`
+    ],
+    FORTUNE: [
+      `${c} Fortune 100 Best Companies to Work For`,
+      `${c} Fortune Best Workplaces ranking`,
+      `${c} Fortune diversity ranking`
+    ],
+    LINKEDIN: [
+      `${c} LinkedIn Top Companies ranking ${loc}`,
+      `${c} LinkedIn employees headcount growth attrition`,
+      `${c} LinkedIn talent insights`
+    ],
+    GOVSTATS: [
+      `${sector} median salary ${loc} ${new Date().getFullYear()}`,
+      `${sector} labor statistics employment ${loc}`,
+      `${sector} wages benefits ${loc} Bureau Labor Statistics`
+    ],
+    SEC_NEWS: [
+      `${c} 10-K human capital disclosure attrition turnover`,
+      `${c} layoffs return to office RTO policy news`,
+      `${c} compensation policy changes leadership`
+    ]
+  };
+}
+
+// ── runEvpScrape() — runs all Tier 1 channels in parallel ────────────
+async function runEvpScrape({ company, country, sector }) {
+  const queries = buildEvpQueries(company, country, sector);
+  const t0 = Date.now();
+  console.log(`[evp] scraping ${Object.keys(queries).length} channels for "${company}" (${sector}, ${country})...`);
+  const [gd, ind, gptw, fortune, li, gov, sec] = await Promise.all([
+    searchWithFallback(queries.GLASSDOOR,  { label: 'EVP-GLASSDOOR' }),
+    searchWithFallback(queries.INDEED,     { label: 'EVP-INDEED' }),
+    searchWithFallback(queries.GREATPLACE, { label: 'EVP-GPTW' }),
+    searchWithFallback(queries.FORTUNE,    { label: 'EVP-FORTUNE' }),
+    searchWithFallback(queries.LINKEDIN,   { label: 'EVP-LINKEDIN' }),
+    searchWithFallback(queries.GOVSTATS,   { label: 'EVP-GOVSTATS' }),
+    searchWithFallback(queries.SEC_NEWS,   { label: 'EVP-SEC-NEWS' })
+  ]);
+  const elapsed = Date.now() - t0;
+  const channels = { gd, ind, gptw, fortune, li, gov, sec };
+  const empties = Object.entries(channels).filter(([k,v]) => v === 'no data' || v === 'no api key' || v.startsWith('err:')).map(([k]) => k);
+  console.log(`[evp] scrape complete: ${7 - empties.length}/7 succeeded, ${elapsed}ms` + (empties.length ? ` | EMPTY: ${empties.join(',')}` : ''));
+  return {
+    glassdoor: gd, indeed: ind, greatPlaceToWork: gptw, fortune: fortune,
+    linkedin: li, governmentStats: gov, secAndNews: sec,
+    elapsed, channelsSucceeded: 7 - empties.length
+  };
+}
+
+// ── runEvpPeerSearch() — find talent competitors for benchmarking ────
+// Mirrors searchCompetitorsMultiple from DiagnostiX. Auto-discovers talent
+// competitors based on sector + uses any user-named ones as ground truth.
+async function runEvpPeerSearch({ company, country, sector, peers }) {
+  const userPeers = Array.isArray(peers)
+    ? peers.slice(0, 5).filter(p => p && p.trim().length >= 2)
+    : [];
+
+  // Layer 1: user-named peers — each gets a dedicated structured search
+  const userSearches = userPeers.map(peerName =>
+    searchStructured(`${peerName} ${sector} Glassdoor reviews work life balance compensation`, { label: `EVP-PEER[${peerName}]` })
+      .catch(() => ({ text: '', rating: null, reviewCount: null, title: null }))
+  );
+
+  // Layer 2: auto-discover similar-tier talent competitors
+  const autoSearches = [
+    searchWithFallback([
+      `top ${sector} employers ${country} talent compensation`,
+      `best ${sector} companies to work for ${country}`,
+      `${company} competitors employer ranking`
+    ], { label: 'EVP-AUTO-PEERS' })
+  ];
+
+  const t0 = Date.now();
+  const [userResults, ...autoResults] = await Promise.all([
+    Promise.all(userSearches),
+    ...autoSearches
+  ]);
+
+  // Stitch into labeled sections for the AI synthesis
+  const sections = [];
+  for (let i = 0; i < userPeers.length; i++) {
+    const r = userResults[i] || {};
+    const hint = (r.rating !== null || r.reviewCount !== null)
+      ? ` (Glassdoor signal: rating=${r.rating ?? 'n/a'}, reviewCount=${r.reviewCount ?? 'n/a'})`
+      : '';
+    sections.push(`[USER-NAMED-PEER: ${userPeers[i]}]${hint}\n${r.text || 'no data'}`);
+  }
+  sections.push(`[AUTO-DISCOVERED-PEERS]\n${autoResults[0]}`);
+
+  const merged = sections.join('\n\n---\n\n');
+  console.log(`[evp] peer scrape: ${userPeers.length} user-named + auto-discovery, ${Date.now()-t0}ms, ${merged.length}ch`);
+  return { merged, userPeers, userResults };
+}
+
+// ── analyzeEvp() — Anthropic synthesis to produce the scored report ──
+async function analyzeEvp({ company, country, sector, cohort, proposerProfile, scrapedData, peerData }) {
+  const attributeList = EVP_ATTRIBUTES
+    .map(a => `  - id="${a.id}" | label="${a.label}" | baseline_importance=${a.baselineImportance}`)
+    .join('\n');
+
+  // Compress scraped data to fit prompt budget
+  const slice = (s, n) => String(s || '').slice(0, n);
+  const dataBlob = [
+    `GLASSDOOR:\n${slice(scrapedData.glassdoor, 2200)}`,
+    `INDEED:\n${slice(scrapedData.indeed, 1500)}`,
+    `GREAT PLACE TO WORK:\n${slice(scrapedData.greatPlaceToWork, 1200)}`,
+    `FORTUNE BEST PLACES:\n${slice(scrapedData.fortune, 1200)}`,
+    `LINKEDIN TOP COMPANIES:\n${slice(scrapedData.linkedin, 1200)}`,
+    `GOVERNMENT LABOUR STATS:\n${slice(scrapedData.governmentStats, 1200)}`,
+    `SEC FILINGS + RECENT NEWS:\n${slice(scrapedData.secAndNews, 1800)}`,
+    `PEER BENCHMARK DATA:\n${slice(peerData.merged, 3500)}`
+  ].join('\n\n---\n\n');
+
+  const proposerBlock = proposerProfile && proposerProfile.trim()
+    ? `\nPROPOSER PROFILE — the entity using this assessment to pitch ${company}:\n  ${proposerProfile.trim()}\n\nFor each top-5 critical gap, flag whether it falls within the proposer's service scope (\"proposerAddressable\": true/false). When true, write a 1-sentence \"rightToWin\" angle showing how the proposer can credibly close the gap.`
+    : '';
+
+  const prompt = `You are conducting an Employer Brand & Employee Value Proposition (EVP) assessment for ${company} (${sector} sector, ${country}). The target cohort is ${cohort || 'professional / mid-career employees'}.
+
+You will receive raw scraped data from 7 listening channels plus peer benchmark data. Your job is to synthesise this into a structured, defensible EVP analysis.
+
+EVP ATTRIBUTES (score each on 0–100 importance for this cohort, and 0–100 delivery by ${company}):
+${attributeList}
+
+RAW DATA:
+${dataBlob}
+${proposerBlock}
+
+RULES:
+1. Importance scores: start from each attribute's baseline_importance, adjust ±10 based on sector + cohort signals in the data. Cohorts in high-stress sectors (finance, consulting, law) weight WLB and wellbeing higher. Tech weights tech tools and learning higher.
+2. Delivery scores: ground every score in scraped evidence. If Glassdoor WLB is 2.9/5, that maps to ~58/100 baseline; if Goldman 13 survey shows 98-hour weeks, drag it down to 28. Cite the source in evidence.
+3. Gap = importance − delivery. Top-5 critical gaps are the most actionable.
+4. Verbatims: 5–6 direct employee quotes pulled VERBATIM from the scraped data. Never invent quotes. Each quote must include source platform + sentiment + (optional) cohort label.
+5. Peer benchmarking: identify 3–5 talent competitors from the peer data. For each, score workplace experience (0-100), compensation ceiling (0-100), prestige (0-100), work-life balance (0-100). Use user-named peers if present, supplement with auto-discovered.
+6. Quadrant assignment: each attribute → one of {criticalGap, competitiveStrength, lowPriority, overInvestment} based on importance×delivery thresholds (importance >70 = high; delivery >55 = high).
+7. Be honest about data thinness. If a channel returned no usable data, lower the confidence score and say so in methodology notes.
+
+Return ONLY valid JSON in this exact schema (no preamble, no markdown):
+{
+  "company": "${company}",
+  "sector": "${sector}",
+  "country": "${country}",
+  "cohort": "${cohort || 'professional / mid-career employees'}",
+  "overallEvpScore": 50,
+  "scoreVerdict": "one of: Strong / Solid / Mixed / Weak",
+  "executiveSummary": "3-4 sentences citing real numbers from the data",
+  "attributes": [
+    {"id":"comp","label":"Compensation & carry","importance":91,"delivery":82,"gap":9,"evidence":"short citation from data","quadrant":"competitiveStrength"}
+  ],
+  "criticalGaps": [
+    {"id":"wlb","label":"Work-life balance","gap":54,"importance":82,"delivery":28,"insight":"1-2 sentences","proposerAddressable":false,"rightToWin":""}
+  ],
+  "competitiveStrengths": [
+    {"id":"prestige","label":"Prestige & brand","delivery":94,"importance":82,"insight":"1 sentence"}
+  ],
+  "verbatims": [
+    {"text":"verbatim quote from data","source":"Glassdoor","sentiment":"negative","cohort":"analyst"}
+  ],
+  "peers": [
+    {"name":"Morgan Stanley","workplaceExperience":52,"compensation":78,"prestige":88,"workLifeBalance":35,"note":"1 sentence comparison"}
+  ],
+  "peerInsight": "2-3 sentences on where ${company} sits in the competitive talent landscape",
+  "talentContextStats": [
+    {"stat":"360K+","label":"Applications for 2,600 internship spots","detail":"0.7% acceptance rate","tone":"neutral"}
+  ],
+  "strategicRecommendations": [
+    {"priority":"urgent","title":"short title","description":"1-2 sentences","linkedGapIds":["wlb","wellbeing"]}
+  ],
+  "methodology": {
+    "channelsSucceeded": ${scrapedData.channelsSucceeded},
+    "channelsTotal": 7,
+    "confidenceNote": "1-2 sentences on data confidence and any thinness",
+    "sources": ["Glassdoor","Indeed","Great Place to Work","Fortune Best Places","LinkedIn Top Companies","Government Labour Statistics","SEC Filings + News"]
+  }
+}`;
+
+  const t0 = Date.now();
+  const raw = await claude(prompt, { label: 'evp-analyze', model: 'claude-sonnet-4-5-20250929' });
+  console.log(`[evp] Claude synthesis: ${Date.now() - t0}ms`);
+
+  // Parse JSON — Claude sometimes wraps responses in markdown code fences,
+  // sometimes adds preamble like "Here is the analysis:", sometimes adds
+  // trailing commentary. We try three increasingly-aggressive recovery
+  // strategies before giving up.
+  let json;
+  const rawStr = String(raw);
+  try {
+    // Strategy 1: strip code fences anywhere, parse what remains
+    let cleaned = rawStr.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+    json = JSON.parse(cleaned);
+  } catch (e1) {
+    try {
+      // Strategy 2: find the first '{' and the last '}', parse what's between
+      const firstBrace = rawStr.indexOf('{');
+      const lastBrace = rawStr.lastIndexOf('}');
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        const extracted = rawStr.slice(firstBrace, lastBrace + 1);
+        json = JSON.parse(extracted);
+      } else {
+        throw new Error('no JSON object boundary found');
+      }
+    } catch (e2) {
+      console.error('[evp] JSON parse failed after 2 recovery strategies:', e2.message);
+      console.error('[evp] raw response (first 800ch):', rawStr.slice(0, 800));
+      throw new Error('AI returned invalid JSON: ' + e2.message);
+    }
+  }
+
+  // Sanity-check the shape — make sure we got at least the critical fields
+  if (!json || typeof json !== 'object') {
+    throw new Error('AI returned a non-object response');
+  }
+  if (!Array.isArray(json.attributes) || json.attributes.length === 0) {
+    console.warn('[evp] AI returned no attributes array — report will be sparse');
+  }
+
+  return json;
+}
+
+// ── POST /evp/diagnose — main entry point ─────────────────────────────
+app.post('/evp/diagnose', async (req, res) => {
+  const t0 = Date.now();
+  try {
+    const body = req.body || {};
+    const company = String(body.company || '').trim();
+    const country = String(body.country || 'United States').trim();
+    const sector = String(body.sector || 'Financial Services').trim();
+    const cohort = String(body.cohort || '').trim();
+    const proposerProfile = String(body.proposerProfile || '').trim();
+    const peers = Array.isArray(body.peers) ? body.peers : (String(body.peers || '').split(/[,;]/).map(s => s.trim()).filter(Boolean));
+    const email = String(body.email || '').trim();
+    const contactName = String(body.contactName || '').trim();
+
+    if (!company || company.length < 2) {
+      return res.status(400).json({ error: 'company name required' });
+    }
+    console.log(`[evp] /diagnose START: company="${company}", sector="${sector}", country="${country}", cohort="${cohort || '(default)'}", peers=${peers.length}, proposer="${proposerProfile ? 'yes' : 'no'}"`);
+
+    // Parallel: scrape + peer benchmark
+    const [scrapedData, peerData] = await Promise.all([
+      runEvpScrape({ company, country, sector }),
+      runEvpPeerSearch({ company, country, sector, peers })
+    ]);
+
+    // AI synthesis
+    const report = await analyzeEvp({ company, country, sector, cohort, proposerProfile, scrapedData, peerData });
+
+    // Generate token + cache report for shareable URL
+    const token = require('crypto').randomBytes(16).toString('hex');
+    evpStore.set(token, {
+      company, country, sector, cohort, proposerProfile, peers,
+      email, contactName,
+      report,
+      scrapedData: {
+        channelsSucceeded: scrapedData.channelsSucceeded,
+        elapsed: scrapedData.elapsed
+      },
+      savedAt: Date.now()
+    });
+    // Keep store small: prune entries older than 7 days
+    for (const [k, v] of evpStore.entries()) {
+      if (Date.now() - v.savedAt > 7 * 24 * 60 * 60 * 1000) evpStore.delete(k);
+    }
+
+    report._token = token;
+    report._reportUrl = `${process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app'}/evp/report?token=${token}`;
+    report._debug = {
+      version: '1.0',
+      channelsSucceeded: scrapedData.channelsSucceeded,
+      scrapeMs: scrapedData.elapsed,
+      totalMs: Date.now() - t0
+    };
+
+    console.log(`[evp] /diagnose SUCCESS: ${Date.now() - t0}ms, token=${token.slice(0, 8)}...`);
+    return res.status(200).json(report);
+  } catch (e) {
+    console.error('[evp] /diagnose FAILED:', e.message, e.stack);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /evp/report?token=... — persistent report viewer ──────────────
+app.get('/evp/report', (req, res) => {
+  const token = String(req.query.token || '').trim();
+  if (!token || token.length < 16) {
+    return res.status(400).send(renderErrorPage('Invalid link', 'This EVP report link is malformed.'));
+  }
+  const stored = evpStore.get(token);
+  if (!stored) {
+    return res.status(404).send(renderErrorPage('Report not found', 'This EVP report has expired or was not found. EVP reports are kept for 7 days.'));
+  }
+  try {
+    const html = renderEvpReportHtml(stored);
+    res.setHeader('Content-Type', 'text/html');
+    return res.send(html);
+  } catch (e) {
+    console.error('[evp/report] render error:', e.message);
+    return res.status(500).send(renderErrorPage('Render error', e.message));
+  }
+});
+
+// ── GET /evp — serve the survey form ─────────────────────────────────
+app.get('/evp', (req, res) => {
+  const path = require('path');
+  res.sendFile(path.join(__dirname, 'public', 'index-evp.html'));
+});
+
+// ── renderEvpReportHtml() — server-side HTML render of EVP report ────
+// Mirrors the structure of the Sodexo/Goldman deck: cover, talent stats,
+// attribute heatmap, 4-box matrix, peer competitive map, verbatims,
+// strategic recommendations, methodology block.
+function renderEvpReportHtml(stored) {
+  const r = stored.report || {};
+  const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  const sortedAttrs = (r.attributes || []).slice().sort((a, b) => (b.gap || 0) - (a.gap || 0));
+  const maxAbsGap = sortedAttrs.reduce((m, a) => Math.max(m, Math.abs(a.gap || 0)), 1) || 1;
+
+  // ── Heatmap rows ─────────────────────────────────────────────────
+  const heatmapRows = (r.attributes || []).map(a => {
+    const imp = Math.max(0, Math.min(100, a.importance || 0));
+    const del = Math.max(0, Math.min(100, a.delivery || 0));
+    const gap = a.gap || 0;
+    const gapColor = gap >= 30 ? '#C0392B' : gap >= 15 ? '#E67E22' : gap >= 0 ? '#95A5A6' : '#27AE60';
+    return `<tr>
+      <td style="font-size:13px;color:#1B1464;font-weight:600;padding:8px 12px 8px 0;width:200px">${esc(a.label)}</td>
+      <td style="padding:8px 0;width:240px"><div style="background:#e8e3d8;border-radius:4px;height:20px;position:relative"><div style="background:#5B7BB8;height:20px;border-radius:4px;width:${imp}%"></div><span style="position:absolute;top:2px;right:6px;font-size:11px;color:#fff;font-weight:600">${imp}</span></div></td>
+      <td style="padding:8px 12px;width:240px"><div style="background:#e8e3d8;border-radius:4px;height:20px;position:relative"><div style="background:#1B1464;height:20px;border-radius:4px;width:${del}%"></div><span style="position:absolute;top:2px;right:6px;font-size:11px;color:#fff;font-weight:600">${del}</span></div></td>
+      <td style="font-size:14px;font-weight:700;color:${gapColor};text-align:right;padding:8px 0;width:80px">${gap > 0 ? '−' : '+'}${Math.abs(gap)}</td>
+    </tr>`;
+  }).join('');
+
+  // ── Critical gaps cards ──────────────────────────────────────────
+  const criticalGaps = (r.criticalGaps || []).slice(0, 5).map(g => {
+    const proposerTag = g.proposerAddressable
+      ? `<div style="display:inline-block;background:#F4B400;color:#1B1464;font-size:9px;font-weight:800;letter-spacing:0.1em;padding:3px 8px;border-radius:3px;text-transform:uppercase;margin-bottom:8px">PROPOSER ADDRESSABLE</div>`
+      : '';
+    const rightToWin = g.rightToWin
+      ? `<div style="background:#f4f3fb;padding:10px 12px;border-radius:5px;border-left:3px solid #F4B400;margin-top:10px"><div style="font-size:9px;color:#F4B400;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:4px">RIGHT TO WIN</div><div style="font-size:12px;color:#1B1464;line-height:1.5">${esc(g.rightToWin)}</div></div>`
+      : '';
+    return `<div style="background:#fff;border:1px solid #e8e3d8;border-top:3px solid #C0392B;border-radius:7px;padding:16px;display:flex;flex-direction:column">
+      ${proposerTag}
+      <div style="font-size:13px;font-weight:700;color:#1B1464;margin-bottom:6px">${esc(g.label)}</div>
+      <div style="font-family:'League Spartan',sans-serif;font-size:1.9rem;font-weight:900;color:#C0392B;line-height:1;margin-bottom:4px">−${g.gap}<span style="font-size:11px;color:#999;font-weight:500"> pt gap</span></div>
+      <div style="font-size:10px;color:#888;letter-spacing:0.06em;font-weight:600;text-transform:uppercase;margin-bottom:10px">importance ${g.importance} · delivery ${g.delivery}</div>
+      <div style="font-size:12px;color:#555;line-height:1.55;flex:1">${esc(g.insight)}</div>
+      ${rightToWin}
+    </div>`;
+  }).join('');
+
+  // ── 4-box matrix ─────────────────────────────────────────────────
+  const quadrantBuckets = {
+    criticalGap: [], competitiveStrength: [], lowPriority: [], overInvestment: []
+  };
+  (r.attributes || []).forEach(a => {
+    if (quadrantBuckets[a.quadrant]) quadrantBuckets[a.quadrant].push(a);
+  });
+  const quadrantBox = (title, subtitle, items, borderColor, bgColor) => {
+    const itemsHtml = items.map(i => `<li style="font-size:12px;color:#1B1464;padding:3px 0;line-height:1.4">${esc(i.label)}</li>`).join('');
+    return `<div style="background:${bgColor};border-left:4px solid ${borderColor};padding:16px 18px;border-radius:5px;min-height:160px">
+      <div style="font-size:14px;font-weight:800;color:${borderColor};margin-bottom:4px;letter-spacing:0.02em">${title}</div>
+      <div style="font-size:11px;color:#666;margin-bottom:10px;font-style:italic">${subtitle}</div>
+      <ul style="margin:0;padding-left:18px;list-style:disc">${itemsHtml || '<li style="font-size:12px;color:#999;list-style:none;padding-left:0">—</li>'}</ul>
+    </div>`;
+  };
+
+  // ── Peer competitive map ─────────────────────────────────────────
+  const peerRows = (r.peers || []).slice(0, 7).map(p => {
+    const wxColor = p.workplaceExperience >= 70 ? '#27AE60' : p.workplaceExperience >= 50 ? '#E67E22' : '#C0392B';
+    const compColor = p.compensation >= 80 ? '#27AE60' : p.compensation >= 60 ? '#E67E22' : '#95A5A6';
+    return `<tr>
+      <td style="font-size:13px;color:#1B1464;font-weight:700;padding:10px 12px 10px 0">${esc(p.name)}</td>
+      <td style="padding:10px 6px"><div style="background:#e8e3d8;border-radius:4px;height:18px;position:relative;width:140px"><div style="background:${wxColor};height:18px;border-radius:4px;width:${p.workplaceExperience || 0}%"></div><span style="position:absolute;top:1px;right:5px;font-size:10px;color:#fff;font-weight:700">${p.workplaceExperience || 0}</span></div></td>
+      <td style="padding:10px 6px"><div style="background:#e8e3d8;border-radius:4px;height:18px;position:relative;width:140px"><div style="background:${compColor};height:18px;border-radius:4px;width:${p.compensation || 0}%"></div><span style="position:absolute;top:1px;right:5px;font-size:10px;color:#fff;font-weight:700">${p.compensation || 0}</span></div></td>
+      <td style="padding:10px 6px;font-size:11px;color:#666;line-height:1.4">${esc(p.note || '')}</td>
+    </tr>`;
+  }).join('');
+
+  // ── Verbatim quotes ──────────────────────────────────────────────
+  const verbatimCards = (r.verbatims || []).slice(0, 6).map(v => {
+    const sentColor = v.sentiment === 'negative' ? '#C0392B' : v.sentiment === 'positive' ? '#27AE60' : '#888';
+    return `<div style="background:#f7f5f0;padding:14px 18px;border-radius:6px;border-left:3px solid ${sentColor}">
+      <div style="font-size:13px;color:#1B1464;line-height:1.5;font-style:italic;margin-bottom:8px">&ldquo;${esc(v.text)}&rdquo;</div>
+      <div style="font-size:10px;color:#888;font-weight:600;letter-spacing:0.04em;text-transform:uppercase">${esc(v.source || '')}${v.cohort ? ' · ' + esc(v.cohort) : ''}</div>
+    </div>`;
+  }).join('');
+
+  // ── Talent context stat cards (top of report, like Sodexo deck p.2) ──
+  const talentStats = (r.talentContextStats || []).slice(0, 3).map(s => {
+    const tone = s.tone === 'negative' ? '#C0392B' : s.tone === 'positive' ? '#27AE60' : '#1B1464';
+    return `<div style="background:#fff;border-top:3px solid ${tone};padding:18px 20px;border-radius:6px;flex:1;min-width:200px">
+      <div style="font-family:'League Spartan',sans-serif;font-size:2.4rem;font-weight:900;color:${tone};line-height:1;margin-bottom:6px">${esc(s.stat)}</div>
+      <div style="font-size:13px;color:#1B1464;font-weight:700;margin-bottom:4px">${esc(s.label)}</div>
+      <div style="font-size:11px;color:#666;line-height:1.5">${esc(s.detail || '')}</div>
+    </div>`;
+  }).join('');
+
+  // ── Strategic recommendations ────────────────────────────────────
+  const recs = (r.strategicRecommendations || []).map((rec, i) => {
+    const priColor = rec.priority === 'urgent' ? '#C0392B' : rec.priority === 'next30days' ? '#E67E22' : '#5B7BB8';
+    const priLabel = rec.priority === 'urgent' ? 'URGENT' : rec.priority === 'next30days' ? '30 DAYS' : 'ONGOING';
+    return `<div style="display:flex;gap:14px;margin-bottom:14px">
+      <div style="font-family:'League Spartan',sans-serif;font-size:1.6rem;font-weight:900;color:#1B1464;width:32px;flex-shrink:0">${i+1}</div>
+      <div style="flex:1">
+        <div style="display:inline-block;background:${priColor};color:#fff;font-size:9px;font-weight:800;letter-spacing:0.1em;padding:3px 8px;border-radius:3px;margin-bottom:6px">${priLabel}</div>
+        <div style="font-size:14px;color:#1B1464;font-weight:700;margin-bottom:4px">${esc(rec.title)}</div>
+        <div style="font-size:12px;color:#555;line-height:1.55">${esc(rec.description)}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const proposerLine = stored.proposerProfile
+    ? `<div style="margin-top:6px;font-size:13px;color:rgba(255,255,255,0.85);font-style:italic">Strategic lens: ${esc(stored.proposerProfile)}</div>`
+    : '';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>${esc(r.company)} — EVP Assessment</title>
+<link href="https://fonts.googleapis.com/css2?family=League+Spartan:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',sans-serif;background:#f4f3fb;color:#1B1464;line-height:1.6;padding:20px 0}
+.shell{max-width:1080px;margin:0 auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 4px 24px rgba(27,20,100,0.08)}
+.cover{background:linear-gradient(135deg,#0f1b3d 0%,#1B1464 70%,#2D2E83 100%);padding:48px 56px;color:#fff}
+.cover-tag{font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#F4B400;font-weight:700;margin-bottom:14px}
+.cover-title{font-family:'League Spartan',sans-serif;font-size:2.5rem;font-weight:900;line-height:1.1;margin-bottom:10px}
+.cover-sub{font-size:15px;color:rgba(255,255,255,0.85);max-width:680px;line-height:1.55}
+.cover-divider{width:60px;height:3px;background:#F4B400;margin-top:24px;margin-bottom:18px}
+.cover-meta{display:flex;gap:32px;flex-wrap:wrap;font-size:12px;color:rgba(255,255,255,0.7);letter-spacing:0.04em;text-transform:uppercase}
+.cover-meta strong{color:#fff;font-weight:600;text-transform:none;letter-spacing:0;margin-left:4px;font-size:13px}
+.body{padding:40px 56px}
+.section{margin-bottom:48px}
+.section-h{font-family:'League Spartan',sans-serif;font-size:1.4rem;font-weight:800;color:#1B1464;margin-bottom:6px;border-bottom:2px solid #1B1464;padding-bottom:6px}
+.section-sub{font-size:13px;color:#777;margin-bottom:20px;font-style:italic}
+.exec-box{background:linear-gradient(135deg,#f4f3fb 0%,#fff 100%);border-left:4px solid #1B1464;padding:20px 24px;border-radius:6px;font-size:14px;line-height:1.7;color:#333}
+.score-banner{display:flex;align-items:center;gap:24px;background:#1B1464;color:#fff;padding:24px 28px;border-radius:8px;margin-bottom:24px}
+.score-num{font-family:'League Spartan',sans-serif;font-size:3.6rem;font-weight:900;line-height:1}
+.score-label{font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:rgba(255,255,255,0.7)}
+.score-verdict{font-size:1.4rem;font-weight:700;color:#F4B400;margin-top:4px}
+.grid-stats{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:32px}
+.grid-gaps{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.grid-quad{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid-verb{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+table{width:100%;border-collapse:collapse}
+.methodology{margin-top:40px;padding:24px;background:#f7f5f0;border-radius:8px;font-size:12px;color:#666;line-height:1.7}
+.methodology h4{font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#1B1464;font-weight:800;margin-bottom:10px}
+.methodology .src-pill{display:inline-block;background:#fff;border:1px solid #ddd;padding:4px 10px;border-radius:14px;font-size:11px;color:#555;margin:3px 4px 3px 0}
+.footer{background:#0f1b3d;color:rgba(255,255,255,0.6);padding:24px 56px;font-size:11px;text-align:center;letter-spacing:0.04em}
+.footer strong{color:#F4B400;font-weight:700}
+@media (max-width:760px){.body{padding:28px 24px}.cover{padding:32px 24px}.cover-title{font-size:1.8rem}.grid-quad{grid-template-columns:1fr}.score-banner{flex-direction:column;align-items:flex-start}}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- COVER -->
+  <div class="cover">
+    <div class="cover-tag">EMPLOYER BRAND &amp; EVP ASSESSMENT</div>
+    <div class="cover-title">${esc(r.company)}</div>
+    <div class="cover-sub">A framework for understanding talent competition, workplace experience gaps, and strategic opportunity in the ${esc(r.sector || '')} sector.</div>
+    ${proposerLine}
+    <div class="cover-divider"></div>
+    <div class="cover-meta">
+      <div>Sector<strong>${esc(r.sector || 'N/A')}</strong></div>
+      <div>Country<strong>${esc(r.country || 'N/A')}</strong></div>
+      <div>Cohort<strong>${esc(r.cohort || 'Professional')}</strong></div>
+      <div>Generated<strong>${new Date().toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' })}</strong></div>
+    </div>
+  </div>
+
+  <div class="body">
+
+    <!-- OVERALL SCORE -->
+    <div class="section">
+      <div class="score-banner">
+        <div>
+          <div class="score-label">Overall EVP Strength</div>
+          <div class="score-num">${r.overallEvpScore || 0}<span style="font-size:1.2rem;color:rgba(255,255,255,0.5);font-weight:500">/100</span></div>
+          <div class="score-verdict">${esc(r.scoreVerdict || '')}</div>
+        </div>
+        <div style="flex:1;font-size:14px;line-height:1.65;color:rgba(255,255,255,0.92);padding-left:24px;border-left:1px solid rgba(255,255,255,0.15)">${esc(r.executiveSummary || '')}</div>
+      </div>
+    </div>
+
+    <!-- TALENT CONTEXT STATS -->
+    ${talentStats ? `<div class="section">
+      <div class="section-h">The Talent Battleground</div>
+      <div class="section-sub">Strategic context for ${esc(r.company)}'s position in the talent market</div>
+      <div class="grid-stats">${talentStats}</div>
+    </div>` : ''}
+
+    <!-- EVP ATTRIBUTE HEATMAP -->
+    <div class="section">
+      <div class="section-h">EVP Attribute Heatmap</div>
+      <div class="section-sub">Importance to talent vs. ${esc(r.company)}'s current delivery — the gap is the opportunity</div>
+      <div style="background:#fff;border:1px solid #e8e3d8;border-radius:8px;padding:20px;overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th style="text-align:left;font-size:10px;color:#888;letter-spacing:0.1em;text-transform:uppercase;padding-bottom:8px">Attribute</th>
+            <th style="text-align:left;font-size:10px;color:#888;letter-spacing:0.1em;text-transform:uppercase;padding-bottom:8px">Importance to Talent</th>
+            <th style="text-align:left;font-size:10px;color:#888;letter-spacing:0.1em;text-transform:uppercase;padding-bottom:8px;padding-left:12px">${esc(r.company)} Delivery</th>
+            <th style="text-align:right;font-size:10px;color:#888;letter-spacing:0.1em;text-transform:uppercase;padding-bottom:8px">Gap</th>
+          </tr></thead>
+          <tbody>${heatmapRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- CRITICAL GAPS -->
+    ${criticalGaps ? `<div class="section">
+      <div class="section-h">Critical Gaps — Fix Urgently</div>
+      <div class="section-sub">High-importance attributes where ${esc(r.company)} significantly under-delivers</div>
+      <div class="grid-gaps">${criticalGaps}</div>
+    </div>` : ''}
+
+    <!-- 4-BOX MATRIX -->
+    <div class="section">
+      <div class="section-h">4-Box EVP Positioning Matrix</div>
+      <div class="section-sub">Where to act: prioritise by quadrant</div>
+      <div class="grid-quad">
+        ${quadrantBox('Critical Gaps', 'High value · Low delivery — fix or lose talent', quadrantBuckets.criticalGap, '#C0392B', '#fef5f3')}
+        ${quadrantBox('Competitive Strengths', 'High value · High delivery — protect, don\\'t over-invest', quadrantBuckets.competitiveStrength, '#27AE60', '#f3faf5')}
+        ${quadrantBox('Low Priority', 'Low value · Low delivery — table stakes only', quadrantBuckets.lowPriority, '#95A5A6', '#f7f8f9')}
+        ${quadrantBox('Over-Investment Risk', 'Low value · High delivery — rationalise', quadrantBuckets.overInvestment, '#E67E22', '#fef9f3')}
+      </div>
+    </div>
+
+    <!-- PEER COMPETITIVE MAP -->
+    ${peerRows ? `<div class="section">
+      <div class="section-h">Competitive Positioning vs. Talent Competitors</div>
+      <div class="section-sub">Where ${esc(r.company)} sits on dimensions that drive hiring and retention</div>
+      <div style="background:#fff;border:1px solid #e8e3d8;border-radius:8px;padding:18px;overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th style="text-align:left;font-size:10px;color:#888;letter-spacing:0.1em;text-transform:uppercase;padding-bottom:10px">Peer</th>
+            <th style="text-align:left;font-size:10px;color:#888;letter-spacing:0.1em;text-transform:uppercase;padding-bottom:10px;padding-left:6px">Workplace Experience</th>
+            <th style="text-align:left;font-size:10px;color:#888;letter-spacing:0.1em;text-transform:uppercase;padding-bottom:10px;padding-left:6px">Compensation Ceiling</th>
+            <th style="text-align:left;font-size:10px;color:#888;letter-spacing:0.1em;text-transform:uppercase;padding-bottom:10px;padding-left:6px">Note</th>
+          </tr></thead>
+          <tbody>${peerRows}</tbody>
+        </table>
+      </div>
+      ${r.peerInsight ? `<div style="margin-top:14px;padding:14px 18px;background:#f4f3fb;border-radius:6px;font-size:13px;color:#333;line-height:1.65">${esc(r.peerInsight)}</div>` : ''}
+    </div>` : ''}
+
+    <!-- VERBATIMS -->
+    ${verbatimCards ? `<div class="section">
+      <div class="section-h">What Employees Actually Say</div>
+      <div class="section-sub">Verbatim quotes from published surveys, Glassdoor and analyst reports</div>
+      <div class="grid-verb">${verbatimCards}</div>
+    </div>` : ''}
+
+    <!-- STRATEGIC RECOMMENDATIONS -->
+    ${recs ? `<div class="section">
+      <div class="section-h">Strategic Recommendations</div>
+      <div class="section-sub">${stored.proposerProfile ? 'Where ' + esc(stored.proposerProfile.split(/[,—-]/)[0].trim()) + ' has the right to win' : 'Priority actions to close the gaps'}</div>
+      <div style="background:#fff;border:1px solid #e8e3d8;border-radius:8px;padding:24px">${recs}</div>
+    </div>` : ''}
+
+    <!-- METHODOLOGY -->
+    <div class="methodology">
+      <h4>Methodology &amp; Sources</h4>
+      <p style="margin-bottom:12px">${esc(r.methodology?.confidenceNote || 'Scores derived from synthesis of multiple listening channels.')} <strong style="color:#1B1464">Data confidence: ${r.methodology?.channelsSucceeded || 0}/${r.methodology?.channelsTotal || 7} listening channels returned usable data.</strong></p>
+      <div style="margin-bottom:8px"><strong style="color:#1B1464;font-size:11px;letter-spacing:0.08em;text-transform:uppercase">Sources consulted:</strong></div>
+      <div>${(r.methodology?.sources || []).map(s => `<span class="src-pill">${esc(s)}</span>`).join('')}</div>
+      <p style="margin-top:14px;font-size:11px;font-style:italic;color:#888">EVP Assessment is an analytical estimate, not statistically validated research. Importance and delivery scores represent best-effort synthesis of publicly available employer-brand signals. Designed to structure strategic thinking and inform proposal positioning. Update as new survey data becomes available.</p>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <strong>EVP Assessment</strong> &middot; powered by 4xi Global Consulting &middot; data through ${new Date().toLocaleDateString('en-US', { year:'numeric', month:'long' })}
+  </div>
+
+</div>
+</body>
+</html>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// END EVP ASSESSMENT MODULE
+// ═══════════════════════════════════════════════════════════════════
+
+app.listen(PORT, () => console.log(`DiagnostiX v8.9.16 + EVP v1.0 on port ${PORT}`));
