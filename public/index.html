@@ -59,7 +59,14 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .finput{width:100%;background:#fff;border:1.5px solid var(--sur-border);border-radius:6px;padding:11px 13px;color:var(--sur-text);font-family:'League Spartan',sans-serif;font-size:14px;outline:none;transition:border-color 0.2s}
 .finput:focus{border-color:var(--gold)}
 .finput::placeholder{color:#aaa}
-.loc-input{flex:1 1 0;min-width:0}
+/* Location row — three sub-fields with always-visible sub-labels so users
+   can never confuse which input is which. On desktop, the row is a flex
+   grid (3 equal columns). On mobile (≤600px), the row stacks vertically
+   so each sub-field gets full width and its label is unambiguous. */
+.loc-row{display:flex;gap:10px;flex-wrap:wrap}
+.loc-cell{flex:1 1 0;min-width:0;display:flex;flex-direction:column}
+.loc-sublabel{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.06em;font-weight:700;margin-bottom:4px}
+.loc-input{width:100%}
 .privacy{background:#fff;border:1px solid var(--sur-border);border-radius:6px;padding:10px 14px;margin-top:1rem;font-size:11px;color:#888;line-height:1.6}
 .privacy b{color:var(--sur-gold)}
 .err{color:var(--red);font-size:12px;margin-top:6px;display:none;font-weight:700}
@@ -257,8 +264,9 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   .comp-grid{grid-template-columns:1fr}
   .plan-grid{grid-template-columns:1fr}
   .owner-grid{grid-template-columns:repeat(2,1fr)}
-  .loc-row{flex-direction:column}
-  .loc-input{flex:1 1 100%}
+  /* Stack location sub-fields vertically — each cell takes full width */
+  .loc-row{flex-direction:column;gap:14px}
+  .loc-cell{flex:1 1 100%}
 }
 </style>
 </head>
@@ -305,11 +313,20 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
       <input class="finput" id="f-name" type="text" placeholder="e.g. The Corner Bistro" maxlength="80">
     </div>
     <div class="field">
-      <label class="flbl">Location</label>
-      <div class="loc-row" style="display:flex;gap:8px;flex-wrap:wrap">
-        <input class="finput loc-input" id="f-loc-city"    type="text" placeholder="City"    maxlength="60">
-        <input class="finput loc-input" id="f-loc-state"   type="text" placeholder="State"   maxlength="60">
-        <input class="finput loc-input" id="f-loc-country" type="text" placeholder="Country" maxlength="60">
+      <label class="flbl">Location <span style="color:var(--red)">*</span></label>
+      <div class="loc-row">
+        <div class="loc-cell">
+          <div class="loc-sublabel">City</div>
+          <input class="finput loc-input" id="f-loc-city" type="text" placeholder="e.g. Larkspur Landing" maxlength="60" autocomplete="address-level2">
+        </div>
+        <div class="loc-cell">
+          <div class="loc-sublabel">State / Region</div>
+          <input class="finput loc-input" id="f-loc-state" type="text" placeholder="e.g. CA" maxlength="60" autocomplete="address-level1">
+        </div>
+        <div class="loc-cell">
+          <div class="loc-sublabel">Country</div>
+          <input class="finput loc-input" id="f-loc-country" type="text" placeholder="e.g. USA" maxlength="60" autocomplete="country-name">
+        </div>
       </div>
     </div>
   </div>
@@ -623,14 +640,37 @@ function goStep(n) {
     var nm = document.getElementById('f-name').value.trim();
     var cn = document.getElementById('f-cname').value.trim();
     var em = document.getElementById('f-email').value.trim();
+    var city    = document.getElementById('f-loc-city').value.trim();
+    var country = document.getElementById('f-loc-country').value.trim();
     var emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em);
-    if (!nm||!cn||!em||!emailOk) {
-      var err = document.getElementById('e0');
+    var err = document.getElementById('e0');
+
+    // Required: Restaurant name, City, Country, Contact name, Email
+    // State is optional (some countries don't use US-style states)
+    if (!nm) {
+      err.style.display = 'block';
+      err.textContent = 'Please enter your restaurant name.';
+      document.getElementById('f-name').focus();
+      return;
+    }
+    if (!city || city.length < 2) {
+      err.style.display = 'block';
+      err.textContent = 'Please enter your City (e.g. Larkspur Landing, Vitacura, Brooklyn).';
+      document.getElementById('f-loc-city').focus();
+      return;
+    }
+    if (!country || country.length < 2) {
+      err.style.display = 'block';
+      err.textContent = 'Please enter your Country (e.g. USA, Chile, UK).';
+      document.getElementById('f-loc-country').focus();
+      return;
+    }
+    if (!cn||!em||!emailOk) {
       err.style.display = 'block';
       err.textContent = (!emailOk && em) ? 'Please enter a valid email address.' : 'Please fill in all required fields (marked *).';
       return;
     }
-    document.getElementById('e0').style.display = 'none';
+    err.style.display = 'none';
 
     // Soft-nudge: if fewer than 3 competitors named, ask user to confirm proceeding.
     // We remember the confirmation in sessionStorage so the dialog only appears once.
