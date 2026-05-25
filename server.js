@@ -1015,12 +1015,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.16' });
+    res.json({ status: 'running', version: '8.9.17' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.16' });
+  res.json({ status: 'ok', version: '8.9.17' });
 });
 
 app.get('/test', async (req, res) => {
@@ -1531,7 +1531,7 @@ COMPETITOR MATCHING RULES — apply these strictly to non-user-named competitors
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.16',
+      version: '8.9.17',
       focalContext: focalContext || null,
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
@@ -3934,7 +3934,7 @@ table{width:100%;border-collapse:collapse}
       <div class="section-sub">Where to act: prioritise by quadrant</div>
       <div class="grid-quad">
         ${quadrantBox('Critical Gaps', 'High value · Low delivery — fix or lose talent', quadrantBuckets.criticalGap, '#C0392B', '#fef5f3')}
-        ${quadrantBox('Competitive Strengths', 'High value · High delivery — protect, don\\'t over-invest', quadrantBuckets.competitiveStrength, '#27AE60', '#f3faf5')}
+        ${quadrantBox('Competitive Strengths', 'High value · High delivery — protect, don&rsquo;t over-invest', quadrantBuckets.competitiveStrength, '#27AE60', '#f3faf5')}
         ${quadrantBox('Low Priority', 'Low value · Low delivery — table stakes only', quadrantBuckets.lowPriority, '#95A5A6', '#f7f8f9')}
         ${quadrantBox('Over-Investment Risk', 'Low value · High delivery — rationalise', quadrantBuckets.overInvestment, '#E67E22', '#fef9f3')}
       </div>
@@ -3996,4 +3996,4 @@ table{width:100%;border-collapse:collapse}
 // END EVP ASSESSMENT MODULE
 // ═══════════════════════════════════════════════════════════════════
 
-app.listen(PORT, () => console.log(`DiagnostiX v8.9.16 + EVP v1.0 on port ${PORT}`));
+app.listen(PORT, () => console.log(`DiagnostiX v8.9.17 + EVP v1.0 on port ${PORT}`));
