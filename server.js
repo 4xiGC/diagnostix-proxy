@@ -1015,12 +1015,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.18' });
+    res.json({ status: 'running', version: '8.9.19' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.18' });
+  res.json({ status: 'ok', version: '8.9.19' });
 });
 
 app.get('/test', async (req, res) => {
@@ -1463,6 +1463,106 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
       console.error('[diagnose] AI-competitor backfill FAILED (continuing without backfill):', e.message);
     }
 
+    // ── DETERMINISTIC PLACES FILL — guaranteed slots 4-5 ─────────────────
+    // The AI sometimes returns only the user-named competitors and skips
+    // Places candidates, even when the prompt instructs it to fill up to 5.
+    // To make the 5-card target deterministic, we bypass the AI's judgment
+    // and inject top-quality Places candidates server-side. We apply the
+    // same tier-quality filters server-side, then write a generic note that
+    // the AI does not author.
+    try {
+      const currentCount = (report.competitors || []).length;
+      const targetCount = 5;
+      const needed = targetCount - currentCount;
+      if (needed > 0 && Array.isArray(compPlacesData.places) && compPlacesData.places.length > 0) {
+        const existingNamesLower = new Set(
+          (report.competitors || []).map(c => String(c.name || '').trim().toLowerCase())
+        );
+        const userLoweredSet = new Set(userCompetitors.map(n => n.toLowerCase()));
+        // Helper: is this name already in the competitor list (exact or substring)?
+        const isAlreadyIncluded = (placeName) => {
+          const pLower = String(placeName || '').trim().toLowerCase();
+          if (!pLower) return true;
+          if (existingNamesLower.has(pLower)) return true;
+          for (const existing of existingNamesLower) {
+            if (existing.length >= 4 && (existing.includes(pLower) || pLower.includes(existing))) return true;
+          }
+          for (const u of userLoweredSet) {
+            if (u.length >= 4 && (u.includes(pLower) || pLower.includes(u))) return true;
+          }
+          return false;
+        };
+
+        // Non-restaurant patterns — same set used in the quality filter,
+        // applied here pre-emptively so we don't propose hotels/fast-food.
+        const nonRestaurantPatterns = [
+          /^hotel\s/i, /\shotel\b/i,
+          /^(mc\s*donald|burger king|kfc|subway|starbucks|dunkin|domino|pizza hut|taco bell|wendy|chipotle)/i,
+          /\bpub\b/i,
+          /\b(food\s*court|food\s*hall|airport|gas\s*station|service\s*station)\b/i
+        ];
+        const isNonRestaurant = (placeName) => {
+          for (const pat of nonRestaurantPatterns) {
+            if (pat.test(placeName || '')) return true;
+          }
+          return false;
+        };
+
+        // Build a ranked candidate list from Places. Score = composite of
+        // rating (higher = better), reviewCount (more = more established),
+        // and distance (closer = more direct competitor). Then take top N.
+        const focalRating = focalContext && typeof focalContext.rating === 'number' ? focalContext.rating : null;
+        const ratingFloor = (focalRating !== null && focalRating < 3.5) ? focalRating : 3.5;
+
+        const ranked = compPlacesData.places
+          .filter(p => {
+            if (!p.name) return false;
+            if (isAlreadyIncluded(p.name)) return false;
+            if (isNonRestaurant(p.name)) return false;
+            if (typeof p.rating !== 'number' || p.rating < ratingFloor) return false;
+            if (typeof p.reviewCount !== 'number' || p.reviewCount < 50) return false;
+            return true;
+          })
+          .map(p => ({
+            ...p,
+            // Composite score: rating weighted heavily, log(reviews) bonus,
+            // distance penalty (closer is better)
+            _score: (p.rating * 20)
+                    + Math.min(10, Math.log10(Math.max(1, p.reviewCount)) * 2)
+                    - ((p.distance || 2000) / 1000) * 1.5
+          }))
+          .sort((a, b) => b._score - a._score);
+
+        const toAdd = ranked.slice(0, needed);
+        if (toAdd.length > 0) {
+          console.log(`[diagnose] PLACES-FILL: injecting ${toAdd.length} tier-peer(s) from Google Places: ${toAdd.map(p => `${p.name} (${p.rating}★, ${p.reviewCount}r, ${p.distance}m)`).join(' | ')}`);
+          for (const p of toAdd) {
+            // Build a competitor entry with a programmatically-generated note.
+            // The note style mirrors the AI's framing — "established peer
+            // competing for same dining occasion" — so all 5 cards read as
+            // a coherent set.
+            const distKm = p.distance ? (p.distance / 1000).toFixed(1) : null;
+            const reviewLabel = p.reviewCount >= 1000
+              ? (p.reviewCount/1000).toFixed(1).replace(/\.0$/, '') + 'k'
+              : String(p.reviewCount);
+            const note = `Established neighborhood peer with ${reviewLabel} reviews${distKm ? `, ${distKm}km away` : ''} — competes for the same upscale dining occasion in ${(location.split(',')[0] || 'the area').trim()}.`;
+            report.competitors.push({
+              name: p.name,
+              rating: p.rating,
+              reviewCount: p.reviewCount,
+              note: note
+            });
+            existingNamesLower.add(String(p.name).trim().toLowerCase());
+          }
+          console.log(`[diagnose] PLACES-FILL: competitor count ${currentCount} → ${report.competitors.length}`);
+        } else {
+          console.log(`[diagnose] PLACES-FILL: no qualifying Places candidates to inject (had ${compPlacesData.places.length} candidates, all filtered out)`);
+        }
+      }
+    } catch (e) {
+      console.error('[diagnose] PLACES-FILL FAILED (continuing):', e.message);
+    }
+
     // ── Quality filter (post-AI, post-backfill) ─────────────────────────
     // After the AI returns and Serper backfill runs, evaluate each non-user-named
     // competitor against quality floors. Rejects:
@@ -1549,7 +1649,7 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.18',
+      version: '8.9.19',
       focalContext: focalContext || null,
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
@@ -4014,4 +4114,4 @@ table{width:100%;border-collapse:collapse}
 // END EVP ASSESSMENT MODULE
 // ═══════════════════════════════════════════════════════════════════
 
-app.listen(PORT, () => console.log(`DiagnostiX v8.9.18 + EVP v1.0 on port ${PORT}`));
+app.listen(PORT, () => console.log(`DiagnostiX v8.9.19 + EVP v1.0 on port ${PORT}`));
