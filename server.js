@@ -1015,12 +1015,12 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.19' });
+    res.json({ status: 'running', version: '8.9.21' });
   }
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.19' });
+  res.json({ status: 'ok', version: '8.9.21' });
 });
 
 app.get('/test', async (req, res) => {
@@ -1540,12 +1540,17 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
             // Build a competitor entry with a programmatically-generated note.
             // The note style mirrors the AI's framing — "established peer
             // competing for same dining occasion" — so all 5 cards read as
-            // a coherent set.
+            // a coherent set. Title-case the location segment so it reads
+            // naturally regardless of whether the user typed it lower / upper / mixed.
             const distKm = p.distance ? (p.distance / 1000).toFixed(1) : null;
             const reviewLabel = p.reviewCount >= 1000
               ? (p.reviewCount/1000).toFixed(1).replace(/\.0$/, '') + 'k'
               : String(p.reviewCount);
-            const note = `Established neighborhood peer with ${reviewLabel} reviews${distKm ? `, ${distKm}km away` : ''} — competes for the same upscale dining occasion in ${(location.split(',')[0] || 'the area').trim()}.`;
+            const locSegRaw = (location.split(',')[0] || 'the area').trim();
+            const locSeg = locSegRaw
+              .toLowerCase()
+              .replace(/\b(\w)/g, (m) => m.toUpperCase());
+            const note = `Established neighborhood peer with ${reviewLabel} reviews${distKm ? `, ${distKm}km away` : ''} — competes for the same upscale dining occasion in ${locSeg}.`;
             report.competitors.push({
               name: p.name,
               rating: p.rating,
@@ -1649,7 +1654,7 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.19',
+      version: '8.9.21',
       focalContext: focalContext || null,
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
@@ -2012,19 +2017,19 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber, surve
   if (isOneOff) {
     subject = `Your DiagnostiX Full Report is ready — ${restaurant}`;
     headline = 'Your DiagnostiX Full Report is ready';
-    intro = 'Thank you for purchasing the DiagnostiX Full Report. Your full HealthCheck is now permanently available at the link below — bookmark it for future reference. If you would like ongoing tracking with reports every 4 months, you can upgrade to DiagnostiX Annual at any time.';
+    intro = 'Thank you for purchasing the DiagnostiX Full Report. Your full HealthCheck is now permanently available at the link below — bookmark it for future reference. If you would like ongoing progress tracking, DiagnostiX Annual gives you two additional reports — at the 4-month and 8-month marks — to measure what is changing year over year.';
   } else if (reportNumber === 1) {
     subject = `Welcome to DiagnostiX Annual — your baseline report for ${restaurant}`;
     headline = 'Your DiagnostiX baseline is ready';
-    intro = 'Thank you for subscribing to DiagnostiX Annual. Your baseline report is now stored and ready to view anytime over the next 12 months. We will send you Report 2 in 4 months and Report 3 in 8 months automatically.';
+    intro = 'Thank you for subscribing to DiagnostiX Annual. Your baseline report is now stored and ready to view anytime over the next 12 months. Your Annual plan includes two further progress reports — Report 2 arrives automatically 4 months from today, and Report 3 arrives at the 8-month mark. At the 12-month anniversary you will receive a reminder with the option to renew for another year.';
   } else if (reportNumber === 2) {
     subject = `Your DiagnostiX Report 2 is ready — ${restaurant}`;
     headline = 'Your Month 4 progress report is ready';
-    intro = 'Four months on from your baseline, your second DiagnostiX report is ready. The link below shows your latest scores side-by-side with your baseline so you can see exactly what is moving.';
+    intro = 'Four months on from your baseline, your second DiagnostiX report is ready. The link below shows your latest scores side-by-side with your baseline so you can see exactly what is moving. Your final report of the year will arrive at the 8-month mark.';
   } else {
-    subject = `Your DiagnostiX Year-End Report is ready — ${restaurant}`;
-    headline = 'Your year-end DiagnostiX report is ready';
-    intro = 'Your third and final DiagnostiX report of this year is ready. Inside you will find a year-end side-by-side comparison of all three reports across every pillar.';
+    subject = `Your DiagnostiX Report 3 is ready — ${restaurant}`;
+    headline = 'Your Month 8 progress report is ready';
+    intro = 'Eight months on from your baseline, your third DiagnostiX report is ready. Inside you will find a year-to-date comparison across all three reports for every pillar. At the 12-month anniversary of your subscription, you will receive a reminder with the option to renew DiagnostiX Annual for another year of progress tracking.';
   }
 
   // Score color matches the survey banding (green ≥65, amber ≥45, red <45)
@@ -3284,6 +3289,9 @@ async function updateSubscriberInSupabase(sub, reportNumber) {
       body.report_3 = latest;
       body.report_3_score = latest?.healthCheckScore || 0;
       body.report_3_date = new Date().toISOString();
+      if (sub.renewalReminderAt) {
+        body.renewal_reminder_at = new Date(sub.renewalReminderAt).toISOString();
+      }
     }
     await fetch(`${url}/rest/v1/subscribers?report_token=eq.${encodeURIComponent(sub.reportToken)}`, {
       method: 'PATCH',
@@ -3360,8 +3368,18 @@ PREVIOUS ACTIONS: ${(baseline.report.actions||[]).map(a=>a.title).join('; ')}`;
     if (reportNumber < 3) {
       sub.nextReportAt = Date.now() + (4 * 30 * 24 * 60 * 60 * 1000);
     } else {
+      // After Report 3 (month 8), no more reports — but schedule a renewal
+      // reminder email for the 12-month anniversary of the original subscription.
+      // We set renewalReminderAt = subscribedAt + 12 months, so it fires
+      // ~4 months after this Report 3 was generated. The scheduler tick checks
+      // both nextReportAt and renewalReminderAt.
       sub.nextReportAt = null;
       sub.completedAt = Date.now();
+      const subscribedMs = (typeof sub.subscribedAt === 'number') ? sub.subscribedAt : Date.parse(sub.subscribedAt);
+      if (subscribedMs && !isNaN(subscribedMs)) {
+        sub.renewalReminderAt = subscribedMs + (12 * 30 * 24 * 60 * 60 * 1000);
+        console.log('[annual] Report 3 complete — renewal reminder scheduled for', new Date(sub.renewalReminderAt).toISOString().split('T')[0], 'for:', email);
+      }
     }
 
     console.log('[annual] Report', reportNumber, 'generated for:', email, '| Score:', report.healthCheckScore);
@@ -3416,6 +3434,8 @@ async function loadSubscribersFromSupabase() {
           reportToken:    row.report_token,
           subscribedAt:   new Date(row.subscribed_at).getTime(),
           nextReportAt:   row.next_report_at ? new Date(row.next_report_at).getTime() : null,
+          renewalReminderAt:     row.renewal_reminder_at ? new Date(row.renewal_reminder_at).getTime() : null,
+          renewalReminderSentAt: row.renewal_reminder_sent_at ? new Date(row.renewal_reminder_sent_at).getTime() : null,
           reports:        [{ generatedAt: new Date(row.subscribed_at).getTime(), report: row.baseline_report || { healthCheckScore: row.baseline_score || 0, pillars: {} }, reportNumber: 1 }]
         });
       });
@@ -3430,15 +3450,135 @@ loadSubscribersFromSupabase();
 // ── DAILY SCHEDULER — check every 6 hours ────────────────────
 setInterval(async () => {
   const now = Date.now();
-  console.log('[scheduler] Checking', annualSubscribers.size, 'subscribers for due reports...');
+  console.log('[scheduler] Checking', annualSubscribers.size, 'subscribers for due reports + renewal reminders...');
   for (const [token, sub] of annualSubscribers.entries()) {
+    // Progress reports (Report 2 at month 4, Report 3 at month 8)
     if (sub.nextReportAt && now >= sub.nextReportAt) {
       console.log('[scheduler] Report due for:', sub.email, '|', sub.restaurantName, '| token:', token);
       await generateProgressReport(sub);
       await new Promise(r => setTimeout(r, 5000));
     }
+    // Renewal reminder (12 months after subscription start, ~4 months after Report 3)
+    if (sub.renewalReminderAt && now >= sub.renewalReminderAt && !sub.renewalReminderSentAt) {
+      console.log('[scheduler] Renewal reminder due for:', sub.email, '|', sub.restaurantName, '| token:', token);
+      try {
+        await sendRenewalReminderEmail(sub);
+        sub.renewalReminderSentAt = Date.now();
+        // Persist the sent timestamp to Supabase so we don't double-send on restart.
+        const url = process.env.SUPABASE_URL;
+        const key = process.env.SUPABASE_KEY;
+        if (url && key && sub.reportToken) {
+          await fetch(`${url}/rest/v1/subscribers?report_token=eq.${encodeURIComponent(sub.reportToken)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'apikey': key, 'Authorization': 'Bearer ' + key },
+            body: JSON.stringify({ renewal_reminder_sent_at: new Date(sub.renewalReminderSentAt).toISOString() })
+          }).catch(e => console.log('[scheduler] renewal patch failed:', e.message));
+        }
+      } catch (e) {
+        console.error('[scheduler] renewal reminder email failed for', sub.email, ':', e.message);
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
   }
 }, 6 * 60 * 60 * 1000);
+
+// ── Renewal reminder email ────────────────────────────────────
+// Fires at the 12-month anniversary of an Annual subscription. Subscriber has
+// already received Reports 1, 2, and 3. This email closes the loop with a
+// year-in-review summary and a one-click renewal link.
+async function sendRenewalReminderEmail(sub) {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey || !sub.email) {
+    console.log('[renewal] skipping — missing RESEND_API_KEY or email');
+    return;
+  }
+  const from = process.env.FROM_EMAIL || 'DiagnostiX <hello@4xiconsulting.com>';
+  const restaurant = sub.restaurantName || 'your restaurant';
+  const firstName = sub.firstName || 'there';
+  const renewUrl = process.env.WIX_ANNUAL_URL || 'https://www.4xi360.com/diagnostix';
+  const reportUrl = `${process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app'}/report?token=${sub.reportToken}`;
+
+  // Year-in-review numbers: pull baseline and most recent report scores
+  const baseScore = sub.reports?.[0]?.report?.healthCheckScore || 0;
+  const latestReport = sub.reports?.[sub.reports.length - 1]?.report || null;
+  const latestScore = latestReport?.healthCheckScore || 0;
+  const delta = latestScore - baseScore;
+  const deltaText = delta > 0 ? `+${delta} points` : delta < 0 ? `${delta} points` : 'flat';
+  const deltaColor = delta >= 3 ? '#00A651' : delta <= -3 ? '#ED1C24' : '#F7941D';
+
+  const subject = `Your DiagnostiX Annual year is complete — renew for ${restaurant}`;
+  const escE = (s) => String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escE(subject)}</title></head>
+<body style="margin:0;padding:0;background:#f4f3fb;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;color:#1a1a1a">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f3fb;padding:24px 0">
+  <tr><td align="center">
+    <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 10px rgba(27,20,100,0.06);max-width:600px;width:100%">
+      <tr><td style="background:linear-gradient(135deg,#0f1b3d 0%,#1B1464 70%,#2D2E83 100%);padding:32px 36px;color:#fff">
+        <div style="font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#F4B400;font-weight:700;margin-bottom:8px">DiagnostiX Annual · Year complete</div>
+        <div style="font-family:'League Spartan',sans-serif;font-size:1.6rem;font-weight:900;line-height:1.2">A year of progress tracking for ${escE(restaurant)}</div>
+      </td></tr>
+      <tr><td style="padding:30px 36px 8px;font-size:15px;line-height:1.65;color:#333">
+        <p style="margin:0 0 16px">Hi ${escE(firstName)},</p>
+        <p style="margin:0 0 16px">Twelve months ago you subscribed to DiagnostiX Annual for <strong>${escE(restaurant)}</strong>. Across the year you have received three full HealthCheck reports — your baseline, your Month 4 progress report, and your Month 8 report. Here is where you ended the year:</p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0">
+          <tr>
+            <td style="background:#f7f5f0;border-radius:7px;padding:18px 20px;text-align:center;width:33%">
+              <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-weight:700">Baseline score</div>
+              <div style="font-family:'League Spartan',sans-serif;font-size:2.4rem;font-weight:900;color:#1B1464;line-height:1;margin-top:6px">${baseScore}</div>
+            </td>
+            <td style="width:12px"></td>
+            <td style="background:#f7f5f0;border-radius:7px;padding:18px 20px;text-align:center;width:33%">
+              <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-weight:700">Latest score</div>
+              <div style="font-family:'League Spartan',sans-serif;font-size:2.4rem;font-weight:900;color:#1B1464;line-height:1;margin-top:6px">${latestScore}</div>
+            </td>
+            <td style="width:12px"></td>
+            <td style="background:#f7f5f0;border-radius:7px;padding:18px 20px;text-align:center;width:33%">
+              <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-weight:700">Change</div>
+              <div style="font-family:'League Spartan',sans-serif;font-size:1.4rem;font-weight:900;color:${deltaColor};line-height:1;margin-top:14px">${escE(deltaText)}</div>
+            </td>
+          </tr>
+        </table>
+        <p style="margin:18px 0">Your most recent report is still accessible at any time:</p>
+        <p style="margin:0 0 24px"><a href="${reportUrl}" style="color:#92278F;text-decoration:underline;font-weight:600">View your latest report &rarr;</a></p>
+        <p style="margin:18px 0 8px"><strong style="color:#1B1464">Ready for another year of progress tracking?</strong></p>
+        <p style="margin:0 0 22px">Renew DiagnostiX Annual to receive three more reports across the next 12 months — a fresh baseline now, a Month 4 progress check, and a Month 8 follow-up. Your historical reports remain accessible alongside the new ones, giving you a multi-year view of how ${escE(restaurant)} is evolving.</p>
+        <p style="text-align:center;margin:24px 0"><a href="${renewUrl}" style="display:inline-block;background:#F4B400;color:#1B1464;font-family:'League Spartan',sans-serif;font-size:14px;font-weight:900;letter-spacing:0.06em;text-transform:uppercase;text-decoration:none;border-radius:6px;padding:14px 30px">Renew Annual — $99.99 &rarr;</a></p>
+        <p style="margin:24px 0 0;font-size:13px;color:#888;line-height:1.65">If you would rather not continue with Annual, no action is needed — your existing reports remain accessible at the link above. We hope DiagnostiX has helped you see ${escE(restaurant)} more clearly this year.</p>
+      </td></tr>
+      <tr><td style="background:#0f1b3d;padding:18px 36px;text-align:center;color:rgba(255,255,255,0.55);font-size:11px;letter-spacing:0.04em">
+        <strong style="color:#F4B400;font-weight:700">DiagnostiX</strong> &middot; by 4xi Global Consulting
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>`;
+
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + apiKey
+      },
+      body: JSON.stringify({
+        from, to: sub.email, bcc: 'hello@4xiconsulting.com',
+        subject, html
+      })
+    });
+    const j = await r.json();
+    if (j.id) {
+      console.log('[renewal] sent to', sub.email, '| id:', j.id);
+    } else {
+      console.log('[renewal] response without id:', JSON.stringify(j).slice(0, 200));
+    }
+  } catch (e) {
+    console.error('[renewal] send failed:', e.message);
+    throw e;
+  }
+}
 
 // ── MANUAL TRIGGER (for testing) ─────────────────────────────
 // Accepts either { email } (fires for ALL matching subscriptions) or { token } (specific subscription)
@@ -4114,4 +4254,4 @@ table{width:100%;border-collapse:collapse}
 // END EVP ASSESSMENT MODULE
 // ═══════════════════════════════════════════════════════════════════
 
-app.listen(PORT, () => console.log(`DiagnostiX v8.9.19 + EVP v1.0 on port ${PORT}`));
+app.listen(PORT, () => console.log(`DiagnostiX v8.9.21 + EVP v1.0 on port ${PORT}`));
