@@ -55,19 +55,10 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .s-sub{font-size:13px;color:var(--sur-muted);line-height:1.65;margin-bottom:1.6rem}
 .field{margin-bottom:1rem}
 .field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:1rem}
-.field-row-single{grid-template-columns:1fr}
 .flbl{font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:var(--sur-gold);margin-bottom:5px;display:block;font-weight:700}
 .finput{width:100%;background:#fff;border:1.5px solid var(--sur-border);border-radius:6px;padding:11px 13px;color:var(--sur-text);font-family:'League Spartan',sans-serif;font-size:14px;outline:none;transition:border-color 0.2s}
 .finput:focus{border-color:var(--gold)}
 .finput::placeholder{color:#aaa}
-/* Location row — three sub-fields with always-visible sub-labels so users
-   can never confuse which input is which. On desktop, the row is a flex
-   grid (3 equal columns). On mobile (≤600px), the row stacks vertically
-   so each sub-field gets full width and its label is unambiguous. */
-.loc-row{display:flex;gap:10px;flex-wrap:wrap}
-.loc-cell{flex:1 1 0;min-width:0;display:flex;flex-direction:column}
-.loc-sublabel{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.06em;font-weight:700;margin-bottom:4px}
-.loc-input{width:100%}
 .privacy{background:#fff;border:1px solid var(--sur-border);border-radius:6px;padding:10px 14px;margin-top:1rem;font-size:11px;color:#888;line-height:1.6}
 .privacy b{color:var(--sur-gold)}
 .err{color:var(--red);font-size:12px;margin-top:6px;display:none;font-weight:700}
@@ -111,7 +102,7 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .pbar{height:3px;background:#e2ddd5;border-radius:2px;margin:1.8rem auto 0;max-width:340px;overflow:hidden}
 .pfill{height:100%;background:var(--grad);border-radius:2px;transition:width 1.2s ease;width:0}
 /* ── REPORT WRAPPER ──────────────────────────────────── */
-.report-wrap{background:#fff;border-top:4px solid var(--navy);max-width:860px;margin:0 auto;box-sizing:border-box}
+.report-wrap{background:#fff;border-top:4px solid var(--navy)}
 /* ── REPORT COVER ────────────────────────────────────── */
 .rpt-cover{background:var(--grad);padding:2rem 2.2rem 1.6rem;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .rpt-logo{font-family:'League Spartan',sans-serif;font-size:0.9rem;color:var(--gold);letter-spacing:0.07em;margin-bottom:1.1rem}
@@ -171,18 +162,14 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .tag-row{display:flex;flex-wrap:wrap;gap:5px}
 .tag{font-size:11px;padding:3px 9px;border-radius:4px}
 .tag.pos{background:var(--gl);color:var(--g8)}.tag.neg{background:var(--rl);color:var(--r8)}.tag.neu{background:var(--al);color:var(--a8)}
-/* Competitor cards — v8.7 uniform big-number layout */
-.comp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:8px;align-items:stretch}
-.comp-card{position:relative;background:#f7f5f0;border-radius:8px;padding:32px 14px 14px;border-top:3px solid #ddd;display:flex;flex-direction:column}
-.comp-card.comp-you{border-top-color:#1B1464;background:#f4f3fb}
-.comp-card.comp-peer{border-top-color:#92278F}
-.comp-card-tag{position:absolute;top:10px;left:12px;font-size:9px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;padding:3px 8px;border-radius:3px;line-height:1}
-.comp-name{font-size:13px;font-weight:700;color:#1B1464;margin-bottom:10px;line-height:1.3}
-.comp-big{font-family:'League Spartan',sans-serif;font-size:1.9rem;font-weight:900;line-height:1;margin-bottom:4px}
-.comp-big-scale{font-size:11px;color:#999;font-weight:500;letter-spacing:0.02em;margin-left:2px}
-.comp-metric-label{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;margin-bottom:10px}
-.comp-note{font-size:11px;color:#777;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-.comp-no-rating{display:inline-block;font-size:10px;color:#999;background:#ede9e2;padding:5px 9px;border-radius:3px;margin-bottom:6px;letter-spacing:0.04em;font-weight:600;text-transform:uppercase}
+/* Competitor cards */
+.comp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:8px}
+.comp-card{background:#f7f5f0;border-radius:7px;padding:12px;border-top:3px solid #ddd}
+.comp-card.me{border-top-color:var(--gold)}.comp-card.peer{border-top-color:var(--amber)}
+.comp-name{font-size:13px;font-weight:700;color:var(--navy);margin-bottom:5px}
+.comp-score{font-family:'League Spartan',sans-serif;font-size:1.25rem;margin-bottom:4px}
+.comp-score.g{color:var(--green)}.comp-score.w{color:var(--amber)}
+.comp-detail{font-size:11px;color:#777;line-height:1.5}
 /* Actions */
 .act{display:flex;gap:11px;align-items:flex-start;padding:12px 13px;background:#f7f5f0;border-radius:6px;margin-bottom:7px;border-left:3px solid var(--gold)}
 .act-n{font-family:'League Spartan',sans-serif;font-size:1.2rem;color:var(--gold);flex-shrink:0;line-height:1.1;min-width:16px}
@@ -265,9 +252,6 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   .comp-grid{grid-template-columns:1fr}
   .plan-grid{grid-template-columns:1fr}
   .owner-grid{grid-template-columns:repeat(2,1fr)}
-  /* Stack location sub-fields vertically — each cell takes full width */
-  .loc-row{flex-direction:column;gap:14px}
-  .loc-cell{flex:1 1 100%}
 }
 </style>
 </head>
@@ -308,28 +292,17 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 
   <div id="e0" class="err" style="display:none;margin-bottom:1rem"></div>
 
-  <div class="field-row field-row-single">
+  <div class="field-row">
     <div class="field">
       <label class="flbl">Restaurant Name <span style="color:var(--red)">*</span></label>
       <input class="finput" id="f-name" type="text" placeholder="e.g. The Corner Bistro" maxlength="80">
     </div>
-  </div>
-  <div class="field-row field-row-single">
     <div class="field">
-      <label class="flbl">Location <span style="color:var(--red)">*</span></label>
-      <div class="loc-row">
-        <div class="loc-cell">
-          <div class="loc-sublabel">City</div>
-          <input class="finput loc-input" id="f-loc-city" type="text" placeholder="e.g. Larkspur Landing" maxlength="60" autocomplete="address-level2">
-        </div>
-        <div class="loc-cell">
-          <div class="loc-sublabel">State / Region</div>
-          <input class="finput loc-input" id="f-loc-state" type="text" placeholder="e.g. CA" maxlength="60" autocomplete="address-level1">
-        </div>
-        <div class="loc-cell">
-          <div class="loc-sublabel">Country</div>
-          <input class="finput loc-input" id="f-loc-country" type="text" placeholder="e.g. USA" maxlength="60" autocomplete="country-name">
-        </div>
+      <label class="flbl">Location</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input class="finput" id="f-loc-city"    type="text" placeholder="City"    maxlength="60" style="flex:1;min-width:0">
+        <input class="finput" id="f-loc-state"   type="text" placeholder="State"   maxlength="60" style="flex:1;min-width:0">
+        <input class="finput" id="f-loc-country" type="text" placeholder="Country" maxlength="60" style="flex:1;min-width:0">
       </div>
     </div>
   </div>
@@ -348,30 +321,15 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
     <input class="finput" id="f-web" type="url" placeholder="https://yourrestaurant.com" maxlength="150">
   </div>
   <div class="field">
-    <label class="flbl">
-      Main Competitors
-      <span style="font-size:10px;color:var(--magenta);text-transform:none;letter-spacing:0;font-weight:700">(strongly recommended &mdash; 3 names = best report)</span>
-    </label>
-    <input class="finput" id="f-comp" type="text"
-           placeholder="e.g. Hog Island Oyster Co. Marin, Scoma's Sausalito, Left Bank Larkspur"
-           maxlength="240"
-           oninput="onCompetitorInput()"
-           onblur="onCompetitorBlur()">
-    <div id="comp-hint" style="font-size:11px;color:#888;margin-top:6px;line-height:1.55;transition:color 0.2s">
-      Type the names of <strong style="color:#666">3 nearby restaurants</strong> you consider direct competition, separated by commas.
-      <strong style="color:#666">Spell them carefully and be specific</strong> &mdash;
-      <em>&ldquo;Hog Island Oyster Co. Marin&rdquo;</em> works far better than just <em>&ldquo;Hog Island&rdquo;</em>
-      because we match against Google Maps and TripAdvisor by exact name.
-      <span id="comp-counter" style="display:inline-block;margin-left:4px;padding:1px 8px;border-radius:10px;font-weight:700;font-size:10px;letter-spacing:0.04em;background:#ede9e2;color:#999">0 / 3 NAMES</span>
-    </div>
-    <div id="comp-warn" style="display:none;margin-top:8px;padding:9px 12px;background:#fff5e0;border-left:3px solid #F7941D;border-radius:4px;font-size:11px;color:#7a4a00;line-height:1.5">
-      <strong>Quick tip:</strong> <span id="comp-warn-msg">Reports with only 0&ndash;2 named competitors are noticeably less accurate. Adding a third name lets us cross-check ratings against Google Maps and build a much sharper competitive context. You can still continue, but the report will be less precise.</span>
-    </div>
+    <label class="flbl">Main Competitors <span style="font-size:10px;color:#aaa;text-transform:none;letter-spacing:0">(optional)</span></label>
+    <input class="finput" id="f-comp" type="text" placeholder="e.g. Pasta Palace, The Oak Room" maxlength="200">
+    <div style="font-size:11px;color:#aaa;margin-top:5px">Name 1&ndash;3 nearby restaurants you consider competition</div>
   </div>
-  </div>
+
   <div class="privacy">
     <b>&#128274; Privacy:</b> Your data is used solely to generate your HealthCheck report. We never sell or share your information.
   </div>
+
   <div class="btn-row" style="padding:0">
     <button class="btn-next" style="flex:1" onclick="goStep(1)">Next: Reviewer Sentiment &rarr;</button>
   </div>
@@ -480,10 +438,10 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
       <div class="pw-title">Unlock your complete HealthCheck report</div>
       <div class="pw-sub">Your free summary shows your score and top priorities. The full report reveals the complete picture &mdash; every pillar scored with evidence, real customer quotes, your competitive position, and a 5-point action roadmap built specifically for your restaurant.</div>
 
-      <!-- Single prominent Buy Now button -->
+      <!-- Single prominent Unlock button -->
       <div style="margin:0 auto 1.4rem;max-width:400px">
         <button class="plan-btn gold" style="font-size:15px;padding:16px;border-radius:8px;width:100%" onclick="unlockFull()">
-          Buy Full Report &mdash; $49.99 &#8594;
+          Unlock Full Report &mdash; $49.99 &#8594;
         </button>
         <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:8px;text-align:center">One-time payment &middot; Instant access &middot; Secure checkout via Wix</div>
       </div>
@@ -500,12 +458,15 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
         <div class="plan-feat">Printable PDF &mdash; share with your team</div>
       </div>
 
-      <!-- Annual option — secondary -->
+      <!-- ANNUAL OPTION — DORMANT (commented out to remove from purchase flow)
+           To restore: uncomment the block below. The unlockAnnual() JS handler
+           and all backend annual handling remain intact.
       <div style="text-align:center">
         <button class="plan-btn outline" style="padding:10px 24px;border-radius:6px;font-size:11px" onclick="unlockAnnual()">
-          Or subscribe annually &mdash; $99.99/yr (3 reports + progress tracking) &#8594;
+          Or subscribe annually &mdash; $99.99/yr (3 reports + progress tracking) &rarr;
         </button>
       </div>
+      -->
 
       <div class="pw-note" style="margin-top:1rem">&#128274; Payments processed securely by Wix Payments &middot; Full report unlocks instantly after payment</div>
     </div>
@@ -524,7 +485,7 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 
   </div><!-- end .report-wrap -->
 
-  <!-- Step 4: Report unlocked — print bar + annual upsell -->
+  <!-- Step 4: Report unlocked — print bar -->
   <div class="print-bar" id="print-bar" style="display:none">
     <span class="print-bar-msg">Your <b>DiagnostiX Full Report</b> is ready &mdash; save it as a PDF for your records.</span>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -551,8 +512,12 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
     </div>
   </div>
 
-  <!-- Step 5: Annual subscription upsell — shown after full report unlocked -->
-  <div id="annual-upsell" style="display:none;background:var(--navy);border-top:3px solid var(--gold);padding:2rem 2.2rem;margin-top:0">
+  <!-- Step 5: Annual subscription upsell — DORMANT (force-hidden, plan removed from purchase flow)
+       Panel markup preserved for future restoration. To re-enable:
+       1. Remove "!important" from display:none below (or change to display:block)
+       2. Uncomment the annual option button on the paywall above (search "ANNUAL OPTION — DORMANT")
+       3. Re-enable the upsell display in unlockFullReport() JS (search "ANNUAL UPSELL — DORMANT") -->
+  <div id="annual-upsell" style="display:none !important;background:var(--navy);border-top:3px solid var(--gold);padding:2rem 2.2rem;margin-top:0">
     <div style="max-width:640px;margin:0 auto;text-align:center">
       <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.14em;color:rgba(201,168,76,0.7);margin-bottom:8px;font-weight:700">Want to track your progress over time?</div>
       <div style="font-family:'League Spartan',sans-serif;font-size:1.5rem;color:#fff;margin-bottom:8px">Upgrade to Annual &mdash; $99.99/year</div>
@@ -643,56 +608,14 @@ function goStep(n) {
     var nm = document.getElementById('f-name').value.trim();
     var cn = document.getElementById('f-cname').value.trim();
     var em = document.getElementById('f-email').value.trim();
-    var city    = document.getElementById('f-loc-city').value.trim();
-    var country = document.getElementById('f-loc-country').value.trim();
     var emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em);
-    var err = document.getElementById('e0');
-
-    // Required: Restaurant name, City, Country, Contact name, Email
-    // State is optional (some countries don't use US-style states)
-    if (!nm) {
-      err.style.display = 'block';
-      err.textContent = 'Please enter your restaurant name.';
-      document.getElementById('f-name').focus();
-      return;
-    }
-    if (!city || city.length < 2) {
-      err.style.display = 'block';
-      err.textContent = 'Please enter your City (e.g. Larkspur Landing, Vitacura, Brooklyn).';
-      document.getElementById('f-loc-city').focus();
-      return;
-    }
-    if (!country || country.length < 2) {
-      err.style.display = 'block';
-      err.textContent = 'Please enter your Country (e.g. USA, Chile, UK).';
-      document.getElementById('f-loc-country').focus();
-      return;
-    }
-    if (!cn||!em||!emailOk) {
+    if (!nm||!cn||!em||!emailOk) {
+      var err = document.getElementById('e0');
       err.style.display = 'block';
       err.textContent = (!emailOk && em) ? 'Please enter a valid email address.' : 'Please fill in all required fields (marked *).';
       return;
     }
-    err.style.display = 'none';
-
-    // Soft-nudge: if fewer than 3 competitors named, ask user to confirm proceeding.
-    // We remember the confirmation in sessionStorage so the dialog only appears once.
-    var compNames = parseCompetitorNames();
-    if (compNames.length < 3 && !sessionStorage.getItem('dx_comp_nudge_ack')) {
-      var pluralN = compNames.length === 1 ? 'just 1 competitor' : compNames.length + ' competitors';
-      var msg = compNames.length === 0
-        ? 'You haven\'t named any competitors yet.\n\nReports without named competitors are noticeably less accurate in the Competitive Context section. We strongly recommend naming 3 nearby restaurants you consider direct competition before continuing.\n\nClick OK to go back and add competitors, or Cancel to proceed anyway.'
-        : 'You\'ve named ' + pluralN + '.\n\nReports with 3+ named competitors are noticeably sharper because we cross-check each against Google Maps. Adding one or two more would meaningfully improve your report.\n\nClick OK to go back and add more, or Cancel to proceed with what you have.';
-      var goBack = confirm(msg);
-      if (goBack) {
-        // User chose to go back — keep them on step 0, focus the competitor field
-        var compField = document.getElementById('f-comp');
-        if (compField) { compField.focus(); compField.scrollIntoView({behavior:'smooth', block:'center'}); }
-        return;
-      }
-      // User chose to proceed — remember so we don't nudge again
-      sessionStorage.setItem('dx_comp_nudge_ack', '1');
-    }
+    document.getElementById('e0').style.display = 'none';
   }
   document.querySelectorAll('.panel').forEach(function(p,i){ p.classList.toggle('active', i===n); });
   for(var i=0;i<4;i++){
@@ -702,49 +625,6 @@ function goStep(n) {
   var labels=['Step 1 of 2 \u2014 Your Restaurant','Step 2 of 2 \u2014 Reviewer Sentiment','Analysing\u2026','Report Ready'];
   document.getElementById('step-lbl').textContent = labels[n]||'';
   window.scrollTo(0,0);
-}
-
-// ── COMPETITOR INPUT — soft-nudge UX ─────────────────────────
-// Parses the comma-separated competitor field, counts distinct names, and
-// updates a small counter chip plus a warm warning when count < 3. Does
-// NOT block submission — owners with unusual markets can proceed with 0–2.
-function parseCompetitorNames() {
-  var raw = (document.getElementById('f-comp') || {}).value || '';
-  return raw.split(/[,;]/).map(function(s){ return s.trim(); }).filter(function(s){ return s.length >= 3 && s.length <= 60; });
-}
-function onCompetitorInput() {
-  var names = parseCompetitorNames();
-  var n = names.length;
-  var chip = document.getElementById('comp-counter');
-  if (chip) {
-    chip.textContent = n + ' / 3 NAMES';
-    if (n >= 3) {
-      chip.style.background = '#d4ecd5';
-      chip.style.color = '#00733a';
-    } else if (n >= 1) {
-      chip.style.background = '#fff1d6';
-      chip.style.color = '#7a4a00';
-    } else {
-      chip.style.background = '#ede9e2';
-      chip.style.color = '#999';
-    }
-  }
-}
-function onCompetitorBlur() {
-  // Show the warm warning only after the user has finished typing AND has fewer than 3
-  var names = parseCompetitorNames();
-  var warn = document.getElementById('comp-warn');
-  var msg  = document.getElementById('comp-warn-msg');
-  if (!warn || !msg) return;
-  if (names.length === 0) {
-    msg.textContent = 'Reports built without named competitors lose significant precision in the Competitive Context section. Adding even one name helps; three is ideal. You can still proceed.';
-    warn.style.display = 'block';
-  } else if (names.length < 3) {
-    msg.textContent = 'You\'ve named ' + names.length + '. Reports with 3+ named competitors are noticeably sharper because we cross-check each against Google Maps. You can still proceed.';
-    warn.style.display = 'block';
-  } else {
-    warn.style.display = 'none';
-  }
 }
 
 // ── GATHER DATA ───────────────────────────────────────────────
@@ -806,7 +686,7 @@ function gatherData() {
     contactName: document.getElementById('f-cname').value.trim(),
     email:       document.getElementById('f-email').value.trim(),
     website:     document.getElementById('f-web').value.trim(),
-    competitors: (document.getElementById('f-comp') ? document.getElementById('f-comp').value.trim() : ''),
+    competitors: document.getElementById('f-comp').value.trim(),
     sentiment:   JSON.parse(JSON.stringify(qVals)),
     businessMetrics: {
       guestCountChange:    guestChange,
@@ -1242,71 +1122,20 @@ function renderReport(r, d) {
   var negT=((r.themes&&r.themes.negative)||[]).map(function(t){return'<span class="tag neg">'+t+'</span>';}).join('');
   var neuT=((r.themes&&r.themes.neutral)||[]).map(function(t){return'<span class="tag neu">'+t+'</span>';}).join('');
 
-// Competitor cards — v8.7 uniform layout with forgiving rating interpreter
-  function interpretCompetitorRating(c) {
-    if (typeof c.rating === 'number' && c.rating >= 0 && c.rating <= 5) return c.rating;
-    if (typeof c.rating === 'string') {
-      var m = c.rating.match(/(\d+(?:\.\d+)?)/);
-      if (m) {
-        var n = parseFloat(m[1]);
-        if (n >= 0 && n <= 5)  return n;
-        if (n > 5 && n <= 100) return n / 20;
-      }
-    }
-    if (typeof c.score === 'number' && c.score >= 0 && c.score <= 5) return c.score;
-    if (typeof c.score === 'number' && c.score > 5 && c.score <= 100) return c.score / 20;
-    return null;
-  }
-  function interpretReviewCount(c) {
-    if (typeof c.reviewCount === 'number' && c.reviewCount >= 0) return c.reviewCount;
-    if (typeof c.reviewCount === 'string') {
-      var m = c.reviewCount.match(/(\d[\d,]*)/);
-      if (m) return parseInt(m[1].replace(/,/g, ''), 10);
-    }
-    return null;
-  }
-  var focalNameLower = (d.name || '').trim().toLowerCase();
-  var peers = (r.competitors || []).filter(function(c) {
-    var peerName = (c.name || '').trim().toLowerCase();
-    return peerName && peerName !== focalNameLower;
-  });
-  var youColor = r.healthCheckScore >= 65 ? '#00A651'
-               : r.healthCheckScore >= 45 ? '#F7941D'
-               : '#ED1C24';
-  var youCard = '<div class="comp-card comp-you">'
-    + '<div class="comp-card-tag" style="background:#1B1464;color:#fff">YOU</div>'
-    + '<div class="comp-name">' + (d.name || 'Your restaurant') + '</div>'
-    + '<div class="comp-big" style="color:' + youColor + '">' + (r.healthCheckScore || 0)
-    + '<span class="comp-big-scale">/100</span></div>'
-    + '<div class="comp-metric-label">DiagnostiX HealthCheck Score</div>'
-    + '<div class="comp-note">Your overall performance</div>'
-    + '</div>';
-  var peerCards = peers.slice(0, 5).map(function(c) {
-    var ratingRaw = interpretCompetitorRating(c);
-    var reviewCount = interpretReviewCount(c);
-    var hasRating = ratingRaw !== null;
-    var ratingColor = !hasRating ? '#999'
-                    : ratingRaw >= 4.5 ? '#00A651'
-                    : ratingRaw >= 4.0 ? '#F7941D'
-                    : '#ED1C24';
-    var bigBlock = hasRating
-      ? '<div class="comp-big" style="color:' + ratingColor + '">' + ratingRaw.toFixed(1)
-        + '<span class="comp-big-scale"> / 5 ★</span></div>'
-      : '<div class="comp-no-rating">No public rating found</div>';
-    var metricLabel = hasRating
-      ? (reviewCount !== null
-          ? (reviewCount >= 1000 ? (reviewCount/1000).toFixed(1) + 'k' : String(reviewCount)) + ' reviews'
-          : 'Market rating')
-      : 'Profile only';
-    return '<div class="comp-card comp-peer">'
-      + '<div class="comp-card-tag" style="background:#e8e3d8;color:#666">PEER</div>'
-      + '<div class="comp-name">' + (c.name || 'Unknown') + '</div>'
-      + bigBlock
-      + '<div class="comp-metric-label">' + metricLabel + '</div>'
-      + '<div class="comp-note">' + (c.note || '') + '</div>'
-      + '</div>';
+  var compCards=(r.competitors||[]).map(function(c,i){
+    var cls=i===0?'me':'peer';
+    var scl=c.score>=65?'g':'w';
+    return '<div class="comp-card '+cls+'">'
+      +'<div class="comp-name">'+c.name+'</div>'
+      +'<div class="comp-score '+scl+'">'+c.score+' <span style="font-size:11px;color:#999">/100</span></div>'
+      +'<div class="comp-detail">'+c.note+'</div></div>';
   }).join('');
-  var compCards = youCard + peerCards;
+  // Add subject restaurant card first
+  compCards = '<div class="comp-card me">'
+    +'<div class="comp-name" style="color:var(--gold)">'+d.name+'</div>'
+    +'<div class="comp-score g">'+(r.healthCheckScore||0)+' <span style="font-size:11px;color:#999">/100</span></div>'
+    +'<div class="comp-detail">Your HealthCheck Score</div></div>'
+    + compCards;
 
   var actPriority={urgent:'Urgent &mdash; high impact',['30days']:'30 days &mdash; medium impact',ongoing:'Ongoing &mdash; compounding'};
   var actBadge={urgent:'hi',['30days']:'med',ongoing:'lo'};
@@ -1465,11 +1294,13 @@ function renderReport(r, d) {
 //
 // SETUP REQUIRED:
 // 1. Create product in Wix Store: "DiagnostiX Full Report" $49.99
-// 2. Create plan in Wix Pricing Plans: "DiagnostiX Annual" $99.99/year
-// 3. Replace the two URLs below with your actual Wix checkout URLs
+// 2. [DORMANT] Annual plan ("DiagnostiX Annual" $99.99/year) — removed from
+//    purchase flow per simplification. Wix Pricing Plan is dormant. Backend
+//    annual handling (webhook, cron, generateProgressReport, annualSubscribers)
+//    remains intact. Reactivate by uncommenting UI surfaces (search "DORMANT").
+// 3. Replace the URL below with your actual Wix checkout URL
 // 4. In Wix: set the post-payment redirect URL to:
 //    https://diagnostix-proxy-production.up.railway.app?payment=success&product=full
-//    (or annual) — this brings user back and auto-unlocks the report
 
 var WIX_FULL_URL    = 'https://www.4xi360.com/diagnostixpay';
 var WIX_ANNUAL_URL  = 'https://www.4xi360.com/diagnostixpay';
@@ -1545,12 +1376,13 @@ function unlockFullReport() {
   document.getElementById('full-blur').style.opacity = '1';
   document.getElementById('full-blur').style.pointerEvents = 'auto';
   document.getElementById('print-bar').style.display = 'flex';
-  // Show annual upsell below the report (only if they bought the one-time report)
-  var product = localStorage.getItem('dx_product') || sessionStorage.getItem('dx_product') || 'full';
-  if (product === 'full') {
-    var upsell = document.getElementById('annual-upsell');
-    if (upsell) upsell.style.display = 'block';
-  }
+  // ANNUAL UPSELL — DORMANT (Annual plan removed from purchase flow)
+  // To re-enable: uncomment the block below and remove !important from #annual-upsell display:none
+  // var product = localStorage.getItem('dx_product') || sessionStorage.getItem('dx_product') || 'full';
+  // if (product === 'full') {
+  //   var upsell = document.getElementById('annual-upsell');
+  //   if (upsell) upsell.style.display = 'block';
+  // }
   window.scrollTo(0, 0);
 }
 
