@@ -9,6 +9,28 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Single source of truth for the version. /health used to publish a hardcoded
+// '8.9.23' literal that had no relationship to package.json, which still said
+// 1.0.0. package.json is now the only place the number is written.
+const VERSION = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf8')).version;
+
+// ── Analytics benchmark capture (ported from SVP v0.14.0 and EVP v1.5.0) ───
+// One row per completed assessment, written to the shared "benchmarks" table.
+//
+// UNLIKE SVP AND EVP, this service needs no new credentials. SUPABASE_URL and
+// SUPABASE_KEY already point at gxinqurxmstvoovfbgqr, the project that holds
+// benchmarks alongside subscribers, cohort_taxonomy and analytics_events. So
+// there is no separate ANALYTICS_* pair here, and adding one would be a second
+// name for the same thing.
+//
+// The write is gated on credentials present plus BENCHMARK_WRITE_ENABLED set
+// explicitly to "true". This lets the release ship inert and be switched on
+// separately. Anything other than "true", including unset, means off.
+const BENCHMARKS_TABLE = 'benchmarks';
+const BENCHMARK_WRITE_ENABLED = String(process.env.BENCHMARK_WRITE_ENABLED || '').trim().toLowerCase() === 'true';
+const BENCHMARK_CONFIGURED = !!(process.env.SUPABASE_URL && process.env.SUPABASE_KEY);
+const BENCHMARK_ENABLED = BENCHMARK_CONFIGURED && BENCHMARK_WRITE_ENABLED;
+
 app.use(express.json());
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1020,7 +1042,16 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '8.9.23' });
+  // benchmarks is this endpoint's first configuration handle. Without one there
+  // is no way to check capture state from outside, and /health is where that
+  // gets checked. Tri-state string, matching the shape EVP uses.
+  res.json({
+    status: 'ok',
+    version: VERSION,
+    benchmarks: BENCHMARK_ENABLED
+      ? 'on'
+      : (BENCHMARK_CONFIGURED ? 'configured but disabled' : 'not configured')
+  });
 });
 
 app.get('/test', async (req, res) => {
@@ -1685,7 +1716,18 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
     console.log('[diagnose] _debug:', JSON.stringify(report._debug));
 
     console.log('[diagnose] SUCCESS score:', report.healthCheckScore);
-    return res.status(200).json(report);
+    res.status(200).json(report);
+
+    // ── Analytics benchmark capture (v8.9.24) ────────────────────────────
+    // Runs strictly after the response has been sent. Nothing is awaited and
+    // every error is logged and swallowed, so a Supabase outage cannot reach
+    // the user. There is no assessment write to chain off, unlike SVP and EVP:
+    // see the note above writeBenchmark.
+    writeBenchmark({ report, name, location, country, region, focalContext })
+      .catch(err => {
+        console.error('[benchmark] capture chain error:', err.message || err);
+      });
+    return;
   } catch(e) {
     console.error('[diagnose] FAILED:', e.message);
     return res.status(500).json({ error: e.message });
@@ -3577,6 +3619,146 @@ async function sendRenewalReminderEmail(sub) {
   } catch (e) {
     console.error('[renewal] send failed:', e.message);
     throw e;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ANALYTICS BENCHMARK CAPTURE (v8.9.24)
+// ═══════════════════════════════════════════════════════════════════
+// Third and last of the three ports, after SVP v0.14.0 and EVP v1.5.0. RVP
+// differs structurally from both, and the differences are recorded here so a
+// future session does not read the gaps as omissions:
+//
+//   source_assessment_id is STRUCTURALLY null, not a fallback. SVP and EVP each
+//     persist an assessment row and stamp its id here. RVP persists no
+//     assessment at all: the only Supabase writes in this service are to
+//     subscribers, and the report is returned to the browser and never stored.
+//     There is nothing to point at. Do not try to populate this column without
+//     first giving RVP assessment persistence.
+//
+//   attribute_scores is null. RVP has six pillars and no attribute layer.
+//
+//   cohort_tier is null, deliberately, even though Phase 3 seeded four rvp/tier
+//     values. Those values are grounded in detectFocalContext(), but that
+//     function is a regex over scraped search snippets that fails open to null
+//     with no confidence signal, and its output exists to build a competitor
+//     search string which is then discarded. It is a query heuristic, not a
+//     fact about the restaurant, and a league table would treat this column as
+//     ground truth. The heuristic is carried in cohort_extra under
+//     tier_heuristic, named so nobody mistakes it for an observation.
+//
+//   cohort_size_band, cohort_sector, cohort_subsector and cohort_region are
+//     null: RVP captures no size concept, and getRegion() returns this
+//     service's own query-routing regions, which are not the analytics
+//     15-region vocabulary.
+//
+// This is also the first shared Supabase helper in this service. The six
+// existing inline fetch calls against /rest/v1/subscribers are deliberately
+// NOT refactored into it; that is a separate change.
+
+// Coerces a model-supplied score into the integer 0-100 the table's CHECK
+// constraint requires. Returns null when there is no usable number, so the
+// caller can decide rather than silently recording a fabricated zero.
+function toBenchmarkScore(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(100, Math.max(0, Math.round(n)));
+}
+
+function buildBenchmarkRow({ report, name, location, country, region, focalContext }) {
+  // report.pillars is { cs, pa, es, sm, cp, bg }, each { score, label, status }.
+  const pillarScores = {};
+  for (const [key, p] of Object.entries((report && report.pillars) || {})) {
+    if (!p) continue;
+    const s = toBenchmarkScore(p.score);
+    if (s !== null) pillarScores[key] = s;
+  }
+
+  return {
+    product:          'rvp',
+    subject_name:     String(name || '').slice(0, 200),
+    subject_id:       null,
+
+    cohort_sector:    null,
+    cohort_subsector: null,
+    cohort_tier:      null,
+    cohort_region:    null,
+    cohort_country:   String(country || '').trim() || null,
+    cohort_size_band: null,
+    cohort_extra: {
+      location_raw:    String(location || '').trim() || null,
+      query_region:    region || null,
+      cuisine_detected: (report && report.cuisineDetected) || null,
+      price_detected:   (report && report.priceDetected) || null,
+      // Heuristic, NOT an observation. See the note above cohort_tier.
+      tier_heuristic:  (focalContext && focalContext.tier) || null,
+      score_verdict:   (report && report.scoreVerdict) || null
+    },
+
+    overall_score:    toBenchmarkScore(report && report.healthCheckScore),
+    pillar_scores:    pillarScores,
+    attribute_scores: null,
+
+    data_source:          'real_assessment',
+    source_assessment_id: null,
+    ai_seed_batch:        null,
+    confidence_note:      (report && report.scoreVerdict) || null,
+    expires_at:           null
+    // id and created_at default automatically.
+  };
+}
+
+// Writes one benchmarks row. First shared PostgREST helper in this service;
+// same raw fetch pattern as the inline subscriber calls elsewhere.
+//
+// NEVER throws and never rethrows. Every failure path logs and returns false.
+// A Supabase outage must never surface to a user who just ran an assessment.
+async function writeBenchmark({ report, name, location, country, region, focalContext }) {
+  try {
+    if (!BENCHMARK_ENABLED) {
+      // Deliberately no outbound request when the flag is off.
+      console.log('[benchmark] write skipped: capture disabled');
+      return false;
+    }
+
+    const row = buildBenchmarkRow({ report, name, location, country, region, focalContext });
+
+    // Distinct greppable markers. A benchmarks row cannot record a null score
+    // (overall_score is NOT NULL), and writing a clamped 0 would quietly
+    // poison every future cohort average, so these rows are skipped instead.
+    if (row.overall_score === null) {
+      console.warn(`BENCHMARK_SKIP_NO_SCORE [benchmark] write skipped: report has no usable health check score, subject="${row.subject_name}"`);
+      return false;
+    }
+    if (!row.subject_name) {
+      console.warn('BENCHMARK_SKIP_NO_SUBJECT [benchmark] write skipped: report has no restaurant name');
+      return false;
+    }
+
+    const url = process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_KEY;
+    const res = await fetch(`${url}/rest/v1/${BENCHMARKS_TABLE}`, {
+      method: 'POST',
+      headers: {
+        'apikey': key,
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify(row)
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      console.error(`[benchmark] write failed ${res.status}: ${txt.slice(0, 300)}`);
+      return false;
+    }
+
+    console.log(`[benchmark] wrote rvp row: subject="${row.subject_name}" score=${row.overall_score} pillars=${Object.keys(row.pillar_scores).length} country=${row.cohort_country || 'null'}`);
+    return true;
+  } catch (err) {
+    console.error('[benchmark] write error:', err.message || err);
+    return false;
   }
 }
 
