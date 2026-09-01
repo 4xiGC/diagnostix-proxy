@@ -470,6 +470,112 @@ const CORPUS_CAPS_PROSE   = { GOOGLE:  900, REVIEWS: 1400, STAFF: 1400, SOCIAL: 
 // rating and review count are extracted separately into the section header, so
 // capping the text keeps the authoritative numbers.
 const COMP_SECTION_CAP = 1200;
+
+// ── Dash sanitizer (v8.9.31) ────────────────────────────────────────────────
+// Backstop for the prompt rule added in v8.9.30. The rule is the fix; this is
+// what catches the runs where it does not hold.
+//
+// Entities are decoded to their literal first, then the ordered rules apply, so
+// "200&ndash;500" becomes "200-500" by the digit rule rather than "200, 500".
+// Entity forms matter more here than in the other products: RVP returns JSON and
+// renders in the browser, so &mdash; would pass a literal-character check and
+// still reach the reader as a dash.
+//
+// Replace, never strip. Deleting the en-dash from "5,000–50,000" would yield
+// "5,00050,000". The rules are ordered, first match wins:
+//   1. between digits   -> hyphen   "10-20"
+//   2. spaced, so prose -> comma    "lead, and"
+//   3. anything else    -> hyphen   "pre-post"
+//
+// A hit means the prompt rule did not hold. The marker is deliberately
+// greppable: `grep dash-sanitizer` over the production logs answers whether the
+// prompt is doing its job, or whether only this backstop is.
+const DASH_ENTITY_RE = /&mdash;|&ndash;|&#8212;|&#8211;|&#x2014;|&#x2013;/gi;
+const DASH_RE = /[\u2014\u2013]/;
+function decodeDashEntities(s) {
+  return s.replace(DASH_ENTITY_RE, (e) => (/ndash|8211|2013/i.test(e) ? '\u2013' : '\u2014'));
+}
+function stripDashes(s) {
+  const decoded = decodeDashEntities(s);
+  if (!DASH_RE.test(decoded)) return decoded;
+  console.warn(`[dash-sanitizer] em/en dash in generated string, replaced: ${JSON.stringify(s.slice(0, 160))}`);
+  return decoded
+    .replace(/(\d)\s*[\u2014\u2013]\s*(\d)/g, '$1-$2')
+    .replace(/\s+[\u2014\u2013]\s+/g, ', ')
+    .replace(/[\u2014\u2013]/g, '-');
+}
+
+// sanitizeReportProse walks a NAMED ALLOW-LIST, not the whole object.
+//
+// SVP could put its sanitizer inside escapeHtml because every model-authored
+// string reached the page through that one function. RVP has no such choke
+// point: it returns JSON and the browser renders it. So the equivalent of SVP's
+// escapeHtml / escapeHtmlRaw split is made here by FIELD instead of by call
+// site, and the fields below are display prose only.
+//
+// DO NOT REPLACE THIS WITH A WALK OVER THE OBJECT, and do not add the fields
+// listed here as excluded. The natural instinct on reading an allow-list is to
+// wonder what is missing and add it. Each omission below is deliberate:
+//
+//   competitors[].name   IS A MATCH KEY, not just display text. It is compared
+//     by lowercased string equality in at least seven places (placesByLower,
+//     the dedup set, existingNamesLower, the focal-exclusion check). Sanitizing
+//     it is safe for today's merge, which has already run by the time this
+//     executes, but the sanitized name is what gets STORED in
+//     subscribers.baseline_report. The annual path reads that back months later
+//     and re-matches it against a freshly scraped, unsanitized name, so a
+//     restaurant whose real name contains a dash would silently fail to match
+//     itself on the follow-up report. A dash in a stored name is a style
+//     violation; breaking self-matching a year later is a product failure that
+//     would be nearly impossible to attribute. This is the same defect as the
+//     SVP v0.15.0 regression, where escapeHtml rewrote enrollment band values
+//     that were also wire identifiers, arriving on a twelve-month delay.
+//
+//   _debug               diagnostic provenance, including finalCompetitors and
+//     topNearby names copied from Google. Rewriting it would corrupt the record
+//     used to diagnose exactly this kind of problem.
+//
+//   scoreVerdict         a wire value. It travels to cohort_extra.score_verdict
+//     and to HubSpot as diagnostix_verdict.
+//
+//   enums                pillars.*.status, actions[].priority,
+//     reviewVerbatims[].sentiment, competitorSourceLevel. None can contain a
+//     dash, and all are matched by equality downstream.
+//
+//   onlinePresence.channels[].name   platform labels, effectively identifiers.
+//
+// Mutates in place and returns the same object, so callers that already hold a
+// reference (the benchmark write, the annual store) see the cleaned text.
+function sanitizeReportProse(report) {
+  if (!report || typeof report !== 'object') return report;
+  const S = (v) => (typeof v === 'string' ? stripDashes(v) : v);
+  const arr = (a) => (Array.isArray(a) ? a.map(S) : a);
+
+  for (const k of ['executiveSummary', 'ownerSentimentSummary', 'sentimentGap',
+                   'businessRealityAnalysis', 'perceptionGap', 'employeeSentiment',
+                   'competitiveInsight', 'competitorSourceNote']) {
+    if (typeof report[k] === 'string') report[k] = stripDashes(report[k]);
+  }
+  if (Array.isArray(report.strengths)) report.strengths = arr(report.strengths);
+  if (Array.isArray(report.risks))     report.risks     = arr(report.risks);
+  if (report.themes && typeof report.themes === 'object') {
+    for (const k of Object.keys(report.themes)) report.themes[k] = arr(report.themes[k]);
+  }
+  if (report.pillarGapNarratives && typeof report.pillarGapNarratives === 'object') {
+    for (const k of Object.keys(report.pillarGapNarratives)) report.pillarGapNarratives[k] = S(report.pillarGapNarratives[k]);
+  }
+  for (const c of (report.onlinePresence && report.onlinePresence.channels) || []) if (c) c.note = S(c.note);
+  for (const v of report.reviewVerbatims || []) if (v) v.text = S(v.text);
+  for (const c of report.competitors || []) if (c) c.note = S(c.note);   // .name deliberately untouched
+  for (const a of report.actions || []) { if (!a) continue; a.title = S(a.title); a.desc = S(a.desc); }
+  for (const a of report.commercialActions || []) { if (!a) continue; a.title = S(a.title); a.desc = S(a.desc); a.evidence = S(a.evidence); }
+  if (report.progress && typeof report.progress === 'object') {
+    report.progress.progressNarrative = S(report.progress.progressNarrative);
+    if (Array.isArray(report.progress.completedActions))  report.progress.completedActions  = arr(report.progress.completedActions);
+    if (Array.isArray(report.progress.ongoingPriorities)) report.progress.ongoingPriorities = arr(report.progress.ongoingPriorities);
+  }
+  return report;
+}
 async function searchWithFallback(queries, opts) {
   opts = opts || {};
   const label = opts.label || 'search';
@@ -1815,6 +1921,12 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
     }
 
     console.log('[diagnose] _debug:', JSON.stringify(report._debug));
+
+    // Sanitize here, where the object is complete: the competitor merge, both
+    // filters, _debug and the source note have all run. writeBenchmark below
+    // reuses this same object, so the response, the stored copy and the
+    // benchmark row all get the cleaned text from one pass.
+    sanitizeReportProse(report);
 
     console.log('[diagnose] SUCCESS score:', report.healthCheckScore);
     res.status(200).json(report);
@@ -3506,6 +3618,12 @@ PREVIOUS ACTIONS: ${(baseline.report.actions||[]).map(a=>a.title).join('; ')}`;
       generatedAt: new Date().toISOString(),
       isProgressReport: true
     });
+
+    // The annual path builds its own report and is a second producer. A single
+    // insertion point in /diagnose would leave every follow-up report dirty.
+    // Sanitizing before the push covers the stored copy, the Supabase save, the
+    // customer email and the HubSpot handoff, all of which read from here.
+    sanitizeReportProse(report);
 
     sub.reports.push({ generatedAt: Date.now(), report, reportNumber });
 
