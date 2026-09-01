@@ -1975,23 +1975,52 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     console.log('[diagnose] _debug:', JSON.stringify(report._debug));
 
     // Sanitize here, where the object is complete: the competitor merge, both
-    // filters, _debug and the source note have all run. writeBenchmark below
-    // reuses this same object, so the response, the stored copy and the
-    // benchmark row all get the cleaned text from one pass.
+    // filters, _debug and the source note have all run. buildBenchmarkRow below
+    // reads this same object, so the response and the benchmark row both get the
+    // cleaned text from one pass.
     sanitizeReportProse(report);
 
-    console.log('[diagnose] SUCCESS score:', report.healthCheckScore);
+    // ── Analytics benchmark capture (v8.9.24, id returned since v8.9.35) ──
+    //
+    // The row is BUILT before the response and WRITTEN after it. Nothing is
+    // awaited, every error is logged and swallowed, so a Supabase outage still
+    // cannot reach the user. That constraint is unchanged.
+    //
+    // What changed is that the caller now learns the row's id. buildBenchmarkRow
+    // generates it rather than leaving it to the column default, so it is known
+    // without waiting for the insert.
+    //
+    // WHAT report.benchmarkId IS AND IS NOT. It is a claim that a write will be
+    // ATTEMPTED with that id. It is not proof that a row exists: a Supabase
+    // failure after the response leaves the id pointing at nothing. That matters
+    // because bulk_run_subjects.benchmark_id is a real foreign key to
+    // benchmarks(id), so an orchestrator that inserts this id without checking
+    // would violate the constraint whenever a write failed. Verify the row
+    // exists, or set the reference in a second pass. Do not treat this id as a
+    // guarantee.
+    //
+    // Null means no row is coming, and benchmarkSkip says why. Three of the four
+    // reasons are known synchronously, so a caller learns "capture is off" or
+    // "no usable score" immediately instead of inferring it from a row that
+    // never appears. The fourth, a Supabase failure, cannot be known in advance
+    // and is exactly the case the caveat above is about.
+    const benchmarkRow = buildBenchmarkRow({
+      report, name, location, country, region, focalContext,
+      focalGeo: compPlacesData.focalGeo || null,
+    });
+    const benchmarkSkip = benchmarkSkipReason(benchmarkRow);
+    report.benchmarkId = benchmarkSkip ? null : benchmarkRow.id;
+    report.benchmarkSkip = benchmarkSkip;
+
+    console.log('[diagnose] SUCCESS score:', report.healthCheckScore,
+      benchmarkSkip ? `benchmark=skipped(${benchmarkSkip})` : `benchmarkId=${benchmarkRow.id}`);
     res.status(200).json(report);
 
-    // ── Analytics benchmark capture (v8.9.24) ────────────────────────────
-    // Runs strictly after the response has been sent. Nothing is awaited and
-    // every error is logged and swallowed, so a Supabase outage cannot reach
-    // the user. There is no assessment write to chain off, unlike SVP and EVP:
-    // see the note above writeBenchmark.
-    writeBenchmark({ report, name, location, country, region, focalContext, focalGeo: compPlacesData.focalGeo || null })
-      .catch(err => {
+    if (!benchmarkSkip) {
+      writeBenchmarkRow(benchmarkRow).catch(err => {
         console.error('[benchmark] capture chain error:', err.message || err);
       });
+    }
     return;
   } catch(e) {
     console.error('[diagnose] FAILED:', e.message);
@@ -3947,6 +3976,12 @@ function buildBenchmarkRow({ report, name, location, country, region, focalConte
   }
 
   return {
+    // Generated here rather than left to the column default, so the id is known
+    // BEFORE the row is written and can be returned in the response. See the
+    // note above the capture block in /diagnose for what that id does and does
+    // not promise.
+    id:               crypto.randomUUID(),
+
     product:          'rvp',
     subject_name:     String(name || '').slice(0, 200),
     subject_id:       null,
@@ -4036,34 +4071,45 @@ function buildBenchmarkRow({ report, name, location, country, region, focalConte
     // README before changing this.
     confidence_level:     null,
     expires_at:           null
-    // id and created_at default automatically.
+    // created_at defaults automatically. id does NOT: it is generated above so
+    // the caller can return it before the write happens.
   };
 }
 
-// Writes one benchmarks row. First shared PostgREST helper in this service;
-// same raw fetch pattern as the inline subscriber calls elsewhere.
+// Why a row would not be written, decided BEFORE the response is sent (v8.9.35).
+//
+// Three of the four no-write paths are synchronous: capture disabled, no usable
+// score, no subject name. Only a Supabase failure is not knowable in advance.
+// Separating the decision from the write lets /diagnose tell a caller "no row is
+// coming, and here is why" immediately, instead of leaving it to infer that from
+// a row that never appears.
+//
+// Returns null when the write will be attempted.
+function benchmarkSkipReason(row) {
+  if (!BENCHMARK_ENABLED) return 'capture_disabled';
+  if (!row) return 'row_not_built';
+  // A benchmarks row cannot record a null score (overall_score is NOT NULL), and
+  // writing a clamped 0 would quietly poison every future cohort average, so
+  // these rows are skipped instead.
+  if (row.overall_score === null) return 'no_score';
+  if (!row.subject_name) return 'no_subject_name';
+  return null;
+}
+
+// Writes a row that has ALREADY been built. Split from construction in v8.9.35
+// so the caller can hold the row, read its id, respond, and only then write.
 //
 // NEVER throws and never rethrows. Every failure path logs and returns false.
 // A Supabase outage must never surface to a user who just ran an assessment.
-async function writeBenchmark({ report, name, location, country, region, focalContext, focalGeo }) {
+async function writeBenchmarkRow(row) {
   try {
-    if (!BENCHMARK_ENABLED) {
-      // Deliberately no outbound request when the flag is off.
-      console.log('[benchmark] write skipped: capture disabled');
-      return false;
-    }
-
-    const row = buildBenchmarkRow({ report, name, location, country, region, focalContext, focalGeo });
-
-    // Distinct greppable markers. A benchmarks row cannot record a null score
-    // (overall_score is NOT NULL), and writing a clamped 0 would quietly
-    // poison every future cohort average, so these rows are skipped instead.
-    if (row.overall_score === null) {
-      console.warn(`BENCHMARK_SKIP_NO_SCORE [benchmark] write skipped: report has no usable health check score, subject="${row.subject_name}"`);
-      return false;
-    }
-    if (!row.subject_name) {
-      console.warn('BENCHMARK_SKIP_NO_SUBJECT [benchmark] write skipped: report has no restaurant name');
+    const skip = benchmarkSkipReason(row);
+    if (skip) {
+      // Distinct greppable markers, preserved from the previous shape.
+      const marker = skip === 'no_score' ? 'BENCHMARK_SKIP_NO_SCORE '
+        : skip === 'no_subject_name' ? 'BENCHMARK_SKIP_NO_SUBJECT ' : '';
+      console.warn(`${marker}[benchmark] write skipped: ${skip}` +
+        (row && row.subject_name ? ` subject="${row.subject_name}"` : ''));
       return false;
     }
 
@@ -4086,7 +4132,7 @@ async function writeBenchmark({ report, name, location, country, region, focalCo
       return false;
     }
 
-    console.log(`[benchmark] wrote rvp row: subject="${row.subject_name}" score=${row.overall_score} pillars=${Object.keys(row.pillar_scores).length} country=${row.cohort_country || 'null'}`);
+    console.log(`[benchmark] wrote rvp row id=${row.id} subject="${row.subject_name}" score=${row.overall_score} pillars=${Object.keys(row.pillar_scores).length} country=${row.cohort_country || 'null'} metro=${row.cohort_metro || 'null'}`);
     return true;
   } catch (err) {
     console.error('[benchmark] write error:', err.message || err);
