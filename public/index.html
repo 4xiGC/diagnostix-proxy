@@ -1273,7 +1273,7 @@ function renderReport(r, d) {
       +'<div class="insight"><div class="idot a"></div><div class="itext">'+r.competitiveInsight+'</div></div>'
       // Only present when Places could not anchor the peer set. See the note
       // above competitorSourceNote in server.js.
-      +(r.competitorSourceNote?'<div class="insight"><div class="idot r"></div><div class="itext">'+r.competitorSourceNote+'</div></div>':''):'')
+      +(r.competitorSourceNote?'<div class="insight"><div class="idot '+(r.competitorSourceLevel==='info'?'a':'r')+'"></div><div class="itext">'+r.competitorSourceNote+'</div></div>':''):'')
 
     // ── Financial Reality vs Operational Reality ──
     +financialBlock

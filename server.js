@@ -1779,13 +1779,38 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
     // section. The cost is that a reader cannot tell "no note, everything
     // worked" from "no note, older report", which is an argument for a proper
     // source line later rather than for a bigger note now.
+    // v8.9.29: the wording no longer draws a contrast with the healthy case.
+    //
+    // Both strings used to say the competitors were identified from search
+    // results "rather than by mapped proximity", which described the healthy
+    // path by implication and described it wrongly. When that note was written,
+    // neither model call could see the [GOOGLE-PLACES] section at all (the
+    // corpus was truncated before it), so the distinction it drew did not
+    // exist. v8.9.26 fixed that, and post-fix runs matched 63 of 79 model-named
+    // competitors to the Places list. Better, but still roughly a fifth named
+    // from search prose, plus entries the renderer injects afterwards.
+    //
+    // So each string now states what is true of the report in front of the
+    // reader, without claiming anything about what a different run would do.
+    // That also means the wording survives the match rate changing again.
     const placesCount = compPlacesData.places?.length || 0;
     if (!compPlacesData.focalLatLng) {
-      report.competitorSourceNote = 'Location data was unavailable when this report ran. The competitors below were identified from search results rather than by mapped proximity, so some may not be near your restaurant. Treat the competitive comparison as indicative.';
+      report.competitorSourceNote = 'Location data was unavailable when this report ran, so the competitors below were identified from search results alone, with no check on whether they are near your restaurant. Some may not be. Treat the competitive comparison as indicative.';
+      report.competitorSourceLevel = 'risk';
     } else if (placesCount === 0) {
-      report.competitorSourceNote = 'No nearby restaurants were returned for this location, so the competitors below were identified from search results rather than by mapped proximity. Treat the competitive comparison as indicative.';
+      report.competitorSourceNote = 'No nearby restaurants were returned for this location, so the competitors below were identified from search results alone, with no check on whether they are near your restaurant. Treat the competitive comparison as indicative.';
+      report.competitorSourceLevel = 'risk';
+    } else {
+      // The healthy case now says something too. Silence implied a purity the
+      // peer set does not have: it mixes restaurants matched from the mapped
+      // nearby list with businesses named from search prose. A disclosure that
+      // appears only when something is wrong also teaches a reader to ignore
+      // it, and it left "no note" ambiguous between "everything worked" and
+      // "older report predating the note".
+      report.competitorSourceNote = 'Competitors are drawn from restaurants mapped near you, combined with named businesses found in search. Not every comparison is a direct competitor.';
+      report.competitorSourceLevel = 'info';
     }
-    if (report.competitorSourceNote) {
+    if (report.competitorSourceLevel === 'risk') {
       console.warn(`[diagnose] COMPETITOR_SOURCE_DEGRADED note added: focalLatLng=${compPlacesData.focalLatLng ? 'present' : 'null'} placesCount=${placesCount}`);
     }
 
