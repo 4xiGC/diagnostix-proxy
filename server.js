@@ -1037,7 +1037,7 @@ app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {
-    res.json({ status: 'running', version: '8.9.23' });
+    res.json({ status: 'running', version: VERSION });
   }
 });
 
@@ -1685,7 +1685,7 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
     // _debug: attach scraping provenance so issues are diagnosable from the
     // browser DevTools network tab without needing Railway log access.
     report._debug = {
-      version: '8.9.23',
+      version: VERSION,
       focalContext: focalContext || null,
       userCompetitorsReceived: userCompetitorsRaw,
       userCompetitorsParsed: userCompetitors,
@@ -1713,6 +1713,35 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
       competitorWebDataChars: (co || '').length,
       competitorSectionLabels: (co || '').match(/\[(USER-NAMED|GOOGLE-PLACES|SIMILAR-TO|NEIGHBORHOOD|TOP-IN-CITY)[^\]]*\]/g) || []
     };
+    // ── Competitor source disclosure (v8.9.25) ───────────────────────────
+    // When Google Places cannot anchor the search to a coordinate, the
+    // competitor set is assembled from search-result text instead. That
+    // degradation was previously invisible: the report read identically to one
+    // where Places worked, and the only trace was a log line. A run on
+    // 2026-08-31 named restaurants in Mexico City and Lima as competitors for a
+    // Santiago restaurant and nothing in the output said so.
+    //
+    // Two conditions, deliberately worded differently because the reader's
+    // takeaway is the same but the cause is not:
+    //   A  no coordinate at all, the geocode failed
+    //   B  coordinates resolved but no nearby results came back. Reachable in
+    //      sparse areas, and also when nearbysearch returns only the focal
+    //      restaurant, which the filter then removes leaving an empty list.
+    //
+    // No note in the healthy case. This is a disclosure, not a methodology
+    // section. The cost is that a reader cannot tell "no note, everything
+    // worked" from "no note, older report", which is an argument for a proper
+    // source line later rather than for a bigger note now.
+    const placesCount = compPlacesData.places?.length || 0;
+    if (!compPlacesData.focalLatLng) {
+      report.competitorSourceNote = 'Location data was unavailable when this report ran. The competitors below were identified from search results rather than by mapped proximity, so some may not be near your restaurant. Treat the competitive comparison as indicative.';
+    } else if (placesCount === 0) {
+      report.competitorSourceNote = 'No nearby restaurants were returned for this location, so the competitors below were identified from search results rather than by mapped proximity. Treat the competitive comparison as indicative.';
+    }
+    if (report.competitorSourceNote) {
+      console.warn(`[diagnose] COMPETITOR_SOURCE_DEGRADED note added: focalLatLng=${compPlacesData.focalLatLng ? 'present' : 'null'} placesCount=${placesCount}`);
+    }
+
     console.log('[diagnose] _debug:', JSON.stringify(report._debug));
 
     console.log('[diagnose] SUCCESS score:', report.healthCheckScore);
@@ -4436,4 +4465,4 @@ table{width:100%;border-collapse:collapse}
 // END EVP ASSESSMENT MODULE
 // ═══════════════════════════════════════════════════════════════════
 
-app.listen(PORT, () => console.log(`DiagnostiX v8.9.23 + EVP v1.0 on port ${PORT}`));
+app.listen(PORT, () => console.log(`DiagnostiX v${VERSION} + EVP v1.0 on port ${PORT}`));

@@ -1270,7 +1270,10 @@ function renderReport(r, d) {
 
     +(compCards?'<div class="rpt-h">Competitive Context</div>'
       +'<div class="comp-grid">'+compCards+'</div>'
-      +'<div class="insight"><div class="idot a"></div><div class="itext">'+r.competitiveInsight+'</div></div>':'')
+      +'<div class="insight"><div class="idot a"></div><div class="itext">'+r.competitiveInsight+'</div></div>'
+      // Only present when Places could not anchor the peer set. See the note
+      // above competitorSourceNote in server.js.
+      +(r.competitorSourceNote?'<div class="insight"><div class="idot r"></div><div class="itext">'+r.competitorSourceNote+'</div></div>':''):'')
 
     // ── Financial Reality vs Operational Reality ──
     +financialBlock
@@ -1481,6 +1484,7 @@ async function translateReport() {
     themes: reportData.themes || {},
     employeeSentiment: reportData.employeeSentiment || '',
     competitiveInsight: reportData.competitiveInsight || '',
+    competitorSourceNote: reportData.competitorSourceNote || '',
     competitors: (reportData.competitors || []).map(function(c){ return {note: c.note || ''}; }),
     actions: (reportData.actions || []).map(function(a){ return {title: a.title || '', desc: a.desc || ''}; })
   };
@@ -1508,6 +1512,7 @@ async function translateReport() {
     if (tx.sentimentGap)          translatedData.sentimentGap          = tx.sentimentGap;
     if (tx.employeeSentiment)     translatedData.employeeSentiment     = tx.employeeSentiment;
     if (tx.competitiveInsight)    translatedData.competitiveInsight    = tx.competitiveInsight;
+    if (tx.competitorSourceNote)  translatedData.competitorSourceNote  = tx.competitorSourceNote;
     if (tx.strengths)             translatedData.strengths             = tx.strengths;
     if (tx.risks)                 translatedData.risks                 = tx.risks;
     if (tx.themes)                translatedData.themes                = tx.themes;
