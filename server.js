@@ -3961,6 +3961,26 @@ async function sendRenewalReminderEmail(sub) {
 // constraint requires. Returns null when there is no usable number, so the
 // caller can decide rather than silently recording a fabricated zero.
 function toBenchmarkScore(value) {
+  // Reject the absent cases EXPLICITLY rather than relying on Number() to make
+  // them non-finite, because for two of them it does not.
+  //
+  // Number(null) is 0 and Number('') is 0, both finite, so a model that returns
+  // a literal null or an empty string for healthCheckScore used to produce a
+  // clamped 0 here. That 0 then passed the no_score guard in
+  // benchmarkSkipReason, and a row landed with overall_score = 0: precisely the
+  // poisoned cohort average the comment above that guard says it prevents.
+  //
+  // Number(undefined) is NaN and Number('abc') is NaN, so the omitted-field and
+  // non-numeric cases already returned null. That asymmetry is why this survived
+  // unnoticed: the common failure, a model omitting the field, worked correctly,
+  // and only a literal null failed. No stored row has overall_score = 0, so it
+  // never fired in production.
+  //
+  // NaN is listed below even though Number.isFinite already catches it. The
+  // guard should say what it rejects rather than leave it to a chain of
+  // coercions two lines apart.
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number' && Number.isNaN(value)) return null;
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
   return Math.min(100, Math.max(0, Math.round(n)));
