@@ -4297,14 +4297,14 @@ async function analyzeEvp({ company, country, sector, cohort, proposerProfile, s
   ].join('\n\n---\n\n');
 
   const proposerBlock = proposerProfile && proposerProfile.trim()
-    ? `\nPROPOSER PROFILE — the entity using this assessment to pitch ${company}:\n  ${proposerProfile.trim()}\n\nFor each top-5 critical gap, flag whether it falls within the proposer's service scope (\"proposerAddressable\": true/false). When true, write a 1-sentence \"rightToWin\" angle showing how the proposer can credibly close the gap.`
+    ? `\nPROPOSER PROFILE, the entity using this assessment to pitch ${company}:\n  ${proposerProfile.trim()}\n\nFor each top-5 critical gap, flag whether it falls within the proposer's service scope (\"proposerAddressable\": true/false). When true, write a 1-sentence \"rightToWin\" angle showing how the proposer can credibly close the gap.`
     : '';
 
   const prompt = `You are conducting an Employer Brand & Employee Value Proposition (EVP) assessment for ${company} (${sector} sector, ${country}). The target cohort is ${cohort || 'professional / mid-career employees'}.
 
 You will receive raw scraped data from 7 listening channels plus peer benchmark data. Your job is to synthesise this into a structured, defensible EVP analysis.
 
-EVP ATTRIBUTES (score each on 0–100 importance for this cohort, and 0–100 delivery by ${company}):
+EVP ATTRIBUTES (score each on 0 to 100 importance for this cohort, and 0 to 100 delivery by ${company}):
 ${attributeList}
 
 RAW DATA:
@@ -4315,8 +4315,8 @@ RULES:
 1. Importance scores: start from each attribute's baseline_importance, adjust ±10 based on sector + cohort signals in the data. Cohorts in high-stress sectors (finance, consulting, law) weight WLB and wellbeing higher. Tech weights tech tools and learning higher.
 2. Delivery scores: ground every score in scraped evidence. If Glassdoor WLB is 2.9/5, that maps to ~58/100 baseline; if Goldman 13 survey shows 98-hour weeks, drag it down to 28. Cite the source in evidence.
 3. Gap = importance − delivery. Top-5 critical gaps are the most actionable.
-4. Verbatims: 5–6 direct employee quotes pulled VERBATIM from the scraped data. Never invent quotes. Each quote must include source platform + sentiment + (optional) cohort label.
-5. Peer benchmarking: identify 3–5 talent competitors from the peer data. For each, score workplace experience (0-100), compensation ceiling (0-100), prestige (0-100), work-life balance (0-100). Use user-named peers if present, supplement with auto-discovered.
+4. Verbatims: 5 to 6 direct employee quotes pulled VERBATIM from the scraped data. Never invent quotes. Each quote must include source platform + sentiment + (optional) cohort label.
+5. Peer benchmarking: identify 3 to 5 talent competitors from the peer data. For each, score workplace experience (0-100), compensation ceiling (0-100), prestige (0-100), work-life balance (0-100). Use user-named peers if present, supplement with auto-discovered.
 6. Quadrant assignment: each attribute → one of {criticalGap, competitiveStrength, lowPriority, overInvestment} based on importance×delivery thresholds (importance >70 = high; delivery >55 = high).
 7. Be honest about data thinness. If a channel returned no usable data, lower the confidence score and say so in methodology notes.
 
@@ -4494,6 +4494,17 @@ app.get('/evp', (req, res) => {
 // Mirrors the structure of the Sodexo/Goldman deck: cover, talent stats,
 // attribute heatmap, 4-box matrix, peer competitive map, verbatims,
 // strategic recommendations, methodology block.
+// DELIMITER WARNING, do not "clean" it. The character class in
+// stored.proposerProfile.split() below uses an em-dash as a SEPARATOR, not as
+// prose. It splits a profile like "Acme Partners, hospitality advisory" on
+// whichever separator the user typed, and users type the dash form. Substituting
+// it silently changes parsing and the split stops matching those profiles. Same
+// class as competitors[].name in sanitizeReportProse: a dash that is a wire
+// value rather than display text.
+//
+// This note used to live as an HTML comment inside the template literal below,
+// which meant it was emitted into the customer's page source. Internal notes do
+// not ship in markup.
 function renderEvpReportHtml(stored) {
   const r = stored.report || {};
   const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -4602,7 +4613,7 @@ function renderEvpReportHtml(stored) {
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>${esc(r.company)} — EVP Assessment</title>
+<title>${esc(r.company)}, EVP Assessment</title>
 <link href="https://fonts.googleapis.com/css2?family=League+Spartan:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -4679,7 +4690,7 @@ table{width:100%;border-collapse:collapse}
     <!-- EVP ATTRIBUTE HEATMAP -->
     <div class="section">
       <div class="section-h">EVP Attribute Heatmap</div>
-      <div class="section-sub">Importance to talent vs. ${esc(r.company)}'s current delivery — the gap is the opportunity</div>
+      <div class="section-sub">Importance to talent vs. ${esc(r.company)}'s current delivery. The gap is the opportunity</div>
       <div style="background:#fff;border:1px solid #e8e3d8;border-radius:8px;padding:20px;overflow-x:auto">
         <table>
           <thead><tr>
@@ -4695,7 +4706,7 @@ table{width:100%;border-collapse:collapse}
 
     <!-- CRITICAL GAPS -->
     ${criticalGaps ? `<div class="section">
-      <div class="section-h">Critical Gaps — Fix Urgently</div>
+      <div class="section-h">Critical Gaps, Fix Urgently</div>
       <div class="section-sub">High-importance attributes where ${esc(r.company)} significantly under-delivers</div>
       <div class="grid-gaps">${criticalGaps}</div>
     </div>` : ''}
@@ -4705,10 +4716,10 @@ table{width:100%;border-collapse:collapse}
       <div class="section-h">4-Box EVP Positioning Matrix</div>
       <div class="section-sub">Where to act: prioritise by quadrant</div>
       <div class="grid-quad">
-        ${quadrantBox('Critical Gaps', 'High value · Low delivery — fix or lose talent', quadrantBuckets.criticalGap, '#C0392B', '#fef5f3')}
-        ${quadrantBox('Competitive Strengths', 'High value · High delivery — protect, don&rsquo;t over-invest', quadrantBuckets.competitiveStrength, '#27AE60', '#f3faf5')}
-        ${quadrantBox('Low Priority', 'Low value · Low delivery — table stakes only', quadrantBuckets.lowPriority, '#95A5A6', '#f7f8f9')}
-        ${quadrantBox('Over-Investment Risk', 'Low value · High delivery — rationalise', quadrantBuckets.overInvestment, '#E67E22', '#fef9f3')}
+        ${quadrantBox('Critical Gaps', 'High value · Low delivery, fix or lose talent', quadrantBuckets.criticalGap, '#C0392B', '#fef5f3')}
+        ${quadrantBox('Competitive Strengths', 'High value · High delivery, protect, don&rsquo;t over-invest', quadrantBuckets.competitiveStrength, '#27AE60', '#f3faf5')}
+        ${quadrantBox('Low Priority', 'Low value · Low delivery, table stakes only', quadrantBuckets.lowPriority, '#95A5A6', '#f7f8f9')}
+        ${quadrantBox('Over-Investment Risk', 'Low value · High delivery, rationalise', quadrantBuckets.overInvestment, '#E67E22', '#fef9f3')}
       </div>
     </div>
 
@@ -4740,12 +4751,6 @@ table{width:100%;border-collapse:collapse}
     <!-- STRATEGIC RECOMMENDATIONS -->
     ${recs ? `<div class="section">
       <div class="section-h">Strategic Recommendations</div>
-      <!-- The em-dash in the character class below is a DELIMITER, not prose.
-           It splits a proposer profile like "Acme Partners — hospitality advisory"
-           on whichever separator the user typed. Substituting it silently changes
-           parsing and the split stops matching profiles that use one. Same class as
-           competitors[].name in sanitizeReportProse: a dash that is a wire value
-           rather than display text. Leave it. -->
       <div class="section-sub">${stored.proposerProfile ? 'Where ' + esc(stored.proposerProfile.split(/[,—-]/)[0].trim()) + ' has the right to win' : 'Priority actions to close the gaps'}</div>
       <div style="background:#fff;border:1px solid #e8e3d8;border-radius:8px;padding:24px">${recs}</div>
     </div>` : ''}
