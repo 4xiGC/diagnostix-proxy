@@ -851,7 +851,7 @@ async function searchCompetitorsMultiple(opts) {
     const placesLines = placesData.places.slice(0, 15).map((p, i) =>
       `${i+1}. ${p.name} | rating=${p.rating ?? 'n/a'} | reviews=${p.reviewCount ?? 'n/a'} | priceLevel=${p.priceLevel ?? 'n/a'} | distance=${p.distance ?? 'n/a'}m | types=${(p.types || []).slice(0,3).join(',')}`
     ).join('\n');
-    sections.push(`[GOOGLE-PLACES] (authoritative — use these names verbatim; ratings are from Google Maps directly)\n${placesLines}`);
+    sections.push(`[GOOGLE-PLACES] (authoritative, use these names verbatim; ratings are from Google Maps directly)\n${placesLines}`);
   }
   for (const userResult of userResults) {
     const ratingHint = (userResult.rating !== null || userResult.reviewCount !== null)
@@ -1102,8 +1102,8 @@ async function sendInternalSummaryEmail({ subscriber, report, reportNumber, surv
   const planLabel = isOneOff ? 'full' : 'annual';
   const reportTag = isOneOff
     ? 'Full Report ($49.99)'
-    : `Annual Subscription ($99.99) — Report ${reportNumber || 1} of 3`;
-  const subject = `[DiagnostiX] New ${planLabel} report: ${restaurant}${location ? ' (' + location + ')' : ''} — Score ${score}`;
+    : `Annual Subscription ($99.99), Report ${reportNumber || 1} of 3`;
+  const subject = `[DiagnostiX] New ${planLabel} report: ${restaurant}${location ? ' (' + location + ')' : ''}, Score ${score}`;
 
   // Pillars summary
   const pillars = Object.values(report?.pillars || {});
@@ -1155,13 +1155,13 @@ async function sendInternalSummaryEmail({ subscriber, report, reportNumber, surv
   </div>
   <div style="font-size:14px;line-height:1.7;color:#222">
     <strong>Restaurant:</strong> ${escE(restaurant)}<br>
-    <strong>Location:</strong> ${escE(location || '—')}<br>
+    <strong>Location:</strong> ${escE(location || 'Not provided')}<br>
     ${cuisine ? `<strong>Cuisine:</strong> ${escE(cuisine)}<br>` : ''}
     ${price ? `<strong>Price:</strong> ${escE(price)}<br>` : ''}
-    <strong>Submitted by:</strong> ${escE(ownerName || '—')} (${escE(ownerEmail)})<br>
+    <strong>Submitted by:</strong> ${escE(ownerName || 'Not provided')} (${escE(ownerEmail)})<br>
     <strong>Plan:</strong> ${escE(reportTag)}<br>
     <br>
-    <strong>Overall Score:</strong> <span style="font-weight:900;color:${score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24'}">${score} / 100</span> ${verdict ? '— ' + escE(verdict) : ''}<br>
+    <strong>Overall Score:</strong> <span style="font-weight:900;color:${score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24'}">${score} / 100</span> ${verdict ? '(' + escE(verdict) + ')' : ''}<br>
     <br>
     ${bmRow}
     <strong>Pillars:</strong>
@@ -1329,13 +1329,13 @@ CRITICAL: Return empty string "" for businessRealityAnalysis, empty string "" fo
 - Average check change:  ${fmtPct(checkN)}
 - Profitability change:  ${fmtPct(profitN)}
 
-CRITICAL — INTEGRATE QUALITATIVE WITH QUANTITATIVE, BUT ONLY FOR METRICS THE USER SHARED:
+CRITICAL, INTEGRATE QUALITATIVE WITH QUANTITATIVE, BUT ONLY FOR METRICS THE USER SHARED:
 A metric marked "Not tracked (user opted out)" means the user did NOT share that number. You MUST NOT mention or analyze it. Do NOT speculate about its value. Do NOT include it in businessRealityAnalysis. Return empty string "" for its pillarGapNarratives entry.
 
 For metrics the user DID share (those with a percentage value): blend them with the qualitative pillar scores and web data to produce holistic findings. Examples:
   • If guest count is down but Customer Sentiment pillar is high → "Sentiment among existing customers is strong, but acquisition is failing. The issue isn't the experience, it's getting people through the door."
-  • If average check is down but Pricing pillar is high → "Pricing strategy reads well from the menu, but operators aren't capturing the upside in real ticket value — likely an upselling or menu-mix execution gap."
-  • If profitability is down but revenue stable → "Top line holds but margins erode — this is a cost-control problem, not a demand problem."
+  • If average check is down but Pricing pillar is high → "Pricing strategy reads well from the menu, but operators aren't capturing the upside in real ticket value. Likely an upselling or menu-mix execution gap."
+  • If profitability is down but revenue stable → "Top line holds but margins erode. This is a cost-control problem, not a demand problem."
   • If all shared metrics are flat (0%) → treat as a "stable baseline" signal and lean more on qualitative+web evidence.
 
 When writing businessRealityAnalysis: 2-3 sentences that EXPLICITLY weave the SHARED financial numbers together with the relevant qualitative pillars. Name the pillars. Show how the numbers either confirm or contradict the qualitative picture. Only reference metrics the user actually shared.
@@ -1355,19 +1355,19 @@ When writing perceptionGap: 1-2 sentences ONLY if there is a meaningful divergen
       const list = compUserResults.map((r, i) => {
         const hint = (r.rating !== null || r.reviewCount !== null)
           ? ` [EXTRACTED FROM SERPER: rating=${r.rating ?? 'null'}, reviewCount=${r.reviewCount ?? 'null'}${r.resolvedTitle ? `, resolvedName="${r.resolvedTitle}"` : ''}]`
-          : ' [NO STRUCTURED RATING DATA — check the [USER-NAMED] web data section below for snippets]';
+          : ' [NO STRUCTURED RATING DATA, check the [USER-NAMED] web data section below for snippets]';
         return `  ${i+1}. ${r.userName}${hint}`;
       }).join('\n');
-      userCompBlock = `USER-NAMED COMPETITORS (the restaurant owner explicitly identified these as their direct competitors — these MUST appear in your competitors array):
+      userCompBlock = `USER-NAMED COMPETITORS (the restaurant owner explicitly identified these as their direct competitors. These MUST appear in your competitors array):
 ${list}
 
 IMPERATIVE: Your competitors array MUST include every name above. For each:
-- If a rating/reviewCount value is shown in [EXTRACTED FROM SERPER: ...] above, USE THOSE EXACT VALUES — they came directly from Google's knowledge graph. Do NOT override them with null.
+- If a rating/reviewCount value is shown in [EXTRACTED FROM SERPER: ...] above, USE THOSE EXACT VALUES. They came directly from Google's knowledge graph. Do NOT override them with null.
 - If the EXTRACTED block shows "null" for rating, scan the [USER-NAMED: X] section in the COMPETITORS web data for any rating signal (4.5/5, 4.5 stars, etc) and extract it. Only use null if you genuinely cannot find any signal anywhere.
 - Use the resolvedName from Serper if provided (it's more accurate, e.g. "Hog Island Oyster Co." instead of "Hog Island"); otherwise keep the user's input name.
 - Write a 1-sentence note describing the competitor's position relative to the focal restaurant.
 
-After listing all user-named competitors, you MUST add UP TO 2 auto-discovered competitors from the [GOOGLE-PLACES] section first (these are AUTHORITATIVE — the names, ratings, and review counts come from Google Maps directly; use them VERBATIM and do not modify the numbers). If [GOOGLE-PLACES] does not have 2 strong tier/cuisine matches, fall back to [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] for the remainder. Target: 3 user-named + up to 2 auto-discovered = 5 total (minimum 3). Follow the FOCAL PROFILE tier/cuisine matching rules below.`;
+After listing all user-named competitors, you MUST add UP TO 2 auto-discovered competitors from the [GOOGLE-PLACES] section first (these are AUTHORITATIVE: the names, ratings, and review counts come from Google Maps directly; use them VERBATIM and do not modify the numbers). If [GOOGLE-PLACES] does not have 2 strong tier/cuisine matches, fall back to [SIMILAR-TO] / [NEIGHBORHOOD] / [TOP-IN-CITY] for the remainder. Target: 3 user-named + up to 2 auto-discovered = 5 total (minimum 3). Follow the FOCAL PROFILE tier/cuisine matching rules below.`;
     } else {
       userCompBlock = '';
     }
@@ -1386,15 +1386,15 @@ After listing all user-named competitors, you MUST add UP TO 2 auto-discovered c
       focalProfileBlock = `FOCAL RESTAURANT PROFILE (detected from web data):
   ${detected.join(' | ')}
 
-COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
+COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
 1. TIER MATCH (REQUIRED): The competitor must be at a similar quality tier to the focal restaurant. If the focal is "fine-dining" or "upscale", REJECT competitors that are clearly fast-casual, budget, or hotel/lobby/airport restaurants. If the focal is "casual", do not include $$$$ fine-dining as a competitor.
-2. CUISINE MATCH (PREFERRED, NOT REQUIRED): Same-cuisine peers are ideal — Italian fine-dining for an Italian focal, Asian fusion for a fusion focal, etc. HOWEVER, when the focal is an upscale or fine-dining concept, other upscale restaurants in the same neighborhood ARE legitimate competitors regardless of cuisine, because they compete for the same diner, same occasion, and same wallet. For Vitacura fine-dining: a 4.5-star Italian restaurant 1km away is a real competitor to a 4.5-star Asian-fusion restaurant — they both fight for the same Saturday night reservation. Use cuisine as a tiebreaker, not a gate.
+2. CUISINE MATCH (PREFERRED, NOT REQUIRED): Same-cuisine peers are ideal: Italian fine-dining for an Italian focal, Asian fusion for a fusion focal, etc. HOWEVER, when the focal is an upscale or fine-dining concept, other upscale restaurants in the same neighborhood ARE legitimate competitors regardless of cuisine, because they compete for the same diner, same occasion, and same wallet. For Vitacura fine-dining: a 4.5-star Italian restaurant 1km away is a real competitor to a 4.5-star Asian-fusion restaurant, they both fight for the same Saturday night reservation. Use cuisine as a tiebreaker, not a gate.
 3. RATING FLOOR: Skip any competitor with a rating below 3.5 stars UNLESS the focal restaurant itself has a rating below 3.5.
-4. REVIEW VOLUME FLOOR: Skip any competitor with fewer than 50 reviews — too small to be a meaningful benchmark for an established focal restaurant.
+4. REVIEW VOLUME FLOOR: Skip any competitor with fewer than 50 reviews, too small to be a meaningful benchmark for an established focal restaurant.
 5. REJECT NON-RESTAURANTS: Skip hotels (e.g. "Hotel Bidasoa"), pubs, fast-food chains (McDonald's, Burger King, KFC), bakeries-only, cafes-only, and clearly different formats. These appear in Google Places data but are not relevant peers.
-6. PROXIMITY MATTERS: When [GOOGLE-PLACES] data is available, prefer restaurants within 1500m of the focal — they're literally fighting for the same foot traffic.
+6. PROXIMITY MATTERS: When [GOOGLE-PLACES] data is available, prefer restaurants within 1500m of the focal, they're literally fighting for the same foot traffic.
 7. FILL TO 5 WHEN POSSIBLE: With 3 user-named competitors as the base, ALWAYS try to add 2 more from [GOOGLE-PLACES] to reach exactly 5. The [GOOGLE-PLACES] data is authoritative and contains the strongest peer signals. Only return fewer than 5 if Places + Serper genuinely contain no additional tier-matched restaurants.
-8. NOTE QUALITY: For each non-user-named competitor, write a note that explains their competitive position — not why they're "different." Frame them as peers, not outliers. Good: "Established Italian fine-dining alternative with strong Vitacura presence — competes for the same upscale dinner occasion." Bad: "Italian rather than fusion — different cuisine concept."`;
+8. NOTE QUALITY: For each non-user-named competitor, write a note that explains their competitive position, not why they're "different." Frame them as peers, not outliers. Good: "Established Italian fine-dining alternative with strong Vitacura presence, competes for the same upscale dinner occasion." Bad: "Italian rather than fusion, different cuisine concept."`;
     }
 
     console.log('[diagnose] claude part1 + part2 in parallel (p2 uses Haiku for speed)...');
@@ -1494,7 +1494,7 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
             rating: serperData ? serperData.rating : null,
             reviewCount: serperData ? serperData.reviewCount : null,
             note: (serperData && serperData.rating !== null)
-              ? 'Owner-identified direct competitor — rating data extracted from public review platforms.'
+              ? 'Owner-identified direct competitor, rating data extracted from public review platforms.'
               : 'Owner-identified direct competitor; public review data was limited in this scrape.'
           });
           synthesized++;
@@ -1734,7 +1734,7 @@ COMPETITOR MATCHING RULES — apply these to non-user-named competitors:
             const locSeg = locSegRaw
               .toLowerCase()
               .replace(/\b(\w)/g, (m) => m.toUpperCase());
-            const note = `Established neighborhood peer with ${reviewLabel} reviews${distKm ? `, ${distKm}km away` : ''} — competes for the same upscale dining occasion in ${locSeg}.`;
+            const note = `Established neighborhood peer with ${reviewLabel} reviews${distKm ? `, ${distKm}km away` : ''}, competes for the same upscale dining occasion in ${locSeg}.`;
             report.competitors.push({
               name: p.name,
               rating: p.rating,
@@ -2270,19 +2270,19 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber, surve
 
   let subject, headline, intro;
   if (isOneOff) {
-    subject = `Your DiagnostiX Full Report is ready — ${restaurant}`;
+    subject = `Your DiagnostiX Full Report is ready: ${restaurant}`;
     headline = 'Your DiagnostiX Full Report is ready';
-    intro = 'Thank you for purchasing the DiagnostiX Full Report. Your full HealthCheck is now permanently available at the link below — bookmark it for future reference. If you would like ongoing progress tracking, DiagnostiX Annual gives you two additional reports — at the 4-month and 8-month marks — to measure what is changing year over year.';
+    intro = 'Thank you for purchasing the DiagnostiX Full Report. Your full HealthCheck is now permanently available at the link below. Bookmark it for future reference. If you would like ongoing progress tracking, DiagnostiX Annual gives you two additional reports, at the 4-month and 8-month marks, to measure what is changing year over year.';
   } else if (reportNumber === 1) {
-    subject = `Welcome to DiagnostiX Annual — your baseline report for ${restaurant}`;
+    subject = `Welcome to DiagnostiX Annual: your baseline report for ${restaurant}`;
     headline = 'Your DiagnostiX baseline is ready';
-    intro = 'Thank you for subscribing to DiagnostiX Annual. Your baseline report is now stored and ready to view anytime over the next 12 months. Your Annual plan includes two further progress reports — Report 2 arrives automatically 4 months from today, and Report 3 arrives at the 8-month mark. At the 12-month anniversary you will receive a reminder with the option to renew for another year.';
+    intro = 'Thank you for subscribing to DiagnostiX Annual. Your baseline report is now stored and ready to view anytime over the next 12 months. Your Annual plan includes two further progress reports. Report 2 arrives automatically 4 months from today, and Report 3 arrives at the 8-month mark. At the 12-month anniversary you will receive a reminder with the option to renew for another year.';
   } else if (reportNumber === 2) {
-    subject = `Your DiagnostiX Report 2 is ready — ${restaurant}`;
+    subject = `Your DiagnostiX Report 2 is ready: ${restaurant}`;
     headline = 'Your Month 4 progress report is ready';
     intro = 'Four months on from your baseline, your second DiagnostiX report is ready. The link below shows your latest scores side-by-side with your baseline so you can see exactly what is moving. Your final report of the year will arrive at the 8-month mark.';
   } else {
-    subject = `Your DiagnostiX Report 3 is ready — ${restaurant}`;
+    subject = `Your DiagnostiX Report 3 is ready: ${restaurant}`;
     headline = 'Your Month 8 progress report is ready';
     intro = 'Eight months on from your baseline, your third DiagnostiX report is ready. Inside you will find a year-to-date comparison across all three reports for every pillar. At the 12-month anniversary of your subscription, you will receive a reminder with the option to renew DiagnostiX Annual for another year of progress tracking.';
   }
@@ -2449,8 +2449,8 @@ app.get('/report', async (req, res) => {
   try {
     let report = sub.baseline_report;
     let reportLabel = sub.plan_type === 'one_off' ? 'Full Report' : 'Baseline Report (Day 0)';
-    if (sub.report_2) { report = sub.report_2; reportLabel = 'Report 2 — Month 4'; }
-    if (sub.report_3) { report = sub.report_3; reportLabel = 'Report 3 — Month 8'; }
+    if (sub.report_2) { report = sub.report_2; reportLabel = 'Report 2, Month 4'; }
+    if (sub.report_3) { report = sub.report_3; reportLabel = 'Report 3, Month 8'; }
 
     pushLastEngaged(sub.email).catch(() => {});
 
@@ -2467,7 +2467,7 @@ app.get('/report', async (req, res) => {
 });
 
 function renderErrorPage(title, message) {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${title} — DiagnostiX</title>
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}, DiagnostiX</title>
 <style>body{font-family:-apple-system,Segoe UI,Arial,sans-serif;background:#f4f7fa;color:#0a2540;
 margin:0;padding:40px 20px}.box{max-width:560px;margin:60px auto;background:#fff;border-radius:12px;
 padding:40px;box-shadow:0 2px 12px rgba(10,37,64,.08);text-align:center}
@@ -2570,7 +2570,7 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   //   1. c.rating  (number 0-5)     → new schema, treat as stars
   //   2. c.score   (number 0-5)     → legacy shape, looks like stars → stars
   //   3. c.score   (number > 5)     → legacy shape, looks like a /100 score → stars (÷20)
-  //   4. nothing parseable          → show "—" and let the note explain
+  //   4. nothing parseable          → show "Not provided" and let the note explain
   // This keeps cards looking complete instead of saying "undefined" or "Rating n/a".
 
   const competitorList = Array.isArray(report?.competitors) ? report.competitors : [];
@@ -2825,7 +2825,7 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   const metaRow = metaParts.map(esc).join(' &nbsp;·&nbsp; ');
 
   return `<!doctype html><html><head><meta charset="utf-8">
-<title>${esc(restaurant)} — DiagnostiX Report</title>
+<title>${esc(restaurant)}, DiagnostiX Report</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=League+Spartan:wght@300;400;500;700;900&display=swap" rel="stylesheet">
@@ -3768,7 +3768,7 @@ async function sendRenewalReminderEmail(sub) {
   const deltaText = delta > 0 ? `+${delta} points` : delta < 0 ? `${delta} points` : 'flat';
   const deltaColor = delta >= 3 ? '#00A651' : delta <= -3 ? '#ED1C24' : '#F7941D';
 
-  const subject = `Your DiagnostiX Annual year is complete — renew for ${restaurant}`;
+  const subject = `Your DiagnostiX Annual year is complete: renew for ${restaurant}`;
   const escE = (s) => String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -3784,7 +3784,7 @@ async function sendRenewalReminderEmail(sub) {
       </td></tr>
       <tr><td style="padding:30px 36px 8px;font-size:15px;line-height:1.65;color:#333">
         <p style="margin:0 0 16px">Hi ${escE(firstName)},</p>
-        <p style="margin:0 0 16px">Twelve months ago you subscribed to DiagnostiX Annual for <strong>${escE(restaurant)}</strong>. Across the year you have received three full HealthCheck reports — your baseline, your Month 4 progress report, and your Month 8 report. Here is where you ended the year:</p>
+        <p style="margin:0 0 16px">Twelve months ago you subscribed to DiagnostiX Annual for <strong>${escE(restaurant)}</strong>. Across the year you have received three full HealthCheck reports: your baseline, your Month 4 progress report, and your Month 8 report. Here is where you ended the year:</p>
         <table width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0">
           <tr>
             <td style="background:#f7f5f0;border-radius:7px;padding:18px 20px;text-align:center;width:33%">
@@ -3806,9 +3806,9 @@ async function sendRenewalReminderEmail(sub) {
         <p style="margin:18px 0">Your most recent report is still accessible at any time:</p>
         <p style="margin:0 0 24px"><a href="${reportUrl}" style="color:#92278F;text-decoration:underline;font-weight:600">View your latest report &rarr;</a></p>
         <p style="margin:18px 0 8px"><strong style="color:#1B1464">Ready for another year of progress tracking?</strong></p>
-        <p style="margin:0 0 22px">Renew DiagnostiX Annual to receive three more reports across the next 12 months — a fresh baseline now, a Month 4 progress check, and a Month 8 follow-up. Your historical reports remain accessible alongside the new ones, giving you a multi-year view of how ${escE(restaurant)} is evolving.</p>
-        <p style="text-align:center;margin:24px 0"><a href="${renewUrl}" style="display:inline-block;background:#F4B400;color:#1B1464;font-family:'League Spartan',sans-serif;font-size:14px;font-weight:900;letter-spacing:0.06em;text-transform:uppercase;text-decoration:none;border-radius:6px;padding:14px 30px">Renew Annual — $99.99 &rarr;</a></p>
-        <p style="margin:24px 0 0;font-size:13px;color:#888;line-height:1.65">If you would rather not continue with Annual, no action is needed — your existing reports remain accessible at the link above. We hope DiagnostiX has helped you see ${escE(restaurant)} more clearly this year.</p>
+        <p style="margin:0 0 22px">Renew DiagnostiX Annual to receive three more reports across the next 12 months: a fresh baseline now, a Month 4 progress check, and a Month 8 follow-up. Your historical reports remain accessible alongside the new ones, giving you a multi-year view of how ${escE(restaurant)} is evolving.</p>
+        <p style="text-align:center;margin:24px 0"><a href="${renewUrl}" style="display:inline-block;background:#F4B400;color:#1B1464;font-family:'League Spartan',sans-serif;font-size:14px;font-weight:900;letter-spacing:0.06em;text-transform:uppercase;text-decoration:none;border-radius:6px;padding:14px 30px">Renew Annual, $99.99 &rarr;</a></p>
+        <p style="margin:24px 0 0;font-size:13px;color:#888;line-height:1.65">If you would rather not continue with Annual, no action is needed. Your existing reports remain accessible at the link above. We hope DiagnostiX has helped you see ${escE(restaurant)} more clearly this year.</p>
       </td></tr>
       <tr><td style="background:#0f1b3d;padding:18px 36px;text-align:center;color:rgba(255,255,255,0.55);font-size:11px;letter-spacing:0.04em">
         <strong style="color:#F4B400;font-weight:700">DiagnostiX</strong> &middot; by 4xi Global Consulting
@@ -4460,7 +4460,7 @@ function renderEvpReportHtml(stored) {
     return `<div style="background:${bgColor};border-left:4px solid ${borderColor};padding:16px 18px;border-radius:5px;min-height:160px">
       <div style="font-size:14px;font-weight:800;color:${borderColor};margin-bottom:4px;letter-spacing:0.02em">${title}</div>
       <div style="font-size:11px;color:#666;margin-bottom:10px;font-style:italic">${subtitle}</div>
-      <ul style="margin:0;padding-left:18px;list-style:disc">${itemsHtml || '<li style="font-size:12px;color:#999;list-style:none;padding-left:0">—</li>'}</ul>
+      <ul style="margin:0;padding-left:18px;list-style:disc">${itemsHtml || '<li style="font-size:12px;color:#999;list-style:none;padding-left:0">None</li>'}</ul>
     </div>`;
   };
 
@@ -4655,6 +4655,12 @@ table{width:100%;border-collapse:collapse}
     <!-- STRATEGIC RECOMMENDATIONS -->
     ${recs ? `<div class="section">
       <div class="section-h">Strategic Recommendations</div>
+      <!-- The em-dash in the character class below is a DELIMITER, not prose.
+           It splits a proposer profile like "Acme Partners — hospitality advisory"
+           on whichever separator the user typed. Substituting it silently changes
+           parsing and the split stops matching profiles that use one. Same class as
+           competitors[].name in sanitizeReportProse: a dash that is a wire value
+           rather than display text. Leave it. -->
       <div class="section-sub">${stored.proposerProfile ? 'Where ' + esc(stored.proposerProfile.split(/[,—-]/)[0].trim()) + ' has the right to win' : 'Priority actions to close the gaps'}</div>
       <div style="background:#fff;border:1px solid #e8e3d8;border-radius:8px;padding:24px">${recs}</div>
     </div>` : ''}
