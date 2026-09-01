@@ -313,12 +313,58 @@ async function searchStructured(q, opts) {
 //
 // Cost: 1 Geocoding call ($0.005) + 1 Nearby Search call ($0.032) per report.
 // At 1000 reports/month: ~$37. Negligible vs. quality gain.
+// ── Reverse geocode the resolved coordinate (v8.9.33) ──────────────────────
+// Populates benchmarks.cohort_metro, and corrects cohort_country.
+//
+// WHY REVERSE AND NOT FORWARD. Measured on the four Santiago control subjects:
+// reverse geocoding the coordinate returns administrative_area_level_2 =
+// "Santiago" for all four, while locality splits the same metro into Vitacura,
+// Nunoa, Providencia and Santiago. Forward geocoding the location STRING is not
+// stable: the same area came back as "Santiago" for one neighbourhood and
+// "Santiago Province" for two others, and administrative_area_level_1 came back
+// in Spanish for one and English for the others depending on the result type.
+// Adding &language=en did not change the reverse result, so that instability is
+// a property of forward lookup rather than a parameter.
+//
+// WHY THIS COSTS A CALL. The happy path never touches the Geocoding API:
+// findplacefromtext is primary and requests only geometry and rating fields,
+// and the geocoder runs solely as a ZERO_RESULTS fallback. So there are no
+// address components in hand and this is one extra call per assessment, made
+// only when a coordinate resolved.
+//
+// The fallback chain records WHICH component answered. On the sample
+// administrative_area_level_2 resolved 6 times out of 6, so the chain rarely
+// advances, which is the argument FOR recording it: a row whose metro came from
+// administrative_area_level_1 is a different kind of value from one that came
+// from level 2, and they are indistinguishable in the column otherwise.
+const METRO_CHAIN = ['administrative_area_level_2', 'locality', 'administrative_area_level_1'];
+async function reverseGeocodeFocal(lat, lng, apiKey) {
+  try {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}`;
+    const d = await (await fetch(url)).json();
+    if (d.status !== 'OK' || !Array.isArray(d.results) || d.results.length === 0) {
+      console.log(`[places] reverse geocode: status=${d.status}, metro unavailable`);
+      return null;
+    }
+    const comps = d.results[0].address_components || [];
+    const pick = (t) => { const c = comps.find(x => (x.types || []).includes(t)); return c ? c.long_name : null; };
+    let metro = null, metroSource = null;
+    for (const t of METRO_CHAIN) { const v = pick(t); if (v) { metro = v; metroSource = t; break; } }
+    const country = pick('country');
+    console.log(`[places] reverse geocode: metro="${metro || 'null'}" via ${metroSource || 'none'}, country="${country || 'null'}"`);
+    return { metro, metroSource, country };
+  } catch (e) {
+    console.log(`[places] reverse geocode threw: ${e.message}`);
+    return null;
+  }
+}
+
 async function fetchPlacesNearby(opts) {
   const { name, location } = opts;
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
     console.log('[places] GOOGLE_PLACES_API_KEY not set — auto-discovery falling back to Serper only');
-    return { places: [], focalRating: null, focalReviewCount: null, focalLatLng: null };
+    return { places: [], focalRating: null, focalReviewCount: null, focalLatLng: null, focalGeo: null };
   }
 
   const t0 = Date.now();
@@ -363,8 +409,13 @@ async function fetchPlacesNearby(opts) {
 
   if (lat === null || lng === null) {
     console.log(`[places] no usable lat/lng — returning empty places`);
-    return { places: [], focalRating, focalReviewCount, focalLatLng: null };
+    return { places: [], focalRating, focalReviewCount, focalLatLng: null, focalGeo: null };
   }
+
+  // Runs only when a coordinate resolved. Every exit above returns focalGeo:
+  // null, so the benchmark row records null metro and null country rather than
+  // a wrong one derived from the location string.
+  const focalGeo = await reverseGeocodeFocal(lat, lng, apiKey);
 
   // ── Stage 2: Nearby Search within radius ──────────────────────────────
   // Default radius: 2km. Good for dense urban areas (Vitacura, Manhattan, SF).
@@ -419,7 +470,8 @@ async function fetchPlacesNearby(opts) {
     places: filtered,
     focalRating,
     focalReviewCount,
-    focalLatLng: { lat, lng }
+    focalLatLng: { lat, lng },
+    focalGeo
   };
 }
 
@@ -1280,7 +1332,7 @@ app.post('/diagnose', async (req, res) => {
     ]);
     const co = compResult.merged;
     const compUserResults = compResult.userResults || [];
-    const compPlacesData = compResult.placesData || { places: [], focalRating: null, focalReviewCount: null };
+    const compPlacesData = compResult.placesData || { places: [], focalRating: null, focalReviewCount: null, focalGeo: null };
     // Scraping summary: count which categories returned 'no data' so empty-report cases are visible in logs.
     const cats = { GOOGLE:g, REVIEWS:rv, STAFF:st, SOCIAL:so, DELIVERY:dl, COMPETITORS:co };
     const webScoring = budgetCorpus(cats, CORPUS_CAPS_SCORING);
@@ -1936,7 +1988,7 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     // every error is logged and swallowed, so a Supabase outage cannot reach
     // the user. There is no assessment write to chain off, unlike SVP and EVP:
     // see the note above writeBenchmark.
-    writeBenchmark({ report, name, location, country, region, focalContext })
+    writeBenchmark({ report, name, location, country, region, focalContext, focalGeo: compPlacesData.focalGeo || null })
       .catch(err => {
         console.error('[benchmark] capture chain error:', err.message || err);
       });
@@ -3885,7 +3937,7 @@ function toBenchmarkScore(value) {
   return Math.min(100, Math.max(0, Math.round(n)));
 }
 
-function buildBenchmarkRow({ report, name, location, country, region, focalContext }) {
+function buildBenchmarkRow({ report, name, location, country, region, focalContext, focalGeo }) {
   // report.pillars is { cs, pa, es, sm, cp, bg }, each { score, label, status }.
   const pillarScores = {};
   for (const [key, p] of Object.entries((report && report.pillars) || {})) {
@@ -3903,11 +3955,44 @@ function buildBenchmarkRow({ report, name, location, country, region, focalConte
     cohort_subsector: null,
     cohort_tier:      null,
     cohort_region:    null,
-    cohort_country:   String(country || '').trim() || null,
+
+    // cohort_country and cohort_metro are GEOCODED, not parsed (v8.9.33).
+    //
+    // The comma parser takes the last comma-part of the location string as the
+    // country, unconditionally. On a six-input sample it was right twice: it
+    // yields country "Santiago" for "Santiago", "Austin" for "Austin", "NY" for
+    // "Brooklyn, NY" and "London" for "Shoreditch, London". The geocoder was
+    // right six times out of six.
+    //
+    // The parse is NOT removed. It still feeds getRegion, buildRegionQueries
+    // and the annual path, which is a wider change than this one. Only the
+    // stored row changes source.
+    //
+    // Consequence, recorded rather than hidden: stored cohort_country is now
+    // inconsistent by design. Rows before v8.9.33 hold parsed values and rows
+    // after hold geocoded ones, so a Phase 5 filter on country mixes two
+    // populations. country_source below makes that detectable. Backfilling the
+    // older rows is NOT the answer: it would mean re-deriving country from
+    // location_raw with the same parser that is wrong four times in six.
+    //
+    // Both are null when Places could not resolve a coordinate. A null country
+    // is honest about what is known; "Santiago" as a country is wrong in a way
+    // that does not announce itself when something filters on it. That makes
+    // the column sparser as well as more correct, which is the intended trade.
+    cohort_country:   (focalGeo && focalGeo.country) || null,
     cohort_size_band: null,
+    cohort_metro:     (focalGeo && focalGeo.metro) || null,
     cohort_extra: {
       location_raw:    String(location || '').trim() || null,
       query_region:    region || null,
+      // Which component answered, because a metro from administrative_area_
+      // level_1 is not the same kind of value as one from level 2.
+      metro_source:    (focalGeo && focalGeo.metroSource) || null,
+      // Distinguishes a v8.9.33 row from the 78 that came before it.
+      country_source:  focalGeo ? 'geocoded' : null,
+      // What the comma parser would have said, kept for comparison rather than
+      // for use. It is the value that still drives query building.
+      country_parsed:  String(country || '').trim() || null,
       cuisine_detected: (report && report.cuisineDetected) || null,
       price_detected:   (report && report.priceDetected) || null,
       // Heuristic, NOT an observation. See the note above cohort_tier.
@@ -3960,7 +4045,7 @@ function buildBenchmarkRow({ report, name, location, country, region, focalConte
 //
 // NEVER throws and never rethrows. Every failure path logs and returns false.
 // A Supabase outage must never surface to a user who just ran an assessment.
-async function writeBenchmark({ report, name, location, country, region, focalContext }) {
+async function writeBenchmark({ report, name, location, country, region, focalContext, focalGeo }) {
   try {
     if (!BENCHMARK_ENABLED) {
       // Deliberately no outbound request when the flag is off.
@@ -3968,7 +4053,7 @@ async function writeBenchmark({ report, name, location, country, region, focalCo
       return false;
     }
 
-    const row = buildBenchmarkRow({ report, name, location, country, region, focalContext });
+    const row = buildBenchmarkRow({ report, name, location, country, region, focalContext, focalGeo });
 
     // Distinct greppable markers. A benchmarks row cannot record a null score
     // (overall_score is NOT NULL), and writing a clamped 0 would quietly
