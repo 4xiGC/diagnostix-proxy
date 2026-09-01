@@ -1179,10 +1179,11 @@ app.post('/diagnose', async (req, res) => {
     const cats = { GOOGLE:g, REVIEWS:rv, STAFF:st, SOCIAL:so, DELIVERY:dl, COMPETITORS:co };
     const webScoring = budgetCorpus(cats, CORPUS_CAPS_SCORING);
     const webProse   = budgetCorpus(cats, CORPUS_CAPS_PROSE);
-    console.log(`[diagnose] corpus budget: scoring=${webScoring.length}ch prose=${webProse.length}ch raw=${Object.values(cats).reduce((a, v) => a + String(v || '').length, 0)}ch`);
+    const rawCorpusChars = Object.values(cats).reduce((a, v) => a + String(v || '').length, 0);
+    console.log(`[diagnose] corpus budget: scoring=${webScoring.length}ch prose=${webProse.length}ch raw=${rawCorpusChars}ch`);
     const empties = Object.entries(cats).filter(([k,v]) => v === 'no data' || v === 'no api key' || v.startsWith('err:')).map(([k]) => k);
     const ok = 6 - empties.length;
-    console.log(`[diagnose] scraping summary: ${ok}/6 succeeded, ${Date.now()-tSearch}ms total, ${web.length} chars` + (empties.length ? ` | EMPTY: ${empties.join(',')}` : ''));
+    console.log(`[diagnose] scraping summary: ${ok}/6 succeeded, ${Date.now()-tSearch}ms total, ${rawCorpusChars} chars raw` + (empties.length ? ` | EMPTY: ${empties.join(',')}` : ''));
     const sv = `REVIEWER SELF-ASSESSMENT (1=low 10=high):
 - Overall business performance satisfaction: ${s.perf||5}/10
 - Customer volume vs capacity: ${s.cap||5}/10
