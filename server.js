@@ -3779,7 +3779,34 @@ function buildBenchmarkRow({ report, name, location, country, region, focalConte
     data_source:          'real_assessment',
     source_assessment_id: null,
     ai_seed_batch:        null,
-    confidence_note:      (report && report.scoreVerdict) || null,
+    // confidence_level is NULL, deliberately, and must stay null until RVP
+    // actually measures something.
+    //
+    // This column previously received report.scoreVerdict (Excellent / Good /
+    // Fair / Needs Attention). That is a verdict ON the score, not a statement
+    // about the evidence behind it, so it was the wrong field in the wrong
+    // column and a Phase 5 filter on it would have been meaningless. Nothing is
+    // lost by removing it: scoreVerdict is still returned in the report and is
+    // still carried in cohort_extra.score_verdict above.
+    //
+    // RVP has no confidence concept anywhere in the restaurant path. The
+    // confidence vocabulary elsewhere in this file belongs to the embedded EVP
+    // v1.0, which does not write product='rvp' rows.
+    //
+    // DO NOT SUBSTITUTE empties[]. It is the obvious candidate and it does not
+    // work: across sixteen runs on the fixed corpus pipeline it logged 6/6
+    // categories succeeded every time, for every subject, while one subject's
+    // STAFF result was neighbourhood labour-market text that never mentioned
+    // the restaurant. A search returning text is not the same as the text being
+    // about the subject. Presence is not relevance, and relevance is what drives
+    // a defaulted score.
+    //
+    // What would have to exist first: a per-score signal that distinguishes
+    // subject-specific evidence from generic filler. Today the only component
+    // that makes that distinction is the model, in prose, while the score still
+    // defaults. See the Phase 5 blockers section of the diagnostix-analytics
+    // README before changing this.
+    confidence_level:     null,
     expires_at:           null
     // id and created_at default automatically.
   };
