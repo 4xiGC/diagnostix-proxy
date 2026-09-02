@@ -41,10 +41,39 @@ app.use((req, res, next) => {
 });
 
 const reportStore = new Map();
+// ── Annual subscriptions, RETIRED in v8.10.0 ───────────────────────────────
+//
+// The annual product is gone. Re-run prompting moved to a HubSpot follow-up
+// workflow, outside these repos. Removed here: the 6-hourly setInterval
+// scheduler, generateProgressReport with its annual-p1 and annual-p2 prompts,
+// sendRenewalReminderEmail, updateSubscriberInSupabase, the boot loader, and
+// the /trigger-annual-report route with its ADMIN_SECRET guard. ADMIN_SECRET is
+// now read by nothing in this file; the Railway variable is left for a
+// deliberate cleanup rather than deleted as a side effect here.
+//
+// NINE COLUMNS ON subscribers ARE HISTORICAL AND NO LONGER WRITTEN. They are
+// deliberately NOT dropped: data outlives the code that wrote it, and 87 rows
+// carry history. All nine were empty across all 87 rows when this was measured
+// on 2026-09-02, so the annual path never completed a cycle.
+//
+//   report_2, report_3, report_2_score, report_3_score, report_2_date,
+//   report_3_date, renewal_reminder_at, renewal_reminder_sent_at,
+//   renewal_reminder_sent, subscription_expires, latest_score
+//
+// THREE COLUMNS ARE SHARED AND STILL WRITTEN by the base paid flow, so do not
+// mistake them for annual leftovers: reports_sent is set to 1 by
+// createCustomer for every customer, and active and next_report_at are written
+// there too, now always false and null since no plan is annual.
+//
+// This Map SURVIVES the retirement. It is not annual-only: createCustomer
+// populates it, and GET /report?token= falls back to it when a Supabase write
+// has not yet propagated. Losing the boot loader narrows that fallback to rows
+// created in the current process, which is acceptable because the loader only
+// ever selected active=true rows and there are now none.
 const annualSubscribers = new Map();
 
 // ── SHARED HELPERS (Serper + Claude) ─────────────────────────
-// Lifted out so both /diagnose and generateProgressReport can use them.
+// Lifted out when the annual path shared them. That path went in v8.10.0.
 // ── REGION-AWARE PLATFORMS ───────────────────────────────────
 // Different regions use different review/delivery/employer platforms.
 // We map the user-entered country to a region, then build queries tailored
@@ -939,7 +968,7 @@ async function searchCompetitorsMultiple(opts) {
 //
 // Callers may optionally pass { label, maxTokens, retryOnParseFail } to
 // customise logging and behaviour per call site, but defaults are right
-// for both /diagnose and generateProgressReport.
+// for /diagnose. The annual caller went in v8.10.0.
 async function claude(prompt, opts) {
   opts = opts || {};
   const maxTokens         = opts.maxTokens         || 8000;
@@ -2587,10 +2616,14 @@ app.get('/report', async (req, res) => {
   }
 
   try {
-    let report = sub.baseline_report;
-    let reportLabel = sub.plan_type === 'one_off' ? 'Full Report' : 'Baseline Report (Day 0)';
-    if (sub.report_2) { report = sub.report_2; reportLabel = 'Report 2, Month 4'; }
-    if (sub.report_3) { report = sub.report_3; reportLabel = 'Report 3, Month 8'; }
+    // baseline_report is the only payload now. The two branches that replaced
+    // it with report_2 and report_3 went with the annual product in v8.10.0.
+    // That replacement mattered beyond the annual path: anything written into
+    // baseline_report vanished from this page the moment a progress report
+    // landed, which is why the retirement was sequenced ahead of the peer
+    // comparison rather than alongside it.
+    const report = sub.baseline_report;
+    const reportLabel = sub.plan_type === 'one_off' ? 'Full Report' : 'Baseline Report (Day 0)';
 
     pushLastEngaged(sub.email).catch(() => {});
 
@@ -3657,325 +3690,6 @@ async function getSubscriberFromSupabase(email) {
   }
 }
 
-// ── UPDATE SUBSCRIBER IN SUPABASE (Reports 2/3) ──────────────
-async function updateSubscriberInSupabase(sub, reportNumber) {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_KEY;
-  if (!url || !key) return;
-  try {
-    const latest = sub.reports[sub.reports.length - 1]?.report || null;
-    const body = {
-      reports_sent:   reportNumber,
-      next_report_at: sub.nextReportAt ? new Date(sub.nextReportAt).toISOString() : null,
-      active:         sub.nextReportAt ? true : false,
-      latest_score:   latest?.healthCheckScore || 0
-    };
-    if (reportNumber === 2) {
-      body.report_2 = latest;
-      body.report_2_score = latest?.healthCheckScore || 0;
-      body.report_2_date = new Date().toISOString();
-    } else if (reportNumber === 3) {
-      body.report_3 = latest;
-      body.report_3_score = latest?.healthCheckScore || 0;
-      body.report_3_date = new Date().toISOString();
-      if (sub.renewalReminderAt) {
-        body.renewal_reminder_at = new Date(sub.renewalReminderAt).toISOString();
-      }
-    }
-    await fetch(`${url}/rest/v1/subscribers?report_token=eq.${encodeURIComponent(sub.reportToken)}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': key,
-        'Authorization': 'Bearer ' + key
-      },
-      body: JSON.stringify(body)
-    });
-    console.log('[supabase] Subscriber updated:', sub.email, '| token:', sub.reportToken, 'report', reportNumber);
-  } catch(e) {
-    console.log('[supabase] Subscriber update failed:', e.message);
-  }
-}
-
-// ── GENERATE PROGRESS REPORT (Reports 2 and 3) ───────────────
-async function generateProgressReport(sub) {
-  const { email, restaurantName, location } = sub;
-  const baseline = sub.reports[0];
-  const previous = sub.reports[sub.reports.length - 1];
-  const reportNumber = sub.reports.length + 1;
-
-  console.log('[annual] Generating report', reportNumber, 'for:', email);
-
-  try {
-    const tSearch2 = Date.now();
-    const locParts2 = String(location || '').split(',').map(s => s.trim()).filter(Boolean);
-    const country2 = locParts2.length > 0 ? locParts2[locParts2.length - 1] : '';
-    const region2 = getRegion(country2);
-    console.log(`[annual] region=${region2} (country=${country2 || 'none'})`);
-    const queries2 = buildRegionQueries(region2, restaurantName, location);
-    const [g, rv, st, so, dl, co] = await Promise.all([
-      searchWithFallback(queries2.GOOGLE,      { label: 'GOOGLE-progress' }),
-      searchWithFallback(queries2.REVIEWS,     { label: 'REVIEWS-progress' }),
-      searchWithFallback(queries2.STAFF,       { label: 'STAFF-progress' }),
-      searchWithFallback(queries2.SOCIAL,      { label: 'SOCIAL-progress' }),
-      searchWithFallback(queries2.DELIVERY,    { label: 'DELIVERY-progress' }),
-      searchWithFallback(queries2.COMPETITORS, { label: 'COMPETITORS-progress' })
-    ]);
-    const cats2 = { GOOGLE:g, REVIEWS:rv, STAFF:st, SOCIAL:so, DELIVERY:dl, COMPETITORS:co };
-    const webScoring2 = budgetCorpus(cats2, CORPUS_CAPS_SCORING);
-    const webProse2   = budgetCorpus(cats2, CORPUS_CAPS_PROSE);
-    const empties2 = Object.entries(cats2).filter(([k,v]) => v === 'no data' || v === 'no api key' || v.startsWith('err:')).map(([k]) => k);
-    console.log(`[annual] scraping summary: ${6 - empties2.length}/6 succeeded, ${Date.now()-tSearch2}ms` + (empties2.length ? ` | EMPTY: ${empties2.join(',')}` : ''));
-
-    const baselineCtx = `BASELINE REPORT (${new Date(baseline.generatedAt).toLocaleDateString()}):
-- HealthCheck Score: ${baseline.report.healthCheckScore}/100 (${baseline.report.scoreVerdict})
-- Customer Sentiment: ${baseline.report.pillars?.cs?.score}/100
-- Pricing & Accessibility: ${baseline.report.pillars?.pa?.score}/100
-- Employee Sentiment: ${baseline.report.pillars?.es?.score}/100
-- Social Media: ${baseline.report.pillars?.sm?.score}/100
-- Competitive Position: ${baseline.report.pillars?.cp?.score}/100
-- Brand Experience: ${baseline.report.pillars?.bg?.score}/100
-- Online Presence: ${baseline.report.onlinePresence?.overall}/100
-PREVIOUS ACTIONS: ${(baseline.report.actions||[]).map(a=>a.title).join('; ')}`;
-
-    const prevCtx = sub.reports.length > 1 ? `PREVIOUS REPORT (${new Date(previous.generatedAt).toLocaleDateString()}):
-- HealthCheck Score: ${previous.report.healthCheckScore}/100
-- Trend: ${previous.report.healthCheckScore > baseline.report.healthCheckScore ? 'Improving' : 'Declining'}` : '';
-
-    const p1 = await claude(`Restaurant:${restaurantName}\nLocation:${location}\nWebData:\n${webScoring2}\n\n${baselineCtx}\n${prevCtx}\n\nThis is report ${reportNumber} of 3 for an annual subscriber. Return JSON:\n{"healthCheckScore":<integer 0-100>,"scoreVerdict":"Good","cuisineDetected":"","priceDetected":"$$","executiveSummary":"2-3 sentences citing real ratings and progress vs baseline","pillars":{"cs":{"score":<integer 0-100>,"label":"Customer Sentiment","status":"good"},"pa":{"score":<integer 0-100>,"label":"Pricing & Accessibility","status":"good"},"es":{"score":<integer 0-100>,"label":"Employee Sentiment","status":"warn"},"sm":{"score":<integer 0-100>,"label":"Social Media Impact","status":"warn"},"cp":{"score":<integer 0-100>,"label":"Competitive Positioning","status":"good"},"bg":{"score":<integer 0-100>,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":<integer 0-100>,"channels":[{"name":"Google Business","score":<integer 0-100>,"note":""},{"name":"Yelp","score":<integer 0-100>,"note":""},{"name":"TripAdvisor","score":<integer 0-100>,"note":""},{"name":"OpenTable","score":<integer 0-100>,"note":""},{"name":"Social Media","score":<integer 0-100>,"note":""},{"name":"Delivery Platforms","score":<integer 0-100>,"note":""}]},"ownerSentimentSummary":"","sentimentGap":""}\nRules:good>=65 warn=45-64 bad<45\n\nPUNCTUATION, HARD RULE: never use an em-dash (—) or an en-dash (–) in any string you return, and never use their HTML entity forms. This is 4xi house style and it is absolute. It applies to every field without exception: the executive summary, pillar labels, owner sentiment summary, sentiment gap, business reality analysis, perception gap, pillar gap narratives and online presence notes. Where you would reach for one, use a comma, a colon, parentheses, or a full stop and a second sentence, chosen to suit that sentence rather than substituted mechanically. For a numeric range use a plain hyphen ("10-20", never "10–20").`, { label: 'annual-p1' });
-
-    const p2 = await claude(`Restaurant:${restaurantName}\nLocation:${location}\nWebData:\n${webProse2}\n\n${baselineCtx}\n\nReturn JSON with progress tracking. For competitors: list UP TO 3 actual competing restaurants from web data (NOT the focal restaurant). Only include names that appear verbatim in the web data, never invent generic placeholder names. Fewer real competitors is better than padded fakes. For each, actively search web data for star ratings (Google/TripAdvisor/Yelp; convert to 0-5 number) and review counts (handle \"1.2k\" → 1200). Only use null if truly absent. Do NOT invent ratings.\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":<integer 1-5>,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":<integer 1-5>,"sentiment":"negative"}],"strengths":["strength 1","strength 2","strength 3"],"risks":["risk 1","risk 2","risk 3"],"themes":{"positive":["t1","t2"],"negative":["t1"],"neutral":["t1"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real competitor","rating":<number 0-5, or null if unknown>,"reviewCount":<integer, or null if unknown>,"note":""},{"name":"real competitor","rating":<number 0-5, or null if unknown>,"reviewCount":<integer, or null if unknown>,"note":""},{"name":"real competitor","rating":<number 0-5, or null if unknown>,"reviewCount":<integer, or null if unknown>,"note":""}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"progress":{"overallChange":${(p1.healthCheckScore||70) - baseline.report.healthCheckScore},"pillarsProgress":{"cs":${(p1.pillars?.cs?.score||70) - (baseline.report.pillars?.cs?.score||70)},"pa":${(p1.pillars?.pa?.score||65) - (baseline.report.pillars?.pa?.score||65)},"es":${(p1.pillars?.es?.score||50) - (baseline.report.pillars?.es?.score||50)},"sm":${(p1.pillars?.sm?.score||55) - (baseline.report.pillars?.sm?.score||55)},"cp":${(p1.pillars?.cp?.score||70) - (baseline.report.pillars?.cp?.score||70)},"bg":${(p1.pillars?.bg?.score||65) - (baseline.report.pillars?.bg?.score||65)}},"completedActions":[],"ongoingPriorities":[],"progressNarrative":"2 sentences on what has improved and what still needs work"}}\n\nPUNCTUATION, HARD RULE: never use an em-dash (—) or an en-dash (–) in any string you return, and never use their HTML entity forms. This is 4xi house style and it is absolute. It applies to every field without exception: review quotes, strengths, risks, themes, employee sentiment, competitive insight, competitor notes, actions and the progress narrative. Where you would reach for one, use a comma, a colon, parentheses, or a full stop and a second sentence, chosen to suit that sentence rather than substituted mechanically. For a numeric range use a plain hyphen ("10-20", never "10–20").`, { label: 'annual-p2' });
-
-    const report = Object.assign({}, p1, p2, {
-      reportNumber,
-      baselineScore: baseline.report.healthCheckScore,
-      generatedAt: new Date().toISOString(),
-      isProgressReport: true
-    });
-
-    // The annual path builds its own report and is a second producer. A single
-    // insertion point in /diagnose would leave every follow-up report dirty.
-    // Sanitizing before the push covers the stored copy, the Supabase save, the
-    // customer email and the HubSpot handoff, all of which read from here.
-    sanitizeReportProse(report);
-
-    sub.reports.push({ generatedAt: Date.now(), report, reportNumber });
-
-    if (reportNumber < 3) {
-      sub.nextReportAt = Date.now() + (4 * 30 * 24 * 60 * 60 * 1000);
-    } else {
-      // After Report 3 (month 8), no more reports — but schedule a renewal
-      // reminder email for the 12-month anniversary of the original subscription.
-      // We set renewalReminderAt = subscribedAt + 12 months, so it fires
-      // ~4 months after this Report 3 was generated. The scheduler tick checks
-      // both nextReportAt and renewalReminderAt.
-      sub.nextReportAt = null;
-      sub.completedAt = Date.now();
-      const subscribedMs = (typeof sub.subscribedAt === 'number') ? sub.subscribedAt : Date.parse(sub.subscribedAt);
-      if (subscribedMs && !isNaN(subscribedMs)) {
-        sub.renewalReminderAt = subscribedMs + (12 * 30 * 24 * 60 * 60 * 1000);
-        console.log('[annual] Report 3 complete — renewal reminder scheduled for', new Date(sub.renewalReminderAt).toISOString().split('T')[0], 'for:', email);
-      }
-    }
-
-    console.log('[annual] Report', reportNumber, 'generated for:', email, '| Score:', report.healthCheckScore);
-
-    // Save to Supabase.
-    await updateSubscriberInSupabase(sub, reportNumber);
-
-    // Email customer + push HubSpot context, using the canonical Supabase row.
-    const refreshed = await getSubscriberFromSupabase(sub.email);
-    if (refreshed && refreshed.report_token) {
-      const reportUrl = (process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app')
-                       + '/report?token=' + refreshed.report_token;
-      await Promise.all([
-        sendCustomerReportEmail({ subscriber: refreshed, report, reportNumber }),
-        pushReportContextToHubSpot({
-          subscriber:    refreshed,
-          report,
-          reportNumber,
-          reportUrl,
-          baseline:      refreshed.baseline_report
-        })
-      ]);
-    } else {
-      console.log('[annual] Skipping email/HubSpot — no token for', sub.email);
-    }
-
-    return report;
-  } catch(e) {
-    console.log('[annual] Report generation failed for:', email, e.message);
-  }
-}
-
-// ── LOAD SUBSCRIBERS FROM SUPABASE ON STARTUP ────────────────
-async function loadSubscribersFromSupabase() {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_KEY;
-  if (!url || !key) return;
-  try {
-    const res = await fetch(`${url}/rest/v1/subscribers?active=eq.true&select=*`, {
-      headers: { 'apikey': key, 'Authorization': 'Bearer ' + key }
-    });
-    const rows = await res.json();
-    if (Array.isArray(rows)) {
-      rows.forEach(row => {
-        if (!row.report_token) return; // skip rows without token (legacy/test data)
-        annualSubscribers.set(row.report_token, {
-          email:          row.email,
-          firstName:      row.first_name || '',
-          restaurantName: row.restaurant_name || '',
-          location:       row.location || '',
-          website:        row.website || '',
-          reportToken:    row.report_token,
-          subscribedAt:   new Date(row.subscribed_at).getTime(),
-          nextReportAt:   row.next_report_at ? new Date(row.next_report_at).getTime() : null,
-          renewalReminderAt:     row.renewal_reminder_at ? new Date(row.renewal_reminder_at).getTime() : null,
-          renewalReminderSentAt: row.renewal_reminder_sent_at ? new Date(row.renewal_reminder_sent_at).getTime() : null,
-          reports:        [{ generatedAt: new Date(row.subscribed_at).getTime(), report: row.baseline_report || { healthCheckScore: row.baseline_score || 0, pillars: {} }, reportNumber: 1 }]
-        });
-      });
-      console.log('[annual] Loaded', annualSubscribers.size, 'active subscribers from Supabase');
-    }
-  } catch(e) {
-    console.log('[annual] Failed to load subscribers from Supabase:', e.message);
-  }
-}
-loadSubscribersFromSupabase();
-
-// ── DAILY SCHEDULER — check every 6 hours ────────────────────
-setInterval(async () => {
-  const now = Date.now();
-  console.log('[scheduler] Checking', annualSubscribers.size, 'subscribers for due reports + renewal reminders...');
-  for (const [token, sub] of annualSubscribers.entries()) {
-    // Progress reports (Report 2 at month 4, Report 3 at month 8)
-    if (sub.nextReportAt && now >= sub.nextReportAt) {
-      console.log('[scheduler] Report due for:', sub.email, '|', sub.restaurantName, '| token:', token);
-      await generateProgressReport(sub);
-      await new Promise(r => setTimeout(r, 5000));
-    }
-    // Renewal reminder (12 months after subscription start, ~4 months after Report 3)
-    if (sub.renewalReminderAt && now >= sub.renewalReminderAt && !sub.renewalReminderSentAt) {
-      console.log('[scheduler] Renewal reminder due for:', sub.email, '|', sub.restaurantName, '| token:', token);
-      try {
-        await sendRenewalReminderEmail(sub);
-        sub.renewalReminderSentAt = Date.now();
-        // Persist the sent timestamp to Supabase so we don't double-send on restart.
-        const url = process.env.SUPABASE_URL;
-        const key = process.env.SUPABASE_KEY;
-        if (url && key && sub.reportToken) {
-          await fetch(`${url}/rest/v1/subscribers?report_token=eq.${encodeURIComponent(sub.reportToken)}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', 'apikey': key, 'Authorization': 'Bearer ' + key },
-            body: JSON.stringify({ renewal_reminder_sent_at: new Date(sub.renewalReminderSentAt).toISOString() })
-          }).catch(e => console.log('[scheduler] renewal patch failed:', e.message));
-        }
-      } catch (e) {
-        console.error('[scheduler] renewal reminder email failed for', sub.email, ':', e.message);
-      }
-      await new Promise(r => setTimeout(r, 2000));
-    }
-  }
-}, 6 * 60 * 60 * 1000);
-
-// ── Renewal reminder email ────────────────────────────────────
-// Fires at the 12-month anniversary of an Annual subscription. Subscriber has
-// already received Reports 1, 2, and 3. This email closes the loop with a
-// year-in-review summary and a one-click renewal link.
-async function sendRenewalReminderEmail(sub) {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey || !sub.email) {
-    console.log('[renewal] skipping — missing RESEND_API_KEY or email');
-    return;
-  }
-  const from = process.env.FROM_EMAIL || 'DiagnostiX <hello@4xiconsulting.com>';
-  const restaurant = sub.restaurantName || 'your restaurant';
-  const firstName = sub.firstName || 'there';
-  const renewUrl = process.env.WIX_ANNUAL_URL || 'https://www.4xi360.com/diagnostix';
-  const reportUrl = `${process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app'}/report?token=${sub.reportToken}`;
-
-  // Year-in-review numbers: pull baseline and most recent report scores
-  const baseScore = sub.reports?.[0]?.report?.healthCheckScore || 0;
-  const latestReport = sub.reports?.[sub.reports.length - 1]?.report || null;
-  const latestScore = latestReport?.healthCheckScore || 0;
-  const delta = latestScore - baseScore;
-  const deltaText = delta > 0 ? `+${delta} points` : delta < 0 ? `${delta} points` : 'flat';
-  const deltaColor = delta >= 3 ? '#00A651' : delta <= -3 ? '#ED1C24' : '#F7941D';
-
-  const subject = `Your DiagnostiX Annual year is complete: renew for ${restaurant}`;
-  const escE = (s) => String(s ?? '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escE(subject)}</title></head>
-<body style="margin:0;padding:0;background:#f4f3fb;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;color:#1a1a1a">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f3fb;padding:24px 0">
-  <tr><td align="center">
-    <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 10px rgba(27,20,100,0.06);max-width:600px;width:100%">
-      <tr><td style="background:linear-gradient(135deg,#0f1b3d 0%,#1B1464 70%,#2D2E83 100%);padding:32px 36px;color:#fff">
-        <div style="font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#F4B400;font-weight:700;margin-bottom:8px">DiagnostiX Annual · Year complete</div>
-        <div style="font-family:'League Spartan',sans-serif;font-size:1.6rem;font-weight:900;line-height:1.2">A year of progress tracking for ${escE(restaurant)}</div>
-      </td></tr>
-      <tr><td style="padding:30px 36px 8px;font-size:15px;line-height:1.65;color:#333">
-        <p style="margin:0 0 16px">Hi ${escE(firstName)},</p>
-        <p style="margin:0 0 16px">Twelve months ago you subscribed to DiagnostiX Annual for <strong>${escE(restaurant)}</strong>. Across the year you have received three full HealthCheck reports: your baseline, your Month 4 progress report, and your Month 8 report. Here is where you ended the year:</p>
-        <table width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0">
-          <tr>
-            <td style="background:#f7f5f0;border-radius:7px;padding:18px 20px;text-align:center;width:33%">
-              <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-weight:700">Baseline score</div>
-              <div style="font-family:'League Spartan',sans-serif;font-size:2.4rem;font-weight:900;color:#1B1464;line-height:1;margin-top:6px">${baseScore}</div>
-            </td>
-            <td style="width:12px"></td>
-            <td style="background:#f7f5f0;border-radius:7px;padding:18px 20px;text-align:center;width:33%">
-              <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-weight:700">Latest score</div>
-              <div style="font-family:'League Spartan',sans-serif;font-size:2.4rem;font-weight:900;color:#1B1464;line-height:1;margin-top:6px">${latestScore}</div>
-            </td>
-            <td style="width:12px"></td>
-            <td style="background:#f7f5f0;border-radius:7px;padding:18px 20px;text-align:center;width:33%">
-              <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-weight:700">Change</div>
-              <div style="font-family:'League Spartan',sans-serif;font-size:1.4rem;font-weight:900;color:${deltaColor};line-height:1;margin-top:14px">${escE(deltaText)}</div>
-            </td>
-          </tr>
-        </table>
-        <p style="margin:18px 0">Your most recent report is still accessible at any time:</p>
-        <p style="margin:0 0 24px"><a href="${reportUrl}" style="color:#92278F;text-decoration:underline;font-weight:600">View your latest report &rarr;</a></p>
-        <p style="margin:18px 0 8px"><strong style="color:#1B1464">Ready for another year of progress tracking?</strong></p>
-        <p style="margin:0 0 22px">Renew DiagnostiX Annual to receive three more reports across the next 12 months: a fresh baseline now, a Month 4 progress check, and a Month 8 follow-up. Your historical reports remain accessible alongside the new ones, giving you a multi-year view of how ${escE(restaurant)} is evolving.</p>
-        <p style="text-align:center;margin:24px 0"><a href="${renewUrl}" style="display:inline-block;background:#F4B400;color:#1B1464;font-family:'League Spartan',sans-serif;font-size:14px;font-weight:900;letter-spacing:0.06em;text-transform:uppercase;text-decoration:none;border-radius:6px;padding:14px 30px">Renew Annual, $99.99 &rarr;</a></p>
-        <p style="margin:24px 0 0;font-size:13px;color:#888;line-height:1.65">If you would rather not continue with Annual, no action is needed. Your existing reports remain accessible at the link above. We hope DiagnostiX has helped you see ${escE(restaurant)} more clearly this year.</p>
-      </td></tr>
-      <tr><td style="background:#0f1b3d;padding:18px 36px;text-align:center;color:rgba(255,255,255,0.55);font-size:11px;letter-spacing:0.04em">
-        <strong style="color:#F4B400;font-weight:700">DiagnostiX</strong> &middot; by 4xi Global Consulting
-      </td></tr>
-    </table>
-  </td></tr>
-</table>
-</body></html>`;
-
-  try {
-    const r = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + apiKey
-      },
-      body: JSON.stringify({
-        from, to: sub.email, bcc: 'hello@4xiconsulting.com',
-        subject, html
-      })
-    });
-    const j = await r.json();
-    if (j.id) {
-      console.log('[renewal] sent to', sub.email, '| id:', j.id);
-    } else {
-      console.log('[renewal] response without id:', JSON.stringify(j).slice(0, 200));
-    }
-  } catch (e) {
-    console.error('[renewal] send failed:', e.message);
-    throw e;
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // ANALYTICS BENCHMARK CAPTURE (v8.9.24)
 // ═══════════════════════════════════════════════════════════════════
@@ -4212,32 +3926,6 @@ async function writeBenchmarkRow(row) {
     return false;
   }
 }
-
-// ── MANUAL TRIGGER (for testing) ─────────────────────────────
-// Accepts either { email } (fires for ALL matching subscriptions) or { token } (specific subscription)
-app.post('/trigger-annual-report', async (req, res) => {
-  const { email, token, secret } = req.body;
-  if (secret !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Forbidden' });
-
-  let targets = [];
-  if (token) {
-    const sub = annualSubscribers.get(token);
-    if (sub) targets.push(sub);
-  } else if (email) {
-    const emailLower = email.toLowerCase();
-    for (const sub of annualSubscribers.values()) {
-      if (sub.email && sub.email.toLowerCase() === emailLower) targets.push(sub);
-    }
-  }
-
-  if (targets.length === 0) return res.status(404).json({ error: 'No matching annual subscription found' });
-
-  res.status(200).json({ ok: true, message: `Report generation started for ${targets.length} subscription(s)` });
-  for (const sub of targets) {
-    await generateProgressReport(sub);
-    await new Promise(r => setTimeout(r, 3000));
-  }
-});
 
 // ═══════════════════════════════════════════════════════════════════
 // EVP ASSESSMENT MODULE — v1.0
