@@ -2193,16 +2193,30 @@ async function saveToHubSpot(email, firstName, restaurantName, location, report)
 // THE EMAIL WAITS, CAPPED. The webhook already responded 200 at the top of the
 // handler, so nothing upstream is waiting on this. But a hang here would delay
 // a paid customer's only email indefinitely, so the cap is hard and the report
-// always arrives. Two to four minutes after a payment is unremarkable; a report
-// that changes under the reader between views is not, which is why the email
-// waits rather than sending first and backfilling.
+// always arrives. A report that changes under the reader between views is worse
+// than one that takes five minutes, which is why the email waits rather than
+// sending first and backfilling.
+//
+// THE CAP IS 300s, RAISED FROM 150 BEFORE THE FIRST LIVE RUN. 150 came from
+// arithmetic: five peers at two assessments each is ten /diagnose calls at
+// concurrency 3, which fits. The measurement says otherwise. Two stored bulk
+// runs took 107s and 322s for ELEVEN calls, a 3x spread on identical work, so
+// the faster pace fits comfortably and the slower one does not. At 150 the
+// first real comparison had a good chance of shipping the absent sentence while
+// everything worked correctly, which would be the system behaving properly and
+// looking like a failure.
+//
+// The only cost of the longer cap is a paid customer's email arriving later,
+// and five minutes after a payment is unremarkable. What it buys is that the
+// absent sentence means something went wrong rather than that the day was slow,
+// which is the difference between a signal and noise.
 //
 // AUTH: the shared TEAM_PASSWORD. It is a human credential used by every
 // operator, so rotating it breaks this call at the same moment it logs everyone
 // out, and nothing distinguishes this caller from a person. A per-service
 // credential is the right answer and a separate change. Recorded here so the
 // next person does not discover it during an incident.
-const PEER_COMPARISON_TIMEOUT_MS = 150000;
+const PEER_COMPARISON_TIMEOUT_MS = 300000;
 
 async function fetchPeerComparison({ subjectName, subjectLocation, subjectPillars, peerNames }) {
   const base = process.env.ANALYTICS_URL;
