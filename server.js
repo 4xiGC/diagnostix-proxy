@@ -2184,6 +2184,101 @@ async function saveToHubSpot(email, firstName, restaurantName, location, report)
   }
 }
 
+// ── Peer comparison, fetched from Analytics ────────────────────────────────
+//
+// Called from /payment-webhook after createCustomer returns and before the
+// report email. The subscriber row and its token exist by then, which is why
+// there and not earlier.
+//
+// THE EMAIL WAITS, CAPPED. The webhook already responded 200 at the top of the
+// handler, so nothing upstream is waiting on this. But a hang here would delay
+// a paid customer's only email indefinitely, so the cap is hard and the report
+// always arrives. Two to four minutes after a payment is unremarkable; a report
+// that changes under the reader between views is not, which is why the email
+// waits rather than sending first and backfilling.
+//
+// AUTH: the shared TEAM_PASSWORD. It is a human credential used by every
+// operator, so rotating it breaks this call at the same moment it logs everyone
+// out, and nothing distinguishes this caller from a person. A per-service
+// credential is the right answer and a separate change. Recorded here so the
+// next person does not discover it during an incident.
+const PEER_COMPARISON_TIMEOUT_MS = 150000;
+
+async function fetchPeerComparison({ subjectName, subjectLocation, subjectPillars, peerNames }) {
+  const base = process.env.ANALYTICS_URL;
+  const pass = process.env.ANALYTICS_TEAM_PASSWORD;
+  if (!base || !pass) return { ok: false, reason: 'not_configured' };
+  if (!Array.isArray(peerNames) || !peerNames.length) return { ok: false, reason: 'no_peer_names' };
+
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), PEER_COMPARISON_TIMEOUT_MS);
+  const started = Date.now();
+  try {
+    const res = await fetch(String(base).replace(/\/$/, '') + '/peer-comparison', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Basic ' + Buffer.from('rvp:' + pass).toString('base64'),
+      },
+      body: JSON.stringify({ subjectName, subjectLocation, subjectPillars, peerNames }),
+      signal: ctl.signal,
+    });
+    const text = await res.text();
+    if (!res.ok) return { ok: false, reason: 'http_' + res.status, detail: text.slice(0, 200), ms: Date.now() - started };
+    let data;
+    try { data = JSON.parse(text); }
+    catch { return { ok: false, reason: 'unparseable', ms: Date.now() - started }; }
+    if (!data.ok || !data.html) {
+      return { ok: false, reason: data.error ? 'refused' : 'no_html', detail: data.error || '', stats: data.stats || null, ms: Date.now() - started };
+    }
+    return { ok: true, html: data.html, stats: data.stats || null, runId: data.runId || null, ms: Date.now() - started };
+  } catch (e) {
+    return { ok: false, reason: e.name === 'AbortError' ? 'timeout' : 'error', detail: e.message, ms: Date.now() - started };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The absent state is a SENTENCE, never a hidden block. A comparison that is
+// simply missing reads as a report with a section left out; a comparison that
+// says it could not be produced reads as a report that knows what it does not
+// have. The customer has paid either way.
+const PEER_COMPARISON_ABSENT =
+  'A peer comparison could not be produced for this report. Your own scores are '
+  + 'unaffected. Contact hello@4xiconsulting.com and we will send it separately.';
+
+// Same shape as CACHE_MISS in v8.9.37: a greppable marker carrying uptimeSec,
+// plus an internal alert, so frequency is measurable from the first occurrence
+// rather than after somebody asks.
+async function notifyPeerComparisonUnavailable({ email, restaurantName, reason, detail, ms }) {
+  console.log('[webhook] PEER_COMPARISON_UNAVAILABLE email=' + email
+    + ' reason=' + reason
+    + ' elapsedMs=' + (ms || 0)
+    + ' uptimeSec=' + Math.round(process.uptime()));
+  const INTERNAL_TO = 'hello@4xiconsulting.com';
+  const esc = (s) => String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  try {
+    await sendEmailViaResend({
+      to: INTERNAL_TO,
+      subject: 'Peer comparison missing on a paid report, ' + email,
+      fromName: 'DiagnostiX Alerts',
+      html: '<p><strong>A paid report shipped without its peer comparison.</strong></p>'
+        + '<ul><li>email: ' + esc(email) + '</li>'
+        + '<li>restaurant: ' + esc(restaurantName || '(not supplied)') + '</li>'
+        + '<li>reason: ' + esc(reason) + '</li>'
+        + '<li>detail: ' + esc(detail || '') + '</li>'
+        + '<li>elapsed: ' + esc(ms || 0) + 'ms of a ' + PEER_COMPARISON_TIMEOUT_MS + 'ms cap</li>'
+        + '<li>uptime: ' + Math.round(process.uptime()) + 's</li></ul>'
+        + '<p>The customer received the report with a sentence explaining the absence. '
+        + 'reason=timeout points at Analytics being slow; reason=not_configured means '
+        + 'ANALYTICS_URL or ANALYTICS_TEAM_PASSWORD is unset on this service.</p>',
+    });
+  } catch (e) {
+    console.log('[webhook] PEER_COMPARISON_UNAVAILABLE alert failed:', e.message);
+  }
+}
+
 // ── Cache miss on a PAID order ──────────────────────────────────────────────
 //
 // A customer has paid and their report is not in memory. Nothing here can
@@ -3208,6 +3303,23 @@ ul.bullet-list li{margin:4px 0}
 
 /* Competitor grid */
 .comp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:8px}
+/* Peer comparison fragment, produced by Analytics. It carries that service's
+   class names and no CSS, so the scoping lives here. Analytics owns the
+   escaping and the dash rule; this page owns how it looks. */
+.peer-cmp h2{font-size:1.15rem;margin:26px 0 4px;letter-spacing:.5px}
+.peer-cmp .section-divider{width:40px;height:3px;background:#C97E36;margin-bottom:12px}
+.peer-cmp .sub{color:#3A4255;font-size:.9rem;margin:0 0 14px}
+.peer-cmp table.report{width:100%;border-collapse:collapse;font-size:.9rem;background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 1px 3px rgba(15,21,53,.06)}
+.peer-cmp table.report th{background:#0E3D2E;color:#fff;padding:9px 11px;text-align:left;font-size:.72rem;letter-spacing:1px;text-transform:uppercase}
+.peer-cmp table.report th.num,.peer-cmp table.report td.num{text-align:right}
+.peer-cmp table.report td{padding:9px 11px;border-bottom:1px solid #EDEFF4;vertical-align:top}
+.peer-cmp table.report tr:last-child td{border-bottom:0}
+.peer-cmp td.subject{font-weight:600}
+.peer-cmp .muted{color:#8A93A6;font-size:.86rem;font-style:italic}
+.peer-cmp .absent{color:#8A93A6;font-style:italic}
+.peer-cmp .callout{background:#F7F8FA;border-left:4px solid #C97E36;padding:14px 18px;border-radius:5px}
+.peer-cmp .callout h3{font-size:.9rem;color:#C97E36;text-transform:uppercase;letter-spacing:1.2px;margin:0 0 8px}
+.peer-cmp .callout p{color:#3A4255;font-size:.88rem;line-height:1.55;margin:0}
 @media (max-width:680px){.comp-grid{grid-template-columns:1fr}}
 .comp-card{
   background:var(--soft-bg);
@@ -3424,6 +3536,9 @@ ul.bullet-list li{margin:4px 0}
       ${report?.competitiveInsight ? '<p class="body-p" style="margin-bottom:14px">' + esc(report.competitiveInsight) + '</p>' : ''}
       <div class="comp-grid">${competitors}</div>
     ` : ''}
+
+    ${report?.peerComparisonHtml ? '<div class="peer-cmp">' + report.peerComparisonHtml + '</div>' : ''}
+    ${report?.peerComparisonAbsent ? '<h2 class="rpt-h">Where you sit</h2><p class="body-p">' + esc(report.peerComparisonAbsent) + '</p>' : ''}
 
     ${onlineChannels ? `
       <h2 class="rpt-h">Online Presence ${onlineOverall != null ? '<span class="pres-overall">· Overall ' + onlineOverall + '/100</span>' : ''}</h2>
@@ -3662,6 +3777,43 @@ app.post('/payment-webhook', async (req, res) => {
     report_token:    subscriber.reportToken
   };
 
+  // ── Peer comparison ──
+  // After createCustomer, before the email. The stored payload is updated
+  // in place so GET /report?token= renders the same thing the email announces.
+  // Either branch writes SOMETHING: a fragment or a sentence saying why there
+  // is none. A missing key would render as a section quietly left out.
+  const peerNames = (report.competitors || [])
+    .map((c) => (c && c.name ? String(c.name).trim() : ''))
+    .filter(Boolean);
+  const cmp = await fetchPeerComparison({
+    subjectName: restaurant,
+    subjectLocation: location,
+    subjectPillars: Object.fromEntries(
+      Object.entries(report.pillars || {}).map(([k, v]) => [k, v && typeof v.score === 'number' ? v.score : null])
+    ),
+    peerNames,
+  });
+  if (cmp.ok) {
+    report.peerComparisonHtml = cmp.html;
+    report.peerComparisonAbsent = null;
+    console.log('[webhook] peer comparison ok in ' + cmp.ms + 'ms'
+      + (cmp.stats ? ' named=' + cmp.stats.named + ' assessed=' + cmp.stats.assessed + ' excluded=' + cmp.stats.excluded : '')
+      + ' runId=' + cmp.runId);
+  } else {
+    report.peerComparisonHtml = null;
+    report.peerComparisonAbsent = PEER_COMPARISON_ABSENT;
+    await notifyPeerComparisonUnavailable({
+      email: destEmail, restaurantName: restaurant,
+      reason: cmp.reason, detail: cmp.detail, ms: cmp.ms,
+    });
+  }
+
+  // Persist the updated payload. createCustomer already wrote baseline_report
+  // without the comparison, so without this patch the page and the email would
+  // disagree. Failure here is logged and does not stop the email: the customer
+  // getting their report matters more than the comparison reaching the page.
+  await patchBaselineReport(subscriber.reportToken, report);
+
   const reportUrl = (process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app')
                    + '/report?token=' + subscriber.reportToken;
 
@@ -3672,6 +3824,28 @@ app.post('/payment-webhook', async (req, res) => {
 
   console.log('[webhook] Full flow complete for', destEmail, '| plan:', planType);
 });
+
+// ── Update the stored payload after the comparison lands ───────────────────
+// Swallows its own failure on purpose. The customer's report has already been
+// created and the email is next; losing the comparison on the page is worse
+// than losing it, but far better than losing the email.
+async function patchBaselineReport(reportToken, report) {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_KEY;
+  if (!url || !key || !reportToken) return false;
+  try {
+    const res = await fetch(url + '/rest/v1/subscribers?report_token=eq.' + encodeURIComponent(reportToken), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', apikey: key, Authorization: 'Bearer ' + key, Prefer: 'return=minimal' },
+      body: JSON.stringify({ baseline_report: report }),
+    });
+    if (!res.ok) { console.log('[webhook] baseline_report patch failed ' + res.status); return false; }
+    return true;
+  } catch (e) {
+    console.log('[webhook] baseline_report patch failed:', e.message);
+    return false;
+  }
+}
 
 // ── GET SUBSCRIBER FROM SUPABASE ─────────────────────────────
 async function getSubscriberFromSupabase(email) {
