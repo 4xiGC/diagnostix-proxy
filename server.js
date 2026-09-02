@@ -2155,6 +2155,65 @@ async function saveToHubSpot(email, firstName, restaurantName, location, report)
   }
 }
 
+// ── Cache miss on a PAID order ──────────────────────────────────────────────
+//
+// A customer has paid and their report is not in memory. Nothing here can
+// recover it: the report cannot be regenerated without re-running the
+// assessment, and no payment provider API is called anywhere in this service,
+// so a refund is not reachable from code. What is reachable is telling the
+// customer plainly and telling us at the same time, which is what this does.
+//
+// This replaces SILENCE, not something better. Before v8.9.37 a cache miss
+// marked the HubSpot contact purchased and sent nobody anything.
+async function notifyCacheMiss({ email, firstName, product, restaurantName }) {
+  const INTERNAL_TO = 'hello@4xiconsulting.com';
+  // Local, matching the pattern at :2624 and :4624. There is no module-scope
+  // escapeHtml in this service: the name appears only in comments about SVP,
+  // which is exactly how it came to be called here.
+  const esc = (s) => String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const who = restaurantName ? ` for ${esc(restaurantName)}` : '';
+  try {
+    await sendEmailViaResend({
+      to: email,
+      subject: 'We could not locate your DiagnostiX report',
+      fromName: 'DiagnostiX',
+      html: `<p>Hello${firstName ? ' ' + esc(firstName) : ''},</p>
+<p>Your payment went through, and we could not locate the HealthCheck report${who}
+to attach to it. This is our fault rather than anything you did.</p>
+<p>Reply to this email or write to
+<a href="mailto:${INTERNAL_TO}">${INTERNAL_TO}</a> and we will put it right.
+Your payment is recorded, so there is nothing further for you to do.</p>
+<p>DiagnostiX, 4xi Global Consulting</p>`,
+    });
+  } catch (e) {
+    console.log('[webhook] CACHE_MISS customer email failed:', e.message);
+  }
+  try {
+    await sendEmailViaResend({
+      to: INTERNAL_TO,
+      subject: 'ACTION: paid order with no cached report, ' + email,
+      fromName: 'DiagnostiX Alerts',
+      html: `<p><strong>A paid order could not be matched to a report.</strong></p>
+<ul>
+<li>email: ${esc(email)}</li>
+<li>product: ${esc(String(product || ''))}</li>
+<li>restaurant: ${esc(restaurantName || '(not supplied)')}</li>
+<li>uptime at miss: ${Math.round(process.uptime())}s</li>
+</ul>
+<p>Low uptime points at the in-memory report cache having been wiped by a
+restart. High uptime points at the paying email differing from the survey
+email, which is the case the removed rules were covering.</p>`,
+    });
+  } catch (e) {
+    console.log('[webhook] CACHE_MISS internal alert failed:', e.message);
+  }
+}
+
+// NOTE ON THE NAME: this marks a HubSpot contact as purchased and adds a note.
+// It sends the CUSTOMER nothing, despite "AndEmail". The name reads as though
+// delivery is covered here and it is not, which is why a cache miss was silent
+// for so long.
 async function markPurchasedAndEmail(email, firstName, restaurantName, report, product) {
   const token = process.env.HUBSPOT_TOKEN;
   if (!token || !email) return;
@@ -3473,55 +3532,52 @@ app.post('/payment-webhook', async (req, res) => {
 
   console.log('[webhook] Looking up email:', email);
 
-  // 1. Exact email match
-  let saved = reportStore.get(email);
-  let matchType = 'exact';
-
-  // 2. Local-part match (e.g. simon@a.com vs simon@b.com)
-  if (!saved) {
-    for (const [k, v] of reportStore.entries()) {
-      if (k.includes(email.split('@')[0]) || email.includes(k.split('@')[0])) {
-        saved = v;
-        matchType = 'local-part';
-        console.log('[webhook] Found report via local-part match:', k, '->', email);
-        break;
-      }
-    }
-  }
-
-  // 3. Time-window fallback: most recent report saved within last 5 minutes.
-  // Covers the common case where the user fills the survey with one email
-  // (e.g. restaurant email) but checks out via Wix using a different email
-  // (e.g. logged-in member account email).
-  if (!saved) {
-    const FIVE_MIN = 5 * 60 * 1000;
-    const now = Date.now();
-    let mostRecent = null;
-    let mostRecentKey = null;
-    for (const [k, v] of reportStore.entries()) {
-      if (!v.savedAt) continue;
-      const age = now - v.savedAt;
-      if (age > FIVE_MIN) continue;
-      if (!mostRecent || v.savedAt > mostRecent.savedAt) {
-        mostRecent = v;
-        mostRecentKey = k;
-      }
-    }
-    if (mostRecent) {
-      saved = mostRecent;
-      matchType = 'time-window';
-      const ageSec = Math.round((now - mostRecent.savedAt) / 1000);
-      console.log('[webhook] Found report via time-window fallback:', mostRecentKey, '->', email, '| age:', ageSec + 's');
-    }
-  }
+  // EXACT EMAIL MATCH ONLY. Two looser rules were removed in v8.9.37 and the
+  // reason is worth keeping, because both looked reasonable.
+  //
+  // The removed rule 2 matched any stored email sharing an @ local part, so
+  // info@restaurant-a.com resolved to info@restaurant-b.com.
+  //
+  // The removed rule 3 took the most recent report saved by ANYONE within five
+  // minutes, matched on nothing at all, and then REDIRECTED delivery to the
+  // survey email on the report it had found. So when customer A paid and the
+  // rule latched onto customer B's report, the subscriber row, the report token
+  // and the unlock email all went to B. A paid and received nothing; B received
+  // an unlock for a purchase they never made. That is a billing failure wearing
+  // the clothes of a matching bug, not a display bug.
+  //
+  // Rule 3 had a real motivation, recorded here so it is not rediscovered as an
+  // oversight: Wix checkout uses the logged-in member account while the survey
+  // uses whatever email the operator typed, so the two genuinely differ for
+  // some customers. Removing it converts an unknown number of currently working
+  // purchases into visible failures. It goes anyway, because the rule could not
+  // distinguish "same person, different email" from "different person, same
+  // five minutes" and resolved both identically. A rule that is right sometimes
+  // and catastrophically wrong otherwise, with no way to tell which, is not a
+  // rule.
+  const saved = reportStore.get(email);
 
   if (!saved) {
-    console.log('[webhook] No saved report for:', email, '| Store has:', reportStore.size, 'entries');
+    // CACHE_MISS is greppable on purpose, and uptimeSec is the point of it.
+    // reportStore is an in-memory Map wiped by every restart, so the hypothesis
+    // is that misses cluster at LOW uptime and are caused by the cache being
+    // empty rather than by emails mismatching. That is falsifiable rather than
+    // plausible: misses at high uptime would mean genuine email mismatch and
+    // would argue for a narrow rule matched on local part AND domain family.
+    // The next few weeks of this log line settle it.
+    console.log('[webhook] CACHE_MISS email=' + email
+      + ' product=' + product
+      + ' storeSize=' + reportStore.size
+      + ' uptimeSec=' + Math.round(process.uptime()));
+
+    // The payment is still recorded. Losing the HubSpot marker as well would
+    // turn a delivery failure into a lost sale.
     await markPurchasedAndEmail(email, firstName || '', payload.restaurantName || '', {}, product);
+    await notifyCacheMiss({ email, firstName, product, restaurantName: payload.restaurantName || '' });
     return;
   }
 
-  console.log('[webhook] Match type:', matchType);
+  console.log('[webhook] Match type: exact');
 
   const report     = saved.report || {};
   const survey     = saved.survey || {};
@@ -3529,14 +3585,11 @@ app.post('/payment-webhook', async (req, res) => {
   const restaurant = survey.name || body.restaurantName || '';
   const location   = survey.location || '';
 
-  // If we matched via time-window fallback, the Wix-supplied email is likely
-  // a logged-in member account that differs from the survey email. The survey
-  // email is the customer's real contact for this restaurant — send there.
-  let destEmail = email;
-  if (matchType === 'time-window' && survey.email && survey.email.toLowerCase() !== email) {
-    console.log('[webhook] Time-window fallback: overriding webhook email', email, '-> survey email', survey.email);
-    destEmail = survey.email.toLowerCase().trim();
-  }
+  // The paying email is the delivery address, full stop. This used to be
+  // overridden to the survey email whenever the time-window rule had matched,
+  // which is how a payment ended up credited to a different person. With exact
+  // match only, the two are the same address by definition.
+  const destEmail = email;
 
   console.log('[webhook] Payment confirmed for:', destEmail, product, '| Restaurant:', restaurant);
 
