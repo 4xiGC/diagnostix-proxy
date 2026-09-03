@@ -2197,26 +2197,71 @@ async function saveToHubSpot(email, firstName, restaurantName, location, report)
 // than one that takes five minutes, which is why the email waits rather than
 // sending first and backfilling.
 //
-// THE CAP IS 300s, RAISED FROM 150 BEFORE THE FIRST LIVE RUN. 150 came from
-// arithmetic: five peers at two assessments each is ten /diagnose calls at
-// concurrency 3, which fits. The measurement says otherwise. Two stored bulk
-// runs took 107s and 322s for ELEVEN calls, a 3x spread on identical work, so
-// the faster pace fits comfortably and the slower one does not. At 150 the
-// first real comparison had a good chance of shipping the absent sentence while
-// everything worked correctly, which would be the system behaving properly and
-// looking like a failure.
+// THE CAP IS 280s. It was 150, raised to 300 before the first live run, then
+// lowered to 280 once the platform limit was read.
+//
+// 150 came from arithmetic: five peers at two assessments each is ten /diagnose
+// calls at concurrency 3, which fits. The measurement said otherwise.
+//
+// THE 3x SPREAD IS REAL, re-verified from the stored rows 2026-09-03 rather than
+// restated. The two swept runs took 106.5s and 320.4s measured from the run
+// rows' created_at and completed_at, and the work was genuinely identical: both
+// record api_calls {geocode:1, nearbysearch:53, rvp_diagnose:11} and both cost
+// $1.701. Previously written here as "107s and 322s"; 320.4 is the measured
+// figure. Verify a call count from api_calls.rvp_diagnose and NOT from
+// bulk_run_subjects.assessments_run, which is null on the older run because
+// migration 007 postdates it and reads as zero assessments if trusted.
+//
+// The first live comparison, 2026-09-03, took 108.8s for eleven calls, so 150
+// would in fact have fitted and the raise is not vindicated by that run. It is
+// not refuted either, and the reason is sharper than one fast sample: a peer run
+// SKIPS DISCOVERY, so its 108.8s is assessment alone, while the fast swept run's
+// 106.5s covers eleven assessments PLUS a geocode and 53 nearbysearch calls.
+// The peer run is therefore slightly SLOWER per assessment than the swept run it
+// looks comparable to, not faster. How much of a swept run is discovery is
+// recorded nowhere, so the 320.4s cannot be decomposed.
+//
+// WHAT THAT MEANS AT THE SLOW END, and it is not comfortable. Eleven assessments
+// at the slow end of a 3x spread is on the order of 300s of assessment alone,
+// which exceeds this cap AND the platform's 300s close. So the slow end is not
+// accommodated by ANY cap available on public networking, and a peer comparison
+// that hits it cannot complete at all rather than completing late.
+//
+// WHY NOT 300. Railway public networking closes a request after 5 MINUTES WITH
+// NO DATA TRANSFERRED, and allows 15 minutes only if data keeps moving. This
+// call transfers nothing for its whole duration, so 300s is the binding limit
+// and a 300000 cap sat EXACTLY on it. At the boundary the platform and the
+// AbortController race, and if the platform wins the catch below reports
+// reason=error rather than reason=timeout, a misleading log line at the one
+// moment somebody needs a clear one. 280000 makes this service lose that race
+// deliberately and name its own failure honestly.
+//
+// THE CAP CANNOT BE RAISED AGAIN ON PUBLIC NETWORKING. A future 400s or 600s
+// would be fiction: the edge closes the connection first and the number in this
+// file would describe nothing. If the slow end of the spread ever has to be
+// accommodated, the options are transferring data during the run, which moves
+// the call into the 15 minute bucket and means this stops being a single JSON
+// response, or private networking, which needs checking because RVP and
+// Analytics sit in DIFFERENT Railway projects.
 //
 // The only cost of the longer cap is a paid customer's email arriving later,
 // and five minutes after a payment is unremarkable. What it buys is that the
 // absent sentence means something went wrong rather than that the day was slow,
 // which is the difference between a signal and noise.
 //
+// SAME EXPOSURE ON /diagnose, which is NOT fixed here. It is on the same public
+// networking and also transfers nothing while it runs, so a /diagnose that ran
+// past 300s would be closed identically, with a paying customer on the other
+// end rather than a service. The orchestrator caps its own calls at 120s so the
+// peer path is safe; the customer-facing path has no such cap. Recorded in the
+// analytics README under Known drift.
+//
 // AUTH: the shared TEAM_PASSWORD. It is a human credential used by every
 // operator, so rotating it breaks this call at the same moment it logs everyone
 // out, and nothing distinguishes this caller from a person. A per-service
 // credential is the right answer and a separate change. Recorded here so the
 // next person does not discover it during an incident.
-const PEER_COMPARISON_TIMEOUT_MS = 300000;
+const PEER_COMPARISON_TIMEOUT_MS = 280000;
 
 async function fetchPeerComparison({ subjectName, subjectLocation, subjectPillars, peerNames }) {
   const base = process.env.ANALYTICS_URL;
