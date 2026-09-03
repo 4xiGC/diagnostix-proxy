@@ -1307,6 +1307,9 @@ app.get('/test', async (req, res) => {
 
 // ── /diagnose ────────────────────────────────────────────────
 app.post('/diagnose', async (req, res) => {
+  // Measured from handler entry so totalMs covers everything the caller waits
+  // for. See the totalMs note in the _debug block below for why this exists.
+  const t0 = Date.now();
   const body = req.body;
   if (!body || !body.name) return res.status(400).json({ error: 'Restaurant name is required' });
   const ak = process.env.ANTHROPIC_API_KEY;
@@ -1945,7 +1948,42 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
         ? report.competitors.map(c => ({ name: c.name, rating: c.rating, reviewCount: c.reviewCount }))
         : [],
       competitorWebDataChars: (co || '').length,
-      competitorSectionLabels: (co || '').match(/\[(USER-NAMED|GOOGLE-PLACES|SIMILAR-TO|NEIGHBORHOOD|TOP-IN-CITY)[^\]]*\]/g) || []
+      competitorSectionLabels: (co || '').match(/\[(USER-NAMED|GOOGLE-PLACES|SIMILAR-TO|NEIGHBORHOOD|TOP-IN-CITY)[^\]]*\]/g) || [],
+
+      // -- totalMs: how long this request took ------------------------------
+      //
+      // Mirrors what /evp/diagnose has recorded since v1.0. RVP had no timing
+      // anywhere, and on 2026-09-03 that made a live question unanswerable.
+      // /diagnose runs SILENT on Railway public networking, which closes a
+      // request after 5 minutes with no data transferred, so a route running
+      // past 300s would be killed mid-request and the client would fall back to
+      // buildFallback, showing self-assessment scores rather than an error.
+      //
+      // The exposure was recorded; whether it was LIVE could not be, because
+      // nothing stored measured a single /diagnose end to end. benchmarks has
+      // no timing column, analytics_events is empty, and this object carried
+      // provenance only. The answer had to be DERIVED, from gaps between
+      // consecutive benchmarks rows of the same subject inside a bulk run:
+      // 18 observations, min 21.4s, median 24.6s, max 30.7s, none within a
+      // factor of nine of the limit. Theoretical risk on that evidence.
+      //
+      // ONE GAP REMAINS AND THIS FIELD CLOSES IT. All 18 came from Analytics
+      // calling with { name, location } only. A customer also sends survey
+      // sentiment and user-named competitors, which add [USER-NAMED] Serper
+      // layers a bulk call never triggers. Those layers run inside the same
+      // Promise.all, so the cost is parallel rather than additive and is
+      // probably small - but probably is not measured, and there are ZERO
+      // observations of the request shape a paying customer actually sends.
+      //
+      // This lands in subscribers.baseline_report, verified 2026-09-03: 50 of
+      // 87 stored rows already carry _debug and every recent one does. It is
+      // also printed by the [diagnose] _debug log line below, so it is
+      // greppable without a database read.
+      //
+      // Read at _debug construction, so it excludes buildBenchmarkRow and the
+      // JSON serialisation that follow. Both are synchronous and small: this is
+      // the customer's wait to within a few milliseconds, not to the byte.
+      totalMs: Date.now() - t0
     };
     // ── Competitor source disclosure (v8.9.25) ───────────────────────────
     // When Google Places cannot anchor the search to a coordinate, the
@@ -2221,11 +2259,41 @@ async function saveToHubSpot(email, firstName, restaurantName, location, report)
 // looks comparable to, not faster. How much of a swept run is discovery is
 // recorded nowhere, so the 320.4s cannot be decomposed.
 //
-// WHAT THAT MEANS AT THE SLOW END, and it is not comfortable. Eleven assessments
-// at the slow end of a 3x spread is on the order of 300s of assessment alone,
-// which exceeds this cap AND the platform's 300s close. So the slow end is not
-// accommodated by ANY cap available on public networking, and a peer comparison
-// that hits it cannot complete at all rather than completing late.
+// THE SLOW END IS DISCOVERY, NOT ASSESSMENT. MEASURED 2026-09-03, AND IT
+// CORRECTS WHAT THIS COMMENT SAID EARLIER THE SAME DAY.
+//
+// The superseded claim, kept visible because it drove the paragraph above:
+// "eleven assessments at the slow end of a 3x spread is on the order of 300s of
+// assessment alone, so a peer comparison hitting the slow end cannot complete at
+// all". That was inferred from the run totals and never checked against the
+// per-call data. It is wrong.
+//
+// Decomposing all three stored runs by benchmarks.created_at, which marks the
+// moment each /diagnose responded because res.json fires BEFORE the
+// fire-and-forget benchmark write:
+//
+//   run         total     start -> first row      first -> last row
+//   1bf33960    320.4s    226.7s  (discovery)     93.0s
+//   86fcae1f    106.5s     23.8s                  81.3s
+//   abf353a8    108.8s     25.1s  (no discovery)  83.5s
+//
+// The assessment phases agree within 14%. The ENTIRE 3x spread sits before the
+// first benchmark row, in discovery. A single /diagnose is 21.4s to 30.7s across
+// 18 observations, median 24.6s, and even the slow run's own calls were normal
+// at 22.3 to 28.2s.
+//
+// A PEER RUN SKIPS DISCOVERY ENTIRELY, so the variance that justified raising
+// this cap belongs to a phase this path does not execute. The peer assessment
+// phase should stay near 85 to 110s, and 280s is roughly a 2.5x margin rather
+// than the near-miss the earlier paragraph described.
+//
+// Two caveats, because this is a check RETIRING a finding and that direction
+// deserves more scrutiny than one confirming it. It rests on ONE slow run whose
+// discovery cause is unexplained: both swept runs recorded identical api_calls
+// and both inserted 930 subject rows, so the stored data does not distinguish
+// them. And all 18 observations are of Analytics calling with { name, location }
+// only, never the heavier shape a customer sends. The totalMs field added to
+// _debug in v8.11.3 closes the second gap for every future customer call.
 //
 // WHY NOT 300. Railway public networking closes a request after 5 MINUTES WITH
 // NO DATA TRANSFERRED, and allows 15 minutes only if data keeps moving. This
