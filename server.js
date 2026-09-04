@@ -627,6 +627,48 @@ function stripDashes(s) {
 //
 // Mutates in place and returns the same object, so callers that already hold a
 // reference (the benchmark write, the annual store) see the cleaned text.
+// ── WHY A COMPETITOR HAS NO RATING ──────────────────────────────────────────
+//
+// "No public rating found" used to be printed for every one of these, which
+// collapsed FOUR different facts into one sentence and made two of them false.
+// On the Segreta report, 2026-09-04, live Places lookups on the three names the
+// report called unrated: "Zulu" is Zûlu Kitchen & Bar at 4.4 with 625 reviews,
+// "El Torro" is El Toro Vitacura at 4.6 with 1,755 reviews, and only "Bodega",
+// Camino La Bodega, genuinely has none. Two customers' competitors were
+// described as having no public presence while carrying 2,380 reviews between
+// them.
+//
+// A business with no reviews is INFORMATION ABOUT A MARKET, not a failure of
+// our search, and the copy says so. A name we could not find is our limit and
+// the copy owns that instead.
+const RATING_STATE = {
+  RATED:          'rated',
+  NOT_FOUND:      'not_found',       // looked up, nothing came back
+  NOT_LOOKED_UP:  'not_looked_up',   // never searched: past the cap at :799
+  UNCONFIRMED:    'unconfirmed',     // resolved, but not confidently this business
+  LISTED_UNRATED: 'listed_unrated',  // resolved, operating, genuinely no reviews
+};
+
+// UNCONFIRMED and LISTED_UNRATED CANNOT BE PRODUCED YET. Both need a resolution
+// attempt, which arrives with the Places lookup per owner-supplied name. They
+// are defined here so the two renderers share one vocabulary rather than being
+// changed twice, and so the second change is copy-free.
+const RATING_STATE_COPY = {
+  [RATING_STATE.NOT_FOUND]:      'We could not find this business in public listings',
+  [RATING_STATE.NOT_LOOKED_UP]:  'We did not look this business up',
+  [RATING_STATE.UNCONFIRMED]:    'We found a possible match but could not confirm it is the business you named',
+  [RATING_STATE.LISTED_UNRATED]: 'Listed publicly with no reviews yet',
+};
+
+// Every report stored before 2026-09-04 carries no ratingState, and there is no
+// way to recover which case it was. This says only what is still true of them.
+const RATING_STATE_COPY_UNKNOWN = 'No public rating in the data gathered for this report';
+
+function ratingStateCopy(c) {
+  const st = c && c.ratingState;
+  return (st && RATING_STATE_COPY[st]) || RATING_STATE_COPY_UNKNOWN;
+}
+
 function sanitizeReportProse(report) {
   if (!report || typeof report !== 'object') return report;
   const S = (v) => (typeof v === 'string' ? stripDashes(v) : v);
@@ -1567,19 +1609,35 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
               entry.name = serperData.resolvedTitle;
             }
           }
+          if (entry.rating === null || entry.rating === undefined) {
+            entry.ratingState = serperData !== undefined ? RATING_STATE.NOT_FOUND : RATING_STATE.NOT_LOOKED_UP;
+          }
           merged.push(entry);
           usedAiIdx.add(aiIdx);
           promoted++;
         } else {
           // AI dropped this competitor — synthesize using Serper data when available.
           const displayName = (serperData && serperData.resolvedTitle) || userName;
+          // `serperData` is undefined when this name was never looked up at all,
+          // which happens to every owner-supplied name past the search cap at
+          // :799. That is a DIFFERENT FACT from a lookup that ran and found
+          // nothing, and the previous note conflated them: it said "public
+          // review data was limited in this scrape" for names no scrape ever
+          // touched. Recording which one happened costs nothing here and is the
+          // only place that still knows.
+          const searched = serperData !== undefined;
           merged.push({
             name: displayName,
             rating: serperData ? serperData.rating : null,
             reviewCount: serperData ? serperData.reviewCount : null,
+            ratingState: (serperData && serperData.rating !== null) ? RATING_STATE.RATED
+                       : searched ? RATING_STATE.NOT_FOUND
+                       : RATING_STATE.NOT_LOOKED_UP,
             note: (serperData && serperData.rating !== null)
               ? 'Owner-identified direct competitor, rating data extracted from public review platforms.'
-              : 'Owner-identified direct competitor; public review data was limited in this scrape.'
+              : searched
+                ? 'Owner-identified direct competitor. No public rating was found for this name.'
+                : 'Owner-identified direct competitor. This name was not looked up for public review data.'
           });
           synthesized++;
         }
@@ -3061,8 +3119,11 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
       bigBlock = `<div class="comp-big">${legacyScore}<span class="comp-big-scale">/100</span></div>`;
       metricLabel = 'Scored by an earlier method';
     } else {
-      bigBlock = '<div class="comp-no-rating">No public rating found</div>';
-      metricLabel = 'Profile only';
+      // The card still shows no number, but the LABEL now says which of the
+      // states it is, so "no reviews yet" reads as a fact about that business
+      // rather than as our search failing. See RATING_STATE above.
+      bigBlock = '<div class="comp-no-rating">No public rating</div>';
+      metricLabel = ratingStateCopy(c);
     }
 
     return `<div class="comp-card">

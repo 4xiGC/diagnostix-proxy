@@ -1136,6 +1136,21 @@ function renderReport(r, d) {
 // in the payment webhook and has not happened yet. For a free report it never
 // will. That is a whole section present or absent for a stated reason, not two
 // renderers drifting apart.
+  // Mirror of RATING_STATE_COPY in server.js. A competitor with no rating says
+  // WHICH state it is in, because "no reviews yet" is a fact about that business
+  // and "we could not find it" is a limit of ours. UNCONFIRMED and
+  // LISTED_UNRATED cannot be produced until the Places lookup lands; they are
+  // here so this file does not need changing again when it does.
+  var RATING_STATE_COPY = {
+    not_found:      'We could not find this business in public listings',
+    not_looked_up:  'We did not look this business up',
+    unconfirmed:    'We found a possible match but could not confirm it is the business you named',
+    listed_unrated: 'Listed publicly with no reviews yet'
+  };
+  function ratingStateCopy(c) {
+    return (c && c.ratingState && RATING_STATE_COPY[c.ratingState])
+      || 'No public rating in the data gathered for this report';
+  }
   function interpretCompetitorRating(c) {
     if (typeof c.rating === 'number' && isFinite(c.rating) && c.rating >= 0 && c.rating <= 5) return c.rating;
     // Legacy `score` at or below 5 is a star rating in the wrong field. Above 5
@@ -1178,8 +1193,8 @@ function renderReport(r, d) {
       bigBlock = '<div class="comp-big">' + legacyScore + '<span class="comp-big-scale">/100</span></div>';
       metricLabel = 'Scored by an earlier method';
     } else {
-      bigBlock = '<div class="comp-no-rating">No public rating found</div>';
-      metricLabel = 'Profile only';
+      bigBlock = '<div class="comp-no-rating">No public rating</div>';
+      metricLabel = ratingStateCopy(c);
     }
     return '<div class="comp-card">'
       + '<div class="comp-name">' + (c.name || 'Unknown') + '</div>'
