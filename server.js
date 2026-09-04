@@ -669,6 +669,110 @@ function ratingStateCopy(c) {
   return (st && RATING_STATE_COPY[st]) || RATING_STATE_COPY_UNKNOWN;
 }
 
+// ── HOW MANY OWNER-SUPPLIED NAMES GET LOOKED UP ─────────────────────────────
+//
+// Was 3, silently, while the parser at the /diagnose body kept everything the
+// owner typed and the safety net below looped over ALL of it. Names past the
+// cap were therefore never searched, yet still got a card. Measured across the
+// 51 stored reports carrying _debug.userCompetitorsParsed: 6 owners supplied
+// more than three names, putting 8 names past the cap, and 8 of 8 were stored
+// with a null rating. No exceptions.
+//
+// 6 rather than unbounded because /diagnose has NO TIMEOUT OF ITS OWN and sits
+// on the same 300s Railway edge limit that forced the peer cap to 280s, and
+// this runs BEFORE payment, so an owner pasting a long list is unmetered work.
+// 6 rather than 5 because the display limit and the lookup limit are separate
+// decisions: the report shows 5 cards, but everything the owner typed should be
+// looked up, and which 5 get shown is then a choice made with data rather than
+// by truncating the input.
+const USER_COMPETITOR_LOOKUP_CAP = 6;
+
+// ── MATCHING A HAND-TYPED NAME TO A PLACES RESULT ───────────────────────────
+//
+// Deliberately LOOSER than the peer gate's nameAgreement, and the difference is
+// the point. There a false match costs a full assessment and a fabricated peer
+// inside a published comparison, so its floor is high: it rejects "El Torro"
+// against "El Toro Vitacura" because `el` is a stop token and `torro` shares no
+// token with `toro`. Here a false match costs a wrong number on a descriptive
+// card, and the input is a name a restaurant owner typed by hand, which is
+// exactly where misspellings live. Rejecting the misspelling would reject the
+// case this exists to fix.
+//
+// So: content tokens, accent-folded, with edit distance 1 tolerated on tokens
+// of four characters or more. "torro" matches "toro"; "Zulu" matches the
+// accented "Zûlu". Nothing is discarded on a miss, it is REPORTED as
+// unconfirmed, because a name we found something for but cannot vouch for is
+// its own fact and the customer should get it as one.
+const COMP_MATCH_STOPWORDS = new Set([
+  'restaurant','restaurants','restaurante','restaurantes','bar','bars','cafe','cafes',
+  'bistro','grill','lounge','kitchen','pizzeria','pizzerias','bakery','brewery',
+  'the','and','of','in','at','de','del','la','el','los','las','y','n',
+]);
+function compFold(v) {
+  return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+}
+function compTokens(v, locationHint) {
+  const loc = new Set(compFold(locationHint).split(/[^a-z0-9]+/).filter(Boolean));
+  return new Set(
+    compFold(v).split(/[^a-z0-9]+/)
+      .filter(t => t.length > 2 && !COMP_MATCH_STOPWORDS.has(t) && !loc.has(t))
+  );
+}
+function editDistance1(a, b) {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (a.length === b.length) { i++; j++; }
+    else if (a.length > b.length) i++;
+    else j++;
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
+// True when the typed name and the resolved name share at least one content
+// token, allowing a single typo on tokens long enough for that to be safe.
+function compNamesAgree(typed, resolved, locationHint) {
+  const q = compTokens(typed, locationHint);
+  const r = compTokens(resolved, locationHint);
+  if (!q.size || !r.size) return false;
+  for (const a of q) {
+    for (const b of r) {
+      if (a === b) return true;
+      if (a.length >= 4 && b.length >= 4 && editDistance1(a, b)) return true;
+    }
+  }
+  return false;
+}
+
+// One findplacefromtext call for a competitor name. Same endpoint and the same
+// field list already used to geocode the focal restaurant, so this adds a call
+// site rather than a dependency: no new key, no new service, no cross-project
+// hop on the unpaid path.
+async function findPlaceForCompetitor(query) {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) return { ok: false, reason: 'no_key' };
+  const fields = 'place_id,name,geometry,rating,user_ratings_total,business_status';
+  const url = 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json'
+    + `?input=${encodeURIComponent(query)}&inputtype=textquery&fields=${fields}&key=${apiKey}`;
+  try {
+    const d = await (await fetch(url)).json();
+    const c = Array.isArray(d.candidates) ? d.candidates[0] : null;
+    if (d.status !== 'OK' || !c) return { ok: false, reason: d.status || 'UNKNOWN' };
+    return {
+      ok: true,
+      placeId: c.place_id || null,
+      name: c.name || null,
+      rating: typeof c.rating === 'number' ? c.rating : null,
+      reviewCount: typeof c.user_ratings_total === 'number' ? c.user_ratings_total : null,
+      businessStatus: c.business_status || null,
+    };
+  } catch (e) {
+    return { ok: false, reason: 'fetch_failed', detail: String(e && e.message).slice(0, 120) };
+  }
+}
+
 function sanitizeReportProse(report) {
   if (!report || typeof report !== 'object') return report;
   const S = (v) => (typeof v === 'string' ? stripDashes(v) : v);
@@ -839,7 +943,7 @@ async function searchCompetitorsMultiple(opts) {
   //
   // Returns structured per-competitor data alongside the text blob.
   const userNames = Array.isArray(userCompetitors)
-    ? userCompetitors.slice(0, 3).filter(n => n && n.trim().length >= 3)
+    ? userCompetitors.slice(0, USER_COMPETITOR_LOOKUP_CAP).filter(n => n && n.trim().length >= 3)
     : [];
 
   // Run 2 query variants per user-named competitor in parallel. We keep the
@@ -859,10 +963,18 @@ async function searchCompetitorsMultiple(opts) {
       `${competitorName} ${searchLoc} TripAdvisor`
     ];
     const t = Date.now();
-    const results = await Promise.all(queries.map(q =>
-      searchStructured(q, { label: `COMP-USER[${competitorName}]` })
-        .catch(e => { console.log(`[serper] COMP-USER[${competitorName}] error: ${e.message}`); return { text: '', rating: null, reviewCount: null, title: null }; })
-    ));
+    // Places runs in the SAME Promise.all as the Serper variants, so it costs
+    // nothing in wall clock. It is queried the way the peer gate queries a peer,
+    // "name, location", because a competitor name arrives with no location of
+    // its own.
+    const placeQuery = searchLoc ? `${competitorName}, ${searchLoc}` : competitorName;
+    const [placeHit, ...results] = await Promise.all([
+      findPlaceForCompetitor(placeQuery),
+      ...queries.map(q =>
+        searchStructured(q, { label: `COMP-USER[${competitorName}]` })
+          .catch(e => { console.log(`[serper] COMP-USER[${competitorName}] error: ${e.message}`); return { text: '', rating: null, reviewCount: null, title: null }; })
+      ),
+    ]);
     // Pick best signal across variants
     let bestRating = null, bestCount = null, bestTitle = null;
     const textChunks = [];
@@ -873,12 +985,24 @@ async function searchCompetitorsMultiple(opts) {
       if (r.title && !bestTitle) bestTitle = r.title;
     }
     const text = textChunks.join('\n---\n');
-    console.log(`[serper] COMP-USER[${competitorName}] aggregated: rating=${bestRating} count=${bestCount} title="${bestTitle||''}" ${Date.now()-t}ms`);
+    // A resolved place that does not agree with the typed name is NOT treated as
+    // a find. It is reported as unconfirmed, and its rating is withheld: putting
+    // 4.6 stars on a card for a business the owner may not have meant is the one
+    // outcome worse than no number.
+    const placeAgrees = placeHit.ok && compNamesAgree(competitorName, placeHit.name, searchLoc);
+    console.log(`[serper] COMP-USER[${competitorName}] aggregated: rating=${bestRating} count=${bestCount} title="${bestTitle||''}" ${Date.now()-t}ms`
+      + ` | places: ${placeHit.ok ? `"${placeHit.name}" rating=${placeHit.rating ?? 'none'} reviews=${placeHit.reviewCount ?? 'none'} agrees=${placeAgrees}` : 'miss(' + placeHit.reason + ')'}`);
     return {
       userName: competitorName,
       resolvedTitle: bestTitle,
       rating: bestRating,
       reviewCount: bestCount,
+      placeFound: !!placeHit.ok,
+      placeAgrees,
+      placeName: placeHit.ok ? placeHit.name : null,
+      placeId: placeHit.ok ? placeHit.placeId : null,
+      placeRating: placeHit.ok ? placeHit.rating : null,
+      placeReviewCount: placeHit.ok ? placeHit.reviewCount : null,
       text
     };
   }
@@ -1577,6 +1701,35 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
         serperByName.set(norm(r.userName), r);
       }
 
+      // ONE place decides what a competitor's rating is and why it is missing.
+      // The promote and synthesize branches below both call this, because the
+      // same name resolving differently depending on whether the model happened
+      // to return it would be a defect nobody could reproduce.
+      //
+      // Order matters. Places is authoritative for a rating, but only once the
+      // name agrees. Serper is consulted BEFORE declaring a business unrated,
+      // because Google having no reviews and TripAdvisor having some are both
+      // true at once, and "no reviews yet" must not be asserted over a rating we
+      // actually hold.
+      const resolveRating = (sd) => {
+        if (sd === undefined) {
+          return { rating: null, reviewCount: null, state: RATING_STATE.NOT_LOOKED_UP, name: null };
+        }
+        if (sd.placeFound && !sd.placeAgrees) {
+          return { rating: null, reviewCount: null, state: RATING_STATE.UNCONFIRMED, name: null };
+        }
+        if (sd.placeAgrees && sd.placeRating !== null) {
+          return { rating: sd.placeRating, reviewCount: sd.placeReviewCount, state: RATING_STATE.RATED, name: sd.placeName };
+        }
+        if (sd.rating !== null) {
+          return { rating: sd.rating, reviewCount: sd.reviewCount, state: RATING_STATE.RATED, name: sd.placeAgrees ? sd.placeName : sd.resolvedTitle };
+        }
+        if (sd.placeAgrees) {
+          return { rating: null, reviewCount: sd.placeReviewCount, state: RATING_STATE.LISTED_UNRATED, name: sd.placeName };
+        }
+        return { rating: null, reviewCount: null, state: RATING_STATE.NOT_FOUND, name: null };
+      };
+
       const merged = [];
       const usedAiIdx = new Set();
       let synthesized = 0;
@@ -1593,51 +1746,49 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
           // than the AI's text-parsing of the same source, so it ALWAYS wins
           // when present — not just when the AI returned null.
           const entry = Object.assign({}, aiList[aiIdx]);
-          if (serperData) {
-            if (serperData.rating !== null) {
-              if (entry.rating !== serperData.rating) {
-                console.log(`[diagnose] safety-net override ${entry.name}: rating ${entry.rating} → ${serperData.rating} (Serper)`);
-                overridden++;
-              }
-              entry.rating = serperData.rating;
+          const rr = resolveRating(serperData);
+          if (rr.rating !== null) {
+            if (entry.rating !== rr.rating) {
+              console.log(`[diagnose] safety-net override ${entry.name}: rating ${entry.rating} → ${rr.rating}`);
+              overridden++;
             }
-            if (serperData.reviewCount !== null) {
-              entry.reviewCount = serperData.reviewCount;
-            }
-            // Prefer Serper's resolved title (e.g. "Hog Island Oyster Co.") over user's input
-            if (serperData.resolvedTitle && norm(entry.name).length < norm(serperData.resolvedTitle).length) {
-              entry.name = serperData.resolvedTitle;
-            }
+            entry.rating = rr.rating;
+            if (rr.reviewCount !== null) entry.reviewCount = rr.reviewCount;
+          } else {
+            // An unconfirmed or unrated resolution WITHDRAWS a rating the model
+            // invented. The model reads ratings out of prose and is the least
+            // reliable source in the chain; leaving its number in place would
+            // let the state and the number contradict each other on one card.
+            entry.rating = null;
+            entry.reviewCount = null;
           }
-          if (entry.rating === null || entry.rating === undefined) {
-            entry.ratingState = serperData !== undefined ? RATING_STATE.NOT_FOUND : RATING_STATE.NOT_LOOKED_UP;
-          }
+          entry.ratingState = rr.state;
+          // Prefer a longer resolved name (e.g. "Hog Island Oyster Co.") over the
+          // owner's shorthand, from whichever source agreed.
+          if (rr.name && norm(entry.name).length < norm(rr.name).length) entry.name = rr.name;
           merged.push(entry);
           usedAiIdx.add(aiIdx);
           promoted++;
         } else {
           // AI dropped this competitor — synthesize using Serper data when available.
-          const displayName = (serperData && serperData.resolvedTitle) || userName;
-          // `serperData` is undefined when this name was never looked up at all,
-          // which happens to every owner-supplied name past the search cap at
-          // :799. That is a DIFFERENT FACT from a lookup that ran and found
-          // nothing, and the previous note conflated them: it said "public
-          // review data was limited in this scrape" for names no scrape ever
-          // touched. Recording which one happened costs nothing here and is the
-          // only place that still knows.
-          const searched = serperData !== undefined;
+          // `serperData` is undefined only when this name was never looked up,
+          // which the cap at USER_COMPETITOR_LOOKUP_CAP now makes rare rather
+          // than routine. The distinction is kept because the cap can be hit
+          // again and the note must not claim a lookup that did not happen.
+          const rr = resolveRating(serperData);
+          const NOTE = {
+            [RATING_STATE.RATED]:          'Owner-identified direct competitor, rating taken from public listings.',
+            [RATING_STATE.NOT_FOUND]:      'Owner-identified direct competitor. We could not find this business in public listings.',
+            [RATING_STATE.NOT_LOOKED_UP]:  'Owner-identified direct competitor. This name was not looked up for public review data.',
+            [RATING_STATE.UNCONFIRMED]:    'Owner-identified direct competitor. We found a possible match but could not confirm it is the business named.',
+            [RATING_STATE.LISTED_UNRATED]: 'Owner-identified direct competitor, publicly listed with no reviews yet.',
+          };
           merged.push({
-            name: displayName,
-            rating: serperData ? serperData.rating : null,
-            reviewCount: serperData ? serperData.reviewCount : null,
-            ratingState: (serperData && serperData.rating !== null) ? RATING_STATE.RATED
-                       : searched ? RATING_STATE.NOT_FOUND
-                       : RATING_STATE.NOT_LOOKED_UP,
-            note: (serperData && serperData.rating !== null)
-              ? 'Owner-identified direct competitor, rating data extracted from public review platforms.'
-              : searched
-                ? 'Owner-identified direct competitor. No public rating was found for this name.'
-                : 'Owner-identified direct competitor. This name was not looked up for public review data.'
+            name: rr.name || (serperData && serperData.resolvedTitle) || userName,
+            rating: rr.rating,
+            reviewCount: rr.reviewCount,
+            ratingState: rr.state,
+            note: NOTE[rr.state],
           });
           synthesized++;
         }
@@ -1988,7 +2139,15 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
         name: r.userName,
         resolvedTitle: r.resolvedTitle,
         rating: r.rating,
-        reviewCount: r.reviewCount
+        reviewCount: r.reviewCount,
+        // The Places verdict, kept so a later reader can tell which source a
+        // stored rating came from and why a state was chosen. Reconstructing
+        // this after the fact is impossible: the ratings move.
+        placeName: r.placeName,
+        placeId: r.placeId,
+        placeRating: r.placeRating,
+        placeReviewCount: r.placeReviewCount,
+        placeAgrees: r.placeAgrees
       })),
       googlePlaces: {
         count: compPlacesData.places?.length || 0,
