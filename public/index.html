@@ -162,12 +162,10 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .tag-row{display:flex;flex-wrap:wrap;gap:5px}
 .tag{font-size:11px;padding:3px 9px;border-radius:4px}
 .tag.pos{background:var(--gl);color:var(--g8)}.tag.neg{background:var(--rl);color:var(--r8)}.tag.neu{background:var(--al);color:var(--a8)}
-/* Competitor cards — v8.7 uniform big-number layout */
+/* Competitor cards — descriptive, no subject card and no ranking claim */
 .comp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:8px;align-items:stretch}
-.comp-card{position:relative;background:#f7f5f0;border-radius:8px;padding:32px 14px 14px;border-top:3px solid #ddd;display:flex;flex-direction:column}
-.comp-card.comp-you{border-top-color:#1B1464;background:#f4f3fb}
-.comp-card.comp-peer{border-top-color:#92278F}
-.comp-card-tag{position:absolute;top:10px;left:12px;font-size:9px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;padding:3px 8px;border-radius:3px;line-height:1}
+.comp-card{position:relative;background:#f7f5f0;border-radius:8px;padding:14px;border-top:3px solid var(--amber);display:flex;flex-direction:column}
+.comp-grid-note{font-size:11px;color:#888;line-height:1.6;margin:2px 0 8px;font-style:italic}
 .comp-name{font-size:13px;font-weight:700;color:#1B1464;margin-bottom:10px;line-height:1.3}
 .comp-big{font-family:'League Spartan',sans-serif;font-size:1.9rem;font-weight:900;line-height:1;margin-bottom:4px}
 .comp-big-scale{font-size:11px;color:#999;font-weight:500;letter-spacing:0.02em;margin-left:2px}
@@ -1126,19 +1124,29 @@ function renderReport(r, d) {
   var negT=((r.themes&&r.themes.negative)||[]).map(function(t){return'<span class="tag neg">'+t+'</span>';}).join('');
   var neuT=((r.themes&&r.themes.neutral)||[]).map(function(t){return'<span class="tag neu">'+t+'</span>';}).join('');
 
-// Competitor cards — v8.7 uniform layout with forgiving rating interpreter
+// Competitor cards — DESCRIPTIVE, NOT A COMPARISON SET.
+// Deliberately identical in shape to renderReportHtml in server.js, so the
+// immediate view and the emailed report say the same thing about the same
+// competitors. The reasoning for dissolving the grid rather than re-scaling it
+// is written once, above the server copy, and is a MEASUREMENT rather than a
+// preference: read it before putting a subject card or a ranking back here.
+//
+// The one deliberate difference between the two views: the emailed report also
+// carries the peer band table, and this view cannot, because the peer run fires
+// in the payment webhook and has not happened yet. For a free report it never
+// will. That is a whole section present or absent for a stated reason, not two
+// renderers drifting apart.
   function interpretCompetitorRating(c) {
-    if (typeof c.rating === 'number' && c.rating >= 0 && c.rating <= 5) return c.rating;
-    if (typeof c.rating === 'string') {
-      var m = c.rating.match(/(\d+(?:\.\d+)?)/);
-      if (m) {
-        var n = parseFloat(m[1]);
-        if (n >= 0 && n <= 5)  return n;
-        if (n > 5 && n <= 100) return n / 20;
-      }
-    }
-    if (typeof c.score === 'number' && c.score >= 0 && c.score <= 5) return c.score;
-    if (typeof c.score === 'number' && c.score > 5 && c.score <= 100) return c.score / 20;
+    if (typeof c.rating === 'number' && isFinite(c.rating) && c.rating >= 0 && c.rating <= 5) return c.rating;
+    // Legacy `score` at or below 5 is a star rating in the wrong field. Above 5
+    // it is a 0-100 composite, handled separately and NOT divided by 20.
+    if (typeof c.score === 'number' && isFinite(c.score) && c.score > 0 && c.score <= 5) return c.score;
+    var s = typeof c.rating === 'string' ? c.rating : (typeof c.score === 'string' ? c.score : null);
+    var m = s ? s.match(/([0-5](?:\.\d)?)/) : null;
+    return m ? parseFloat(m[1]) : null;
+  }
+  function interpretLegacyScore(c) {
+    if (typeof c.score === 'number' && isFinite(c.score) && c.score > 5 && c.score <= 100) return Math.round(c.score);
     return null;
   }
   function interpretReviewCount(c) {
@@ -1154,43 +1162,32 @@ function renderReport(r, d) {
     var peerName = (c.name || '').trim().toLowerCase();
     return peerName && peerName !== focalNameLower;
   });
-  var youColor = r.healthCheckScore >= 65 ? '#00A651'
-               : r.healthCheckScore >= 45 ? '#F7941D'
-               : '#ED1C24';
-  var youCard = '<div class="comp-card comp-you">'
-    + '<div class="comp-card-tag" style="background:#1B1464;color:#fff">YOU</div>'
-    + '<div class="comp-name">' + (d.name || 'Your restaurant') + '</div>'
-    + '<div class="comp-big" style="color:' + youColor + '">' + (r.healthCheckScore || 0)
-    + '<span class="comp-big-scale">/100</span></div>'
-    + '<div class="comp-metric-label">DiagnostiX HealthCheck Score</div>'
-    + '<div class="comp-note">Your overall performance</div>'
-    + '</div>';
-  var peerCards = peers.slice(0, 5).map(function(c) {
+  var compCards = peers.slice(0, 5).map(function(c) {
     var ratingRaw = interpretCompetitorRating(c);
+    var legacyScore = ratingRaw === null ? interpretLegacyScore(c) : null;
     var reviewCount = interpretReviewCount(c);
-    var hasRating = ratingRaw !== null;
-    var ratingColor = !hasRating ? '#999'
-                    : ratingRaw >= 4.5 ? '#00A651'
-                    : ratingRaw >= 4.0 ? '#F7941D'
-                    : '#ED1C24';
-    var bigBlock = hasRating
-      ? '<div class="comp-big" style="color:' + ratingColor + '">' + ratingRaw.toFixed(1)
-        + '<span class="comp-big-scale"> / 5 ★</span></div>'
-      : '<div class="comp-no-rating">No public rating found</div>';
-    var metricLabel = hasRating
-      ? (reviewCount !== null
-          ? (reviewCount >= 1000 ? (reviewCount/1000).toFixed(1) + 'k' : String(reviewCount)) + ' reviews'
-          : 'Market rating')
-      : 'Profile only';
-    return '<div class="comp-card comp-peer">'
-      + '<div class="comp-card-tag" style="background:#e8e3d8;color:#666">PEER</div>'
+    var bigBlock, metricLabel;
+    if (ratingRaw !== null) {
+      var ratingColor = ratingRaw >= 4.5 ? '#00A651' : ratingRaw >= 4.0 ? '#F7941D' : '#ED1C24';
+      bigBlock = '<div class="comp-big" style="color:' + ratingColor + '">' + ratingRaw.toFixed(1)
+        + '<span class="comp-big-scale"> / 5 ★</span></div>';
+      metricLabel = reviewCount !== null
+        ? (reviewCount >= 1000 ? (reviewCount/1000).toFixed(1) + 'k' : String(reviewCount)) + ' public reviews'
+        : 'Public rating';
+    } else if (legacyScore !== null) {
+      bigBlock = '<div class="comp-big">' + legacyScore + '<span class="comp-big-scale">/100</span></div>';
+      metricLabel = 'Scored by an earlier method';
+    } else {
+      bigBlock = '<div class="comp-no-rating">No public rating found</div>';
+      metricLabel = 'Profile only';
+    }
+    return '<div class="comp-card">'
       + '<div class="comp-name">' + (c.name || 'Unknown') + '</div>'
       + bigBlock
       + '<div class="comp-metric-label">' + metricLabel + '</div>'
       + '<div class="comp-note">' + (c.note || '') + '</div>'
       + '</div>';
   }).join('');
-  var compCards = youCard + peerCards;
 
   var actPriority={urgent:'Urgent &mdash; high impact',['30days']:'30 days &mdash; medium impact',ongoing:'Ongoing &mdash; compounding'};
   var actBadge={urgent:'hi',['30days']:'med',ongoing:'lo'};
@@ -1325,6 +1322,9 @@ function renderReport(r, d) {
 
     +(compCards?'<div class="rpt-h">Competitive Context</div>'
       +'<div class="comp-grid">'+compCards+'</div>'
+      +'<div class="comp-grid-note">These cards describe who your competitors are and how they '
+      +'appear publicly. They are not ranked against your HealthCheck score, which measures '
+      +'something different.</div>'
       +'<div class="insight"><div class="idot a"></div><div class="itext">'+r.competitiveInsight+'</div></div>'
       // Only present when Places could not anchor the peer set. See the note
       // above competitorSourceNote in server.js.

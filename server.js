@@ -2953,45 +2953,79 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
     </div>`;
   }).join('');
 
-  // Competitors — uniform card layout for visual consistency.
-  // Every card has the same shape: big number on top, scale label, then metadata
-  // and note. Different scales are visually denoted via the scale-suffix ("/100"
-  // vs "/5 ★") and the small tag ("YOU" vs "PEER"). This way the eye can scan
-  // all 6 cards as one comparison set without scale-confusion sleight-of-hand.
+  // Competitors — DESCRIPTIVE CARDS, NOT A COMPARISON SET.
   //
-  // Aggressive shape interpreter — the AI sometimes returns the rating in different
-  // fields depending on which model ran and whether it inferred the new schema or
-  // hung on to the legacy one. Order of preference:
-  //   1. c.rating  (number 0-5)     → new schema, treat as stars
-  //   2. c.score   (number 0-5)     → legacy shape, looks like stars → stars
-  //   3. c.score   (number > 5)     → legacy shape, looks like a /100 score → stars (÷20)
-  //   4. nothing parseable          → show "Not provided" and let the note explain
-  // This keeps cards looking complete instead of saying "undefined" or "Rating n/a".
+  // THE GRID WAS DISSOLVED RATHER THAN RE-SCALED, AND THE REASON IS A
+  // MEASUREMENT. Until v8.11.5 this rendered the subject at NN/100 beside peers
+  // at N.N / 5 ★ in one six-card grid, with a comment arguing the scale suffix
+  // made that safe. It did not: putting two quantities in one grid IS the claim
+  // that they rank against each other, and a reader takes position from
+  // adjacency whatever the labels say.
+  //
+  // The obvious repair, giving peers their assessed DiagnostiX score so the grid
+  // is single-scale, IS WORSE, and this is the part to read before putting a
+  // comparison back here. Measured across the 132 stored RVP benchmark rows on
+  // 2026-09-04, the pipeline against ITSELF: Bocanáriz spans 65 to 88 over 19
+  // assessments, La Lonchera 38 to 58 over 17, and La Mesa, an actual peer on
+  // the Segreta report, scores 62, 62 and 72. A grid reading "Segreta 82,
+  // La Mesa 62" would publish a 20 point lead of which 10 is the instrument.
+  //
+  // Analytics already solved this and its solution is the one in this report.
+  // `lib/render.js` compares BY BAND, not by raw score, on bands 16 points wide
+  // because 16 is the worst measured run-to-run spread; it fixed raw > and < on
+  // 2026-09-03 after a peer scoring 71 against a subject's 72 was reported as
+  // below. Re-creating the raw comparison here would reintroduce a defect that
+  // service has already fixed, one layer up, wearing the costume of a feature.
+  //
+  // So: ONE comparison, in ONE place, on ONE scale, and it is the peer band
+  // table rendered directly below this block. These cards say WHO the
+  // competitors are and HOW THEY LOOK PUBLICLY. They carry no subject card and
+  // no ranking claim, which is why there is nothing here for a star rating to be
+  // mismatched against.
+  //
+  // Star ratings stay because they are real, sourced, and for a peer with no
+  // assessment they are the only public signal there is. What changed is that
+  // they are no longer sitting next to a composite pretending to be its rival.
+  //
+  // ── The legacy `score` field, and why it is NOT one thing ──
+  // Reports written before 2026-05-24 carry {name, score, note}. Measured across
+  // all 80 stored legacy entries: 70 are 61 to 98, genuine 0-100 composites, and
+  // 10 are 4.1, 4.6, 4.8, 4.9, which are STAR RATINGS the model put in the wrong
+  // field. Both readings are correct for their own rows, so the field is split by
+  // magnitude rather than coerced. The removed branch divided a composite by 20
+  // and printed it as stars, which is a number presented as a measurement of
+  // something it never measured.
 
   const competitorList = Array.isArray(report?.competitors) ? report.competitors : [];
 
-  // Helper: turn whatever the AI gave us into a {rating0to5, source} pair.
+  // A star rating, 0-5, or null. c.rating is the current schema. c.score at or
+  // below 5 is the legacy field carrying a star rating, which is what those ten
+  // rows are. NO /20 CONVERSION: see above.
   function interpretCompetitorRating(c) {
-    if (typeof c?.rating === 'number' && isFinite(c.rating)) {
-      // Clamp to 0–5 in case the AI returned something weird.
-      return { rating: Math.max(0, Math.min(5, c.rating)), source: 'rating' };
+    if (typeof c?.rating === 'number' && isFinite(c.rating) && c.rating >= 0 && c.rating <= 5) {
+      return c.rating;
     }
-    if (typeof c?.score === 'number' && isFinite(c.score)) {
-      if (c.score > 0 && c.score <= 5) return { rating: c.score, source: 'score-as-stars' };
-      if (c.score > 5 && c.score <= 100) return { rating: c.score / 20, source: 'score-as-100' };
+    if (typeof c?.score === 'number' && isFinite(c.score) && c.score > 0 && c.score <= 5) {
+      return c.score;
     }
-    // Sometimes the AI puts a string like "4.5★" or "4.5 stars" — last-ditch parse.
-    const m = typeof c?.rating === 'string' ? c.rating.match(/([0-5](?:\.\d)?)/)
-           : typeof c?.score  === 'string' ? c.score.match(/([0-5](?:\.\d)?)/)
-           : null;
-    if (m) return { rating: parseFloat(m[1]), source: 'string-parse' };
-    return { rating: null, source: 'none' };
+    // Strings like "4.5★" or "4.5 stars" from a model that ignored the type.
+    const s = typeof c?.rating === 'string' ? c.rating : typeof c?.score === 'string' ? c.score : null;
+    const m = s ? s.match(/([0-5](?:\.\d)?)/) : null;
+    return m ? parseFloat(m[1]) : null;
+  }
+
+  // A legacy 0-100 composite, or null. Only ever from the old `score` field, and
+  // only above 5, so it cannot swallow the ten star-rating rows above.
+  function interpretLegacyScore(c) {
+    if (typeof c?.score === 'number' && isFinite(c.score) && c.score > 5 && c.score <= 100) {
+      return Math.round(c.score);
+    }
+    return null;
   }
 
   function interpretReviewCount(c) {
     if (typeof c?.reviewCount === 'number' && isFinite(c.reviewCount)) return Math.round(c.reviewCount);
     if (typeof c?.reviews === 'number' && isFinite(c.reviews)) return Math.round(c.reviews);
-    // String fallback: "1,237 reviews" or just "1237"
     const s = c?.reviewCount || c?.reviews;
     if (typeof s === 'string') {
       const m = s.replace(/,/g, '').match(/(\d+)/);
@@ -3000,57 +3034,44 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
     return null;
   }
 
-  // YOU card — always built from authoritative data, not from the AI's competitor list
-  const youCard = `<div class="comp-card comp-me">
-    <div class="comp-card-tag" style="background:var(--blue);color:#fff">YOU</div>
-    <div class="comp-name">${esc(restaurant)}</div>
-    <div class="comp-big">${score}<span class="comp-big-scale">/100</span></div>
-    <div class="comp-metric-label">DiagnostiX HealthCheck Score</div>
-    <div class="comp-note">Full diagnostic across 6 pillars</div>
-  </div>`;
-
-  // PEER cards — filter out any competitor whose name matches the focal restaurant
+  // Filter out any competitor whose name matches the focal restaurant. The model
+  // is told not to include it and sometimes does anyway.
   const focalNameLower = String(restaurant || '').trim().toLowerCase();
   const peers = competitorList.filter(c => {
     const peerName = String(c?.name || '').trim().toLowerCase();
     return peerName && peerName !== focalNameLower;
   });
 
-  const peerCards = peers.slice(0, 5).map(c => {
-    const { rating: ratingRaw } = interpretCompetitorRating(c);
+  const competitors = peers.slice(0, 5).map(c => {
+    const ratingRaw = interpretCompetitorRating(c);
+    const legacyScore = ratingRaw === null ? interpretLegacyScore(c) : null;
     const reviewCount = interpretReviewCount(c);
-    const hasRating = ratingRaw !== null;
 
-    // Star colour band: 4.5+ green, 4.0+ amber, below 4.0 red, none grey.
-    const ratingColor = !hasRating ? '#999'
-                      : ratingRaw >= 4.5 ? '#00A651'
-                      : ratingRaw >= 4.0 ? '#F7941D'
-                      : '#ED1C24';
+    let bigBlock, metricLabel;
+    if (ratingRaw !== null) {
+      const ratingColor = ratingRaw >= 4.5 ? '#00A651' : ratingRaw >= 4.0 ? '#F7941D' : '#ED1C24';
+      bigBlock = `<div class="comp-big" style="color:${ratingColor}">${ratingRaw.toFixed(1)}<span class="comp-big-scale"> / 5 ★</span></div>`;
+      metricLabel = reviewCount !== null
+        ? (reviewCount >= 1000 ? (reviewCount / 1000).toFixed(1) + 'k' : String(reviewCount)) + ' public reviews'
+        : 'Public rating';
+    } else if (legacyScore !== null) {
+      // Shown as itself rather than converted or discarded. The label says which
+      // method produced it, because this number is not comparable with a score
+      // from the current pipeline.
+      bigBlock = `<div class="comp-big">${legacyScore}<span class="comp-big-scale">/100</span></div>`;
+      metricLabel = 'Scored by an earlier method';
+    } else {
+      bigBlock = '<div class="comp-no-rating">No public rating found</div>';
+      metricLabel = 'Profile only';
+    }
 
-    // Big-number block — when we have a rating, show it boldly with stars.
-    // When we don't, show a discreet "no public rating" pill instead of a
-    // misleading dash that looks like a render bug.
-    const bigBlock = hasRating
-      ? `<div class="comp-big" style="color:${ratingColor}">${ratingRaw.toFixed(1)}<span class="comp-big-scale"> / 5 ★</span></div>`
-      : `<div class="comp-no-rating">No public rating found</div>`;
-
-    // Metric label only shown when we have meaningful data
-    const metricLabel = hasRating
-      ? (reviewCount !== null
-          ? (reviewCount >= 1000 ? (reviewCount/1000).toFixed(1) + 'k' : String(reviewCount)) + ' reviews'
-          : 'Market rating')
-      : 'Profile only';
-
-    return `<div class="comp-card comp-peer">
-      <div class="comp-card-tag" style="background:#e8e3d8;color:#666">PEER</div>
+    return `<div class="comp-card">
       <div class="comp-name">${esc(c.name || 'Unknown')}</div>
       ${bigBlock}
       <div class="comp-metric-label">${esc(metricLabel)}</div>
       <div class="comp-note">${esc(c.note || '')}</div>
     </div>`;
   }).join('');
-
-  const competitors = youCard + peerCards;
 
   // Online presence channels
   const onlineChannels = (report?.onlinePresence?.channels || []).map(c => {
@@ -3455,18 +3476,12 @@ ul.bullet-list li{margin:4px 0}
   border-radius:0 0 6px 6px;
   -webkit-print-color-adjust:exact;print-color-adjust:exact;
 }
-.comp-me{border-top-color:var(--blue)}
 .comp-name{font-weight:900;font-size:14px;color:var(--navy);letter-spacing:.3px}
 .comp-note{font-size:12px;color:#555;line-height:1.55}
 .comp-no-rating{display:inline-block;font-size:10px;color:#999;background:#ede9e2;padding:5px 9px;border-radius:3px;margin-bottom:6px;letter-spacing:0.04em;font-weight:600;text-transform:uppercase}
-.comp-card{position:relative;padding-top:22px}
-.comp-card-tag{
-  position:absolute;top:10px;right:10px;
-  font-size:9px;font-weight:900;letter-spacing:1.5px;
-  padding:2px 7px;border-radius:3px;
-  -webkit-print-color-adjust:exact;print-color-adjust:exact;
-}
-/* Unified big-number style — same visual prominence for YOU /100 and PEER /5 ★ */
+.comp-grid-note{font-size:11.5px;color:#777;line-height:1.6;margin:10px 0 0;font-style:italic}
+/* The one number on a competitor card. There is no subject card beside it, so
+   this is a description of that business and not one half of a comparison. */
 .comp-big{
   font-family:'League Spartan',Arial,sans-serif;
   font-size:30px;font-weight:900;color:var(--navy);
@@ -3662,6 +3677,9 @@ ul.bullet-list li{margin:4px 0}
       <h2 class="rpt-h">Competitive Landscape</h2>
       ${report?.competitiveInsight ? '<p class="body-p" style="margin-bottom:14px">' + esc(report.competitiveInsight) + '</p>' : ''}
       <div class="comp-grid">${competitors}</div>
+      <p class="comp-grid-note">These cards describe who your competitors are and how they
+      appear publicly. They are not ranked against your HealthCheck score, which measures
+      something different${report?.peerComparisonHtml ? ': your position against assessed peers is in "Where you sit" below' : ''}.</p>
     ` : ''}
 
     ${report?.peerComparisonHtml ? '<div class="peer-cmp">' + report.peerComparisonHtml + '</div>' : ''}
