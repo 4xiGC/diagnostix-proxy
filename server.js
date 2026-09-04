@@ -1465,25 +1465,32 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.get('/test', async (req, res) => {
-  const ak = process.env.ANTHROPIC_API_KEY;
-  const sk = process.env.SERPER_API_KEY;
-  const result = { ak_present: !!ak, ak_prefix: ak ? ak.slice(0,15)+'...' : 'MISSING', sk_present: !!sk };
-  if (ak) {
-    try {
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': ak, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 10, messages: [{ role: 'user', content: 'Hi' }] })
-      });
-      const d = await r.json();
-      result.ak_status = r.status;
-      result.ak_ok = !d.error;
-      if (d.error) result.ak_error = d.error.message;
-    } catch(e) { result.ak_error = e.message; }
-  }
-  res.json(result);
-});
+// ── /test REMOVED, v8.11.9 ─────────────────────────────────────────────────
+//
+// It returned `ak_prefix: ANTHROPIC_API_KEY.slice(0,15)` to ANY caller. The
+// only middleware in front of it is the CORS block at :35, which sets
+// Access-Control-Allow-Origin: * rather than restricting anything, so this was
+// unauthenticated key material on the public internet. It also issued a real
+// Anthropic request per hit, making it an open spend endpoint.
+//
+// DELETED RATHER THAN GATED. A route that returns key material has no correct
+// access level: an operator does not need the prefix, and anyone who does need
+// to know which key is loaded can read the Railway variable. Gating it would
+// also leave the per-hit Anthropic call behind an authentication check that
+// does not make spend free.
+//
+// This had to go BEFORE ANTHROPIC_API_KEY is rotated. Rotating first would
+// have published the new key's prefix the moment the service restarted, which
+// is the rotation achieving nothing.
+//
+// What it was actually useful for, and where that lives now: /health already
+// reports version and the benchmarks tri-state. It does NOT report whether the
+// Anthropic or Serper keys WORK, and this route did, by calling them. That is a
+// real gap and the swallowed-failure note names it: a config handle saying
+// "configured" does not say "works". The replacement is a liveness check that
+// reports ok/failed WITHOUT echoing any part of a credential, and it is
+// deliberately not written here, because bundling it with a removal would mean
+// this commit could not be reverted on its own.
 
 // ── /diagnose ────────────────────────────────────────────────
 app.post('/diagnose', async (req, res) => {
