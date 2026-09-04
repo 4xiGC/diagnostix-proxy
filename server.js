@@ -389,11 +389,17 @@ async function reverseGeocodeFocal(lat, lng, apiKey) {
 }
 
 async function fetchPlacesNearby(opts) {
-  const { name, location } = opts;
+  // `placeId` is the CALLER'S key, and it wins over anything resolved here.
+  // Analytics holds one that its peer gate already confirmed; re-resolving the
+  // same subject from its name would produce a second id that is usually the
+  // same and occasionally not, with nothing recording which. That is the exact
+  // ambiguity a stable key exists to remove, so the gated id is preferred
+  // whenever the caller has one.
+  const { name, location, placeId: suppliedPlaceId } = opts;
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
     console.log('[places] GOOGLE_PLACES_API_KEY not set — auto-discovery falling back to Serper only');
-    return { places: [], focalRating: null, focalReviewCount: null, focalLatLng: null, focalGeo: null };
+    return { places: [], focalRating: null, focalReviewCount: null, focalLatLng: null, focalGeo: null, focalPlaceId: suppliedPlaceId || null };
   }
 
   const t0 = Date.now();
@@ -403,6 +409,9 @@ async function fetchPlacesNearby(opts) {
   // on the actual restaurant when possible (gives us the focal's own rating
   // as a bonus side-effect).
   let lat = null, lng = null, focalRating = null, focalReviewCount = null;
+  // Seeded from the caller when it has a gated id, so the branch below never
+  // overwrites it.
+  let focalPlaceId = suppliedPlaceId || null;
   try {
     const geocodeQuery = `${name}, ${location}`;
     // Use Places Find Place From Text — better than Geocoding API for restaurants
@@ -415,6 +424,10 @@ async function fetchPlacesNearby(opts) {
       const top = fd.candidates[0];
       lat = top.geometry?.location?.lat ?? null;
       lng = top.geometry?.location?.lng ?? null;
+      // `place_id` has been in this request's field list since the call was
+      // written, and the comment above says why, but the response's copy was
+      // never read. This is the whole of RVP's half of subject identity.
+      if (!focalPlaceId && typeof top.place_id === 'string') focalPlaceId = top.place_id;
       if (typeof top.rating === 'number') focalRating = top.rating;
       if (typeof top.user_ratings_total === 'number') focalReviewCount = top.user_ratings_total;
       console.log(`[places] geocoded focal: name="${top.name||name}", lat=${lat?.toFixed(4)}, lng=${lng?.toFixed(4)}, rating=${focalRating ?? 'n/a'}, reviews=${focalReviewCount ?? 'n/a'}`);
@@ -438,7 +451,7 @@ async function fetchPlacesNearby(opts) {
 
   if (lat === null || lng === null) {
     console.log(`[places] no usable lat/lng — returning empty places`);
-    return { places: [], focalRating, focalReviewCount, focalLatLng: null, focalGeo: null };
+    return { places: [], focalRating, focalReviewCount, focalLatLng: null, focalGeo: null, focalPlaceId };
   }
 
   // Runs only when a coordinate resolved. Every exit above returns focalGeo:
@@ -500,7 +513,8 @@ async function fetchPlacesNearby(opts) {
     focalRating,
     focalReviewCount,
     focalLatLng: { lat, lng },
-    focalGeo
+    focalGeo,
+    focalPlaceId
   };
 }
 
@@ -895,7 +909,7 @@ async function detectFocalContext({ name, location }) {
 // Total elapsed is roughly the slowest single layer, not the sum, so cost is
 // minimal vs the old single search.
 async function searchCompetitorsMultiple(opts) {
-  const { name, location, region, userCompetitors, focalContext } = opts;
+  const { name, location, region, userCompetitors, focalContext, placeId } = opts;
 
   // Parse "City/Neighborhood, State, Country" or "City, Country" location formats.
   // Real inputs include:
@@ -1072,7 +1086,7 @@ async function searchCompetitorsMultiple(opts) {
   // other layers resolve to plain text strings.
   // placesPromise resolves to { places, focalRating, focalReviewCount, focalLatLng } —
   // Google Places is the AUTHORITATIVE source for auto-discovered competitors.
-  const placesPromise = fetchPlacesNearby({ name, location });
+  const placesPromise = fetchPlacesNearby({ name, location, placeId });
   const t0 = Date.now();
   const [userResults, placesData, ...otherResults] = await Promise.all([
     Promise.all(userSearches),
@@ -1499,6 +1513,12 @@ app.post('/diagnose', async (req, res) => {
     // Parse user-supplied competitor names from the survey form. Field is a
     // free-text comma-separated list (e.g. "Boragó, Ambrosía, La Mar"). Splits
     // on commas and semicolons; trims; drops empties.
+    // A caller that has ALREADY resolved this subject sends its id. Analytics
+    // does, from its peer gate. A browser does not, and RVP resolves its own.
+    const suppliedPlaceId = typeof body.placeId === 'string' && body.placeId.trim()
+      ? body.placeId.trim() : null;
+    if (suppliedPlaceId) console.log(`[diagnose] caller supplied placeId=${suppliedPlaceId}`);
+
     const userCompetitorsRaw = String(body.competitors || '');
     const userCompetitors = userCompetitorsRaw
       .split(/[,;]/)
@@ -1517,7 +1537,7 @@ app.post('/diagnose', async (req, res) => {
     const focalCtxPromise = detectFocalContext({ name, location });
     const compSearchPromise = (async () => {
       const focalContext = await focalCtxPromise;
-      return searchCompetitorsMultiple({ name, location, region, userCompetitors, focalContext });
+      return searchCompetitorsMultiple({ name, location, region, userCompetitors, focalContext, placeId: suppliedPlaceId });
     })();
     const [g,rv,st,so,dl,compResult,focalContext] = await Promise.all([
       searchWithFallback(queries.GOOGLE,      { label: 'GOOGLE' }),
@@ -2291,6 +2311,7 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     const benchmarkRow = buildBenchmarkRow({
       report, name, location, country, region, focalContext,
       focalGeo: compPlacesData.focalGeo || null,
+      focalPlaceId: compPlacesData.focalPlaceId || null,
     });
     const benchmarkSkip = benchmarkSkipReason(benchmarkRow);
     report.benchmarkId = benchmarkSkip ? null : benchmarkRow.id;
@@ -4292,7 +4313,7 @@ function toBenchmarkScore(value) {
   return Math.min(100, Math.max(0, Math.round(n)));
 }
 
-function buildBenchmarkRow({ report, name, location, country, region, focalContext, focalGeo }) {
+function buildBenchmarkRow({ report, name, location, country, region, focalContext, focalGeo, focalPlaceId }) {
   // report.pillars is { cs, pa, es, sm, cp, bg }, each { score, label, status }.
   const pillarScores = {};
   for (const [key, p] of Object.entries((report && report.pillars) || {})) {
@@ -4310,7 +4331,26 @@ function buildBenchmarkRow({ report, name, location, country, region, focalConte
 
     product:          'rvp',
     subject_name:     String(name || '').slice(0, 200),
-    subject_id:       null,
+
+    // ── The stable identity, added in v8.11.8, migration 009 ──
+    //
+    // A Google place_id, captured at assessment and NEVER re-resolved from a
+    // name. subject_name is not an identity: one Santiago restaurant is stored
+    // here across 22 rows as "Bocanáriz" and "Bocanariz", which is two names
+    // for one business and no way to tell from the data.
+    //
+    // Null when Places resolved nothing, which is honest rather than a gap to
+    // fill later: re-deriving it from the name afterwards would recreate the
+    // ambiguity the column exists to remove. Measured on the 126 rows written
+    // since geocoding replaced parsing, Places resolved a coordinate every
+    // time, so null should be rare.
+    //
+    // NOT subject_id, and the difference is deliberate:
+    // bulk_run_assessments.subject_id is a uuid FK to bulk_run_subjects(id).
+    // See the column comment in migration 009. subject_id is no longer sent by
+    // this service; EVP and SVP still send it as null until they are updated,
+    // which is why 009 adds rather than renames.
+    subject_key:      focalPlaceId || null,
 
     cohort_sector:    null,
     cohort_subsector: null,
