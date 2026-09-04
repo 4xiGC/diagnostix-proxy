@@ -162,14 +162,18 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .tag-row{display:flex;flex-wrap:wrap;gap:5px}
 .tag{font-size:11px;padding:3px 9px;border-radius:4px}
 .tag.pos{background:var(--gl);color:var(--g8)}.tag.neg{background:var(--rl);color:var(--r8)}.tag.neu{background:var(--al);color:var(--a8)}
-/* Competitor cards */
-.comp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:8px}
-.comp-card{background:#f7f5f0;border-radius:7px;padding:12px;border-top:3px solid #ddd}
-.comp-card.me{border-top-color:var(--gold)}.comp-card.peer{border-top-color:var(--amber)}
-.comp-name{font-size:13px;font-weight:700;color:var(--navy);margin-bottom:5px}
-.comp-score{font-family:'League Spartan',sans-serif;font-size:1.25rem;margin-bottom:4px}
-.comp-score.g{color:var(--green)}.comp-score.w{color:var(--amber)}
-.comp-detail{font-size:11px;color:#777;line-height:1.5}
+/* Competitor cards — v8.7 uniform big-number layout */
+.comp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:8px;align-items:stretch}
+.comp-card{position:relative;background:#f7f5f0;border-radius:8px;padding:32px 14px 14px;border-top:3px solid #ddd;display:flex;flex-direction:column}
+.comp-card.comp-you{border-top-color:#1B1464;background:#f4f3fb}
+.comp-card.comp-peer{border-top-color:#92278F}
+.comp-card-tag{position:absolute;top:10px;left:12px;font-size:9px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;padding:3px 8px;border-radius:3px;line-height:1}
+.comp-name{font-size:13px;font-weight:700;color:#1B1464;margin-bottom:10px;line-height:1.3}
+.comp-big{font-family:'League Spartan',sans-serif;font-size:1.9rem;font-weight:900;line-height:1;margin-bottom:4px}
+.comp-big-scale{font-size:11px;color:#999;font-weight:500;letter-spacing:0.02em;margin-left:2px}
+.comp-metric-label{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;margin-bottom:10px}
+.comp-note{font-size:11px;color:#777;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.comp-no-rating{display:inline-block;font-size:10px;color:#999;background:#ede9e2;padding:5px 9px;border-radius:3px;margin-bottom:6px;letter-spacing:0.04em;font-weight:600;text-transform:uppercase}
 /* Actions */
 .act{display:flex;gap:11px;align-items:flex-start;padding:12px 13px;background:#f7f5f0;border-radius:6px;margin-bottom:7px;border-left:3px solid var(--gold)}
 .act-n{font-family:'League Spartan',sans-serif;font-size:1.2rem;color:var(--gold);flex-shrink:0;line-height:1.1;min-width:16px}
@@ -1122,20 +1126,71 @@ function renderReport(r, d) {
   var negT=((r.themes&&r.themes.negative)||[]).map(function(t){return'<span class="tag neg">'+t+'</span>';}).join('');
   var neuT=((r.themes&&r.themes.neutral)||[]).map(function(t){return'<span class="tag neu">'+t+'</span>';}).join('');
 
-  var compCards=(r.competitors||[]).map(function(c,i){
-    var cls=i===0?'me':'peer';
-    var scl=c.score>=65?'g':'w';
-    return '<div class="comp-card '+cls+'">'
-      +'<div class="comp-name">'+c.name+'</div>'
-      +'<div class="comp-score '+scl+'">'+c.score+' <span style="font-size:11px;color:#999">/100</span></div>'
-      +'<div class="comp-detail">'+c.note+'</div></div>';
+// Competitor cards — v8.7 uniform layout with forgiving rating interpreter
+  function interpretCompetitorRating(c) {
+    if (typeof c.rating === 'number' && c.rating >= 0 && c.rating <= 5) return c.rating;
+    if (typeof c.rating === 'string') {
+      var m = c.rating.match(/(\d+(?:\.\d+)?)/);
+      if (m) {
+        var n = parseFloat(m[1]);
+        if (n >= 0 && n <= 5)  return n;
+        if (n > 5 && n <= 100) return n / 20;
+      }
+    }
+    if (typeof c.score === 'number' && c.score >= 0 && c.score <= 5) return c.score;
+    if (typeof c.score === 'number' && c.score > 5 && c.score <= 100) return c.score / 20;
+    return null;
+  }
+  function interpretReviewCount(c) {
+    if (typeof c.reviewCount === 'number' && c.reviewCount >= 0) return c.reviewCount;
+    if (typeof c.reviewCount === 'string') {
+      var m = c.reviewCount.match(/(\d[\d,]*)/);
+      if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+    }
+    return null;
+  }
+  var focalNameLower = (d.name || '').trim().toLowerCase();
+  var peers = (r.competitors || []).filter(function(c) {
+    var peerName = (c.name || '').trim().toLowerCase();
+    return peerName && peerName !== focalNameLower;
+  });
+  var youColor = r.healthCheckScore >= 65 ? '#00A651'
+               : r.healthCheckScore >= 45 ? '#F7941D'
+               : '#ED1C24';
+  var youCard = '<div class="comp-card comp-you">'
+    + '<div class="comp-card-tag" style="background:#1B1464;color:#fff">YOU</div>'
+    + '<div class="comp-name">' + (d.name || 'Your restaurant') + '</div>'
+    + '<div class="comp-big" style="color:' + youColor + '">' + (r.healthCheckScore || 0)
+    + '<span class="comp-big-scale">/100</span></div>'
+    + '<div class="comp-metric-label">DiagnostiX HealthCheck Score</div>'
+    + '<div class="comp-note">Your overall performance</div>'
+    + '</div>';
+  var peerCards = peers.slice(0, 5).map(function(c) {
+    var ratingRaw = interpretCompetitorRating(c);
+    var reviewCount = interpretReviewCount(c);
+    var hasRating = ratingRaw !== null;
+    var ratingColor = !hasRating ? '#999'
+                    : ratingRaw >= 4.5 ? '#00A651'
+                    : ratingRaw >= 4.0 ? '#F7941D'
+                    : '#ED1C24';
+    var bigBlock = hasRating
+      ? '<div class="comp-big" style="color:' + ratingColor + '">' + ratingRaw.toFixed(1)
+        + '<span class="comp-big-scale"> / 5 ★</span></div>'
+      : '<div class="comp-no-rating">No public rating found</div>';
+    var metricLabel = hasRating
+      ? (reviewCount !== null
+          ? (reviewCount >= 1000 ? (reviewCount/1000).toFixed(1) + 'k' : String(reviewCount)) + ' reviews'
+          : 'Market rating')
+      : 'Profile only';
+    return '<div class="comp-card comp-peer">'
+      + '<div class="comp-card-tag" style="background:#e8e3d8;color:#666">PEER</div>'
+      + '<div class="comp-name">' + (c.name || 'Unknown') + '</div>'
+      + bigBlock
+      + '<div class="comp-metric-label">' + metricLabel + '</div>'
+      + '<div class="comp-note">' + (c.note || '') + '</div>'
+      + '</div>';
   }).join('');
-  // Add subject restaurant card first
-  compCards = '<div class="comp-card me">'
-    +'<div class="comp-name" style="color:var(--gold)">'+d.name+'</div>'
-    +'<div class="comp-score g">'+(r.healthCheckScore||0)+' <span style="font-size:11px;color:#999">/100</span></div>'
-    +'<div class="comp-detail">Your HealthCheck Score</div></div>'
-    + compCards;
+  var compCards = youCard + peerCards;
 
   var actPriority={urgent:'Urgent &mdash; high impact',['30days']:'30 days &mdash; medium impact',ongoing:'Ongoing &mdash; compounding'};
   var actBadge={urgent:'hi',['30days']:'med',ongoing:'lo'};

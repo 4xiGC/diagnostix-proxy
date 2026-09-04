@@ -1,6 +1,6 @@
 {
   "name": "diagnostix-proxy",
-  "version": "8.11.3",
+  "version": "8.11.4",
   "description": "DiagnostiX API proxy for 4xi360.com",
   "type": "module",
   "main": "server.js",
