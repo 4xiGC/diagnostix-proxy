@@ -58,9 +58,63 @@ POST /translate               report translation
 GET  /report, /get-report     stored report retrieval
 POST /save-report
 POST /trigger-annual-report   the annual re-run, see the warning above
-POST /payment-webhook
+POST /payment-webhook         accepts a secret, rejects nothing, see below
+POST /payment-webhook/:secret same handler, path-secret form
 GET  /evp, POST /evp/diagnose the embedded EVP surface
 ```
+
+## v8.11.10: the payment webhook can be watched, and stops logging what it should not
+
+**This route has never authenticated anything.** No secret, no signature, no
+allow-list, no rate limit, and it answers `200 {ok:true}` before it reads the
+body. Every paying customer this product has exists because an unauthenticated
+POST said so: `createCustomer` is called from exactly one place, inside this
+handler, and `/report` is gated only by the token that call issues.
+
+Requiring a secret today would break every genuine Wix call the moment it
+deployed, because the automation posts to the bare URL. So this release adds
+SIGHT and changes no behaviour:
+
+- **A secret is read and logged, never enforced.** `RVP_WEBHOOK_SECRET` is
+  compared timing-safely against a `/payment-webhook/:secret` path segment, and
+  the result is logged as `WEBHOOK_SECRET [webhook] status=valid|invalid|absent|not-configured`.
+  With the variable unset, or with no secret presented, the call is processed
+  exactly as before. The value is never logged.
+- **The body dump is gone.** `JSON.stringify(req.body)` wrote the buyer's
+  address, name and restaurant into the platform log on every call, forged or
+  genuine. `WEBHOOK_SHAPE` replaces it with key names and value types.
+- **The store key dump is gone**, and it was the worse of the two: `reportStore`
+  is keyed BY email address, so that line printed the address of everyone
+  holding a pending report, on every call.
+- **Five log lines carry the domain instead of the address**, and one of them
+  also carried the REPORT TOKEN, which is an unlock credential: anyone reading
+  the log could open that paid report.
+- **The response is unchanged.**
+
+**Logging cannot interrupt a purchase.** Every one of these lines runs after
+the handler has already answered 200 and is doing the work: HubSpot, Supabase,
+the peer comparison, the customer's email. A throw there is not a 500 the
+caller sees, it is a genuine buyer silently receiving no report because a log
+line failed. So all eight new log calls go through `safeLog`, all masking
+through `maskAddr`, and the shape through `safeShape`, each total by
+construction.
+
+That was not theoretical. `emailDomainOnly(Object.create(null))` threw, because
+`String()` throws on a value with no prototype. Found by diffing this file
+against the EVP copy; fixed there first (EVP v1.8.69, with a red test), then
+copied here.
+
+**There is no test harness in this repo.** `lib-webhook-log.js` is copied
+verbatim from `diagnostix-evp/lib-webhook-log.js`, which has 12 tests, and the
+only permitted differences are the header comment and `export` in place of
+`module.exports`. It was checked here by running the EVP test file's own case
+lists against this copy from a throwaway script: 9 of 9 applicable cases pass,
+including null, a number, an array of arrays, an object with no prototype and
+a 1 MB string. That is a one-off check, not something that runs on every
+change. Stated, not glossed.
+
+**Next step, not taken here:** once the log shows every genuine Wix call
+carrying a valid secret, require it. Not before.
 
 ## Running locally
 

@@ -1,6 +1,27 @@
 import express from 'express';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
+import { describeShape, emailDomainOnly } from './lib-webhook-log.js';
+
+// v8.11.10: LOGGING CANNOT INTERRUPT A PURCHASE.
+//
+// Every line added in v8.11.10 runs inside handlePaymentWebhook, which has
+// already answered 200 and is now doing the work: HubSpot, Supabase, the peer
+// comparison and the customer's email. A throw there is not a 500 the caller
+// sees, it is a genuine buyer silently receiving no report, because a LOG LINE
+// failed. This repo has no tests to catch that.
+//
+// So every new log call goes through safeLog, and every masked address through
+// maskAddr. Both are total by construction.
+function safeLog(build) {
+  try { console.log(build()); } catch (_) { /* logging must never interrupt */ }
+}
+function maskAddr(v) {
+  try { return emailDomainOnly(v); } catch (_) { return '(unmaskable)'; }
+}
+function safeShape(v) {
+  try { return describeShape(v); } catch (_) { return '<undescribable>'; }
+}
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -4039,7 +4060,10 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
           profitability_change: profitabilityChange
         })
       });
-      console.log('[customer] saved', planType, email, '| token:', reportToken);
+      // v8.11.10: the address and the REPORT TOKEN both used to be here. The
+      // token is an unlock credential: anyone reading the log could open the
+      // paid report. Neither is logged now.
+      safeLog(() => '[customer] saved ' + planType + ' ' + maskAddr(email));
     } catch(e) {
       console.log('[customer] Supabase save failed:', e.message);
     }
@@ -4049,11 +4073,49 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
 }
 
 // ── /payment-webhook ─────────────────────────────────────────
-app.post('/payment-webhook', async (req, res) => {
+//
+// v8.11.10, THREE CHANGES, NONE OF THEM ENFORCEMENT.
+//
+// 1. A SECRET IS ACCEPTED, NOT REQUIRED. This route has never authenticated
+//    anything: no secret, no signature, no allow-list, no rate limit, and it
+//    answers 200 before it reads the body. Every paying customer this product
+//    has exists because an unauthenticated POST said so. Requiring a secret
+//    today would break every genuine Wix call the moment it deployed, because
+//    the automation posts to the bare URL. So the secret is READ and LOGGED
+//    and nothing is rejected. When RVP_WEBHOOK_SECRET is unset, or when a call
+//    carries no secret, the call is processed exactly as it was before this
+//    change. Requiring it is a later step, taken only once the log shows every
+//    genuine call carrying one.
+//
+// 2. THE BODY IS NO LONGER LOGGED. `JSON.stringify(req.body)` wrote the
+//    buyer's address, name and restaurant into the platform log on every call.
+//    The store key dump was worse: reportStore is keyed BY email address, so
+//    that line printed the address of everyone with a pending report. Both are
+//    replaced by the shape of the body, key names and value types only.
+//
+// 3. THE RESPONSE IS UNCHANGED. Still 200 { ok: true }, still sent first.
+async function handlePaymentWebhook(req, res) {
   res.status(200).json({ ok: true });
 
-  console.log('[webhook] Received body:', JSON.stringify(req.body));
-  console.log('[webhook] Current report store keys:', Array.from(reportStore.keys()));
+  // Secret status, observed and never enforced. The value is never logged.
+  const presented = String((req.params && req.params.secret) || '');
+  const expected = String(process.env.RVP_WEBHOOK_SECRET || '');
+  let secretStatus;
+  if (!expected) {
+    secretStatus = 'not-configured';
+  } else if (!presented) {
+    secretStatus = 'absent';
+  } else {
+    let ok = false;
+    try {
+      const a = Buffer.from(presented);
+      const b = Buffer.from(expected);
+      ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+    } catch (_) { ok = false; }
+    secretStatus = ok ? 'valid' : 'invalid';
+  }
+  safeLog(() => `WEBHOOK_SECRET [webhook] status=${secretStatus} presentedLen=${presented.length}`);
+  safeLog(() => `WEBHOOK_SHAPE [webhook] body=${safeShape(req.body)}`);
 
   const body = req.body;
   if (!body) {
@@ -4067,11 +4129,11 @@ app.post('/payment-webhook', async (req, res) => {
   const firstName = payload.firstName || payload.first_name || body.firstName || '';
 
   if (!email) {
-    console.log('[webhook] No email found in body:', JSON.stringify(body));
+    safeLog(() => '[webhook] No email found in body, shape=' + safeShape(body));
     return;
   }
 
-  console.log('[webhook] Looking up email:', email);
+  safeLog(() => '[webhook] Looking up domain: ' + maskAddr(email));
 
   // EXACT EMAIL MATCH ONLY. Two looser rules were removed in v8.9.37 and the
   // reason is worth keeping, because both looked reasonable.
@@ -4106,7 +4168,7 @@ app.post('/payment-webhook', async (req, res) => {
     // plausible: misses at high uptime would mean genuine email mismatch and
     // would argue for a narrow rule matched on local part AND domain family.
     // The next few weeks of this log line settle it.
-    console.log('[webhook] CACHE_MISS email=' + email
+    safeLog(() => '[webhook] CACHE_MISS domain=' + maskAddr(email)
       + ' product=' + product
       + ' storeSize=' + reportStore.size
       + ' uptimeSec=' + Math.round(process.uptime()));
@@ -4132,7 +4194,7 @@ app.post('/payment-webhook', async (req, res) => {
   // match only, the two are the same address by definition.
   const destEmail = email;
 
-  console.log('[webhook] Payment confirmed for:', destEmail, product, '| Restaurant:', restaurant);
+  safeLog(() => '[webhook] Payment confirmed for: ' + maskAddr(destEmail) + ' ' + product + ' | Restaurant: ' + restaurant);
 
   // Legacy HubSpot purchase marker (kept for backward compatibility).
   await markPurchasedAndEmail(destEmail, resolvedFirstName, restaurant, report, product);
@@ -4215,8 +4277,13 @@ app.post('/payment-webhook', async (req, res) => {
     pushReportContextToHubSpot({ subscriber: supaShaped, report, reportNumber: 1, reportUrl, baseline: report })
   ]);
 
-  console.log('[webhook] Full flow complete for', destEmail, '| plan:', planType);
-});
+  safeLog(() => '[webhook] Full flow complete for ' + maskAddr(destEmail) + ' | plan: ' + planType);
+}
+
+// Registered on both routes so Wix can move to the path-secret form without a
+// code change. Neither rejects anything today.
+app.post('/payment-webhook', handlePaymentWebhook);
+app.post('/payment-webhook/:secret', handlePaymentWebhook);
 
 // ── Update the stored payload after the comparison lands ───────────────────
 // Swallows its own failure on purpose. The customer's report has already been
