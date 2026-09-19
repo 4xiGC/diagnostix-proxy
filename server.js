@@ -4593,8 +4593,11 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   // wearing a different hat.
   const candidates = await fetchPendingCandidates({ payingEmail: typed, now });
   const m = matchPendingReport({ payingEmail: typed, candidates, now, windowMs: 0 });
-  console.log('RECOVERY [recover] attempt decision=' + m.decision + ' reason=' + m.reason
-    + ' candidates=' + candidates.length
+  // rule=exact-only is stated because the matcher's own reason string reads
+  // "no-candidate-in-window" here, which would tell an operator the window
+  // rule had been applied. It has not: windowMs is 0 on this path.
+  console.log('RECOVERY [recover] attempt rule=exact-only decision=' + m.decision
+    + ' matcherReason=' + m.reason + ' candidates=' + candidates.length
     + ' payingDomain=' + emailDomainOnly(payingEmail) + ' typedDomain=' + emailDomainOnly(typed));
 
   if (m.decision !== 'exact' || !m.match) {
