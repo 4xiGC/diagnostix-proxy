@@ -4311,14 +4311,20 @@ async function supersedePlaceholderRow({ placeholderId, subscriber, report }) {
 }
 
 // Remove the row createCustomer inserted during recovery, once its contents
-// have been folded into the placeholder. Only ever called with a token this
-// process just minted, and only after the supersede succeeded.
-async function deleteDuplicateSubscriberRow({ reportToken }) {
+// have been folded into the placeholder.
+//
+// EXCLUDING THE PLACEHOLDER BY ID IS LOAD-BEARING. supersedePlaceholderRow has
+// just written this same token onto the placeholder, so a delete matching only
+// on the token matches BOTH rows and removes the one we just built. The A7d
+// run found exactly that: the flow ended with zero subscriber rows for a paid,
+// delivered order. id=neq is what makes this delete hit one row.
+async function deleteDuplicateSubscriberRow({ reportToken, keepId }) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
   if (!url || !dbKey || !reportToken) return false;
   try {
-    const r = await fetch(url + '/rest/v1/subscribers?report_token=eq.' + encodeURIComponent(reportToken), {
+    const r = await fetch(url + '/rest/v1/subscribers?report_token=eq.' + encodeURIComponent(reportToken)
+      + (keepId ? '&id=neq.' + encodeURIComponent(keepId) : ''), {
       method: 'DELETE',
       headers: { apikey: dbKey, Authorization: 'Bearer ' + dbKey, Prefer: 'return=minimal' },
     });
@@ -4794,7 +4800,9 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
     const ok = await supersedePlaceholderRow({
       placeholderId: placeholder.id, subscriber: delivered.subscriber, report,
     });
-    if (ok) await deleteDuplicateSubscriberRow({ reportToken: delivered.subscriber.reportToken });
+    if (ok) await deleteDuplicateSubscriberRow({
+      reportToken: delivered.subscriber.reportToken, keepId: placeholder.id,
+    });
   } else {
     console.log('PLACEHOLDER [sale] none found for this order; the delivered row stands alone');
   }
