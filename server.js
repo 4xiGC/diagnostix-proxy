@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { describeShape, emailDomainOnly } from './lib-webhook-log.js';
 import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
+         applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS } from './lib-pending.js';
 
@@ -2806,7 +2807,7 @@ async function notifyPeerComparisonUnavailable({ email, restaurantName, reason, 
 //
 // This replaces SILENCE, not something better. Before v8.9.37 a cache miss
 // marked the HubSpot contact purchased and sent nobody anything.
-async function notifyCacheMiss({ email, firstName, product, restaurantName }) {
+async function notifyCacheMiss({ email, firstName, product, restaurantName, offerRecovery }) {
   const INTERNAL_TO = 'hello@4xiconsulting.com';
   // Local, matching the pattern at :2624 and :4624. There is no module-scope
   // escapeHtml in this service: the name appears only in comments about SVP,
@@ -2821,7 +2822,16 @@ async function notifyCacheMiss({ email, firstName, product, restaurantName }) {
   // one. The link lets them say it. If RVP_RECOVERY_SECRET is unset the link
   // is omitted and the email reads exactly as it did before, which is what
   // makes this deployable before the variable is set.
-  const recoverUrl = buildRecoveryUrl(email);
+  // offerRecovery is decided by the caller from the webhook's secret status.
+  // Undefined means an older caller; treat that as NOT allowed, because the
+  // safe default for a bearer credential is not to issue one.
+  const recoverUrl = offerRecovery === true ? buildRecoveryUrl(email) : null;
+  if (offerRecovery === true && recoverUrl) {
+    console.log('RECOVERY_LINK [recover] included in cache-miss email domain=' + emailDomainOnly(email));
+  } else {
+    console.log('RECOVERY_LINK [recover] omitted, offerRecovery=' + String(offerRecovery)
+      + ' secretConfigured=' + (recoverySecret() ? 'yes' : 'no'));
+  }
   const recoverBlock = recoverUrl
     ? `<p style="background:#eaf6f1;border-left:4px solid #0b6b57;padding:12px 14px;border-radius:4px;">
 <strong>You can fix this yourself in one step.</strong><br>
@@ -4217,6 +4227,110 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
   return subscriber;
 }
 
+// ── A4: one sale, one subscriber row ────────────────────────────────────────
+//
+// THE PROBLEM. An unmatched order writes a placeholder row carrying the
+// amount. If recovery then inserted a second row, the same order would appear
+// twice and `select sum(amount_paid) from subscribers` would double count it.
+//
+// THE MECHANISM: SUPERSEDE IN PLACE. Recovery does not insert. It PATCHes the
+// placeholder row that the same order already created, filling in the fields
+// that were empty because there was no report: report_token, baseline_report,
+// baseline_score, reports_sent. amount_paid, plan_type and subscribed_at are
+// left exactly as the order wrote them, so the money is recorded once, at the
+// moment it was taken, and never restated.
+//
+// HOW REVENUE READS AFTERWARD. Unchanged and with no filter:
+//
+//   select sum(amount_paid) from public.subscribers;
+//
+// Every paid order is exactly one row, whether it was delivered at purchase,
+// delivered by inference, recovered later, or never recovered at all. A row
+// with report_token null is a sale that has not been delivered yet, which is
+// a real and countable state:
+//
+//   select count(*) from public.subscribers where report_token is null;
+//
+// WHY NOT DELETE THE PLACEHOLDER AND INSERT A FRESH ROW. Because a failed
+// delete leaves two rows and a double count, and the failure is silent in the
+// number that matters. Patching cannot produce two rows at all: if the PATCH
+// fails, the placeholder simply stays a placeholder, the buyer still has their
+// report by email, and the log says so.
+async function findPlaceholderRow({ payingEmail }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey) return null;
+  try {
+    const r = await fetch(url + '/rest/v1/subscribers?select=*'
+      + '&email=eq.' + encodeURIComponent(normalizeEmail(payingEmail))
+      + '&report_token=is.null&order=subscribed_at.desc&limit=1',
+      { headers: { apikey: dbKey, Authorization: 'Bearer ' + dbKey } });
+    if (!r.ok) { console.log('PLACEHOLDER [sale] lookup failed ' + r.status); return null; }
+    const rows = await r.json();
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  } catch (e) {
+    console.log('PLACEHOLDER [sale] lookup error ' + (e && e.message));
+    return null;
+  }
+}
+
+async function supersedePlaceholderRow({ placeholderId, subscriber, report }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey || !placeholderId) return false;
+  try {
+    const r = await fetch(url + '/rest/v1/subscribers?id=eq.' + encodeURIComponent(placeholderId)
+      + '&report_token=is.null', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', apikey: dbKey,
+                 Authorization: 'Bearer ' + dbKey, Prefer: 'return=representation' },
+      body: JSON.stringify({
+        // Filled in now. Deliberately NOT amount_paid, plan_type or
+        // subscribed_at: the order already recorded those and restating them
+        // would be inventing a second sale.
+        first_name:      subscriber.firstName || null,
+        restaurant_name: subscriber.restaurantName || null,
+        location:        subscriber.location || null,
+        website:         subscriber.website || null,
+        report_token:    subscriber.reportToken,
+        baseline_report: report || null,
+        baseline_score:  (report && report.healthCheckScore) || 0,
+        reports_sent:    1,
+        notes:           'RECOVERED: delivered by the recovery link after an unmatched purchase.',
+      }),
+    });
+    if (!r.ok) { console.log('PLACEHOLDER [sale] supersede failed ' + r.status); return false; }
+    const rows = await r.json();
+    const ok = Array.isArray(rows) && rows.length === 1;
+    console.log('PLACEHOLDER [sale] ' + (ok ? 'superseded in place' : 'nothing to supersede'));
+    return ok;
+  } catch (e) {
+    console.log('PLACEHOLDER [sale] supersede error ' + (e && e.message));
+    return false;
+  }
+}
+
+// Remove the row createCustomer inserted during recovery, once its contents
+// have been folded into the placeholder. Only ever called with a token this
+// process just minted, and only after the supersede succeeded.
+async function deleteDuplicateSubscriberRow({ reportToken }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey || !reportToken) return false;
+  try {
+    const r = await fetch(url + '/rest/v1/subscribers?report_token=eq.' + encodeURIComponent(reportToken), {
+      method: 'DELETE',
+      headers: { apikey: dbKey, Authorization: 'Bearer ' + dbKey, Prefer: 'return=minimal' },
+    });
+    if (!r.ok) { console.log('PLACEHOLDER [sale] duplicate delete failed ' + r.status); return false; }
+    console.log('PLACEHOLDER [sale] duplicate row removed, one sale one row');
+    return true;
+  } catch (e) {
+    console.log('PLACEHOLDER [sale] duplicate delete error ' + (e && e.message));
+    return false;
+  }
+}
+
 // ── recordUnmatchedSale (v8.11.14) [B4] ─────────────────────────────────────
 //
 // THE PRODUCT'S OWN TABLE DID NOT RECORD THE SALE. On 2026-09-19 a buyer paid,
@@ -4246,7 +4360,7 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
 //
 // Best effort. A failure here must never turn a delivered report into an
 // error, so it logs and returns.
-async function recordUnmatchedSale({ payingEmail, firstName, restaurantName, product }) {
+async function recordUnmatchedSale({ payingEmail, firstName, restaurantName, product, wouldHaveInferredId }) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
   if (!url || !dbKey) { console.log('UNMATCHED_SALE [sale] skipped: supabase not configured'); return false; }
@@ -4271,7 +4385,12 @@ async function recordUnmatchedSale({ payingEmail, firstName, restaurantName, pro
         baseline_score:  0,
         baseline_report: null,
         report_token:    null,
-        notes:           'UNMATCHED_AT_PURCHASE: paid, no survey matched. Awaiting recovery link.',
+        // The would-have-chosen row id rides here so that when the buyer
+        // recovers, INFERENCE_CHECK can compare it with the row they named.
+        // It is an id, not data, and the row it points at is theirs or
+        // nobody's.
+        notes:           'UNMATCHED_AT_PURCHASE: paid, no survey matched. Awaiting recovery link.'
+                         + ' would_infer=' + (wouldHaveInferredId || 'none'),
       }),
     });
     if (!r.ok) {
@@ -4529,16 +4648,22 @@ async function claimPendingReport({ id, claimedBy }) {
 }
 
 // G3: an inferred delivery is never silent.
-async function alertInferredMatch({ payingEmail, surveyEmail, restaurantName, product, reason }) {
+async function alertInferredMatch({ payingEmail, surveyEmail, restaurantName, product, reason, shadow }) {
   const INTERNAL_TO = 'hello@4xiconsulting.com';
   const esc = (v) => String(v == null ? '' : v)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   try {
     await sendEmailViaResend({
       to: INTERNAL_TO,
-      subject: 'INFERRED match delivered a paid report',
+      subject: shadow
+        ? 'SHADOW: inference would have matched a paid report (nothing delivered)'
+        : 'INFERRED match delivered a paid report',
       fromName: 'DiagnostiX Alerts',
-      html: '<p><strong>A paid report was delivered on an INFERRED match, not an exact one.</strong></p>'
+      html: (shadow
+        ? '<p><strong>Inference WOULD have matched this order to a survey. Nothing was'
+          + ' delivered on it.</strong> The buyer was sent the recovery link instead.'
+          + ' This alert exists so the rule can be watched before it is trusted.</p>'
+        : '<p><strong>A paid report was delivered on an INFERRED match, not an exact one.</strong></p>')
         + '<ul>'
         + '<li>paying address domain: ' + esc(emailDomain(payingEmail)) + '</li>'
         + '<li>survey address domain: ' + esc(emailDomain(surveyEmail)) + '</li>'
@@ -4660,6 +4785,33 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   }
 
   await claimPendingReport({ id: row.id, claimedBy: 'recovery' });
+
+  // A4: one sale, one row. The placeholder this order already wrote is filled
+  // in, and the row createCustomer just inserted is removed, so the amount is
+  // recorded once at the moment it was taken.
+  const placeholder = await findPlaceholderRow({ payingEmail });
+  if (placeholder && delivered.subscriber) {
+    const ok = await supersedePlaceholderRow({
+      placeholderId: placeholder.id, subscriber: delivered.subscriber, report,
+    });
+    if (ok) await deleteDuplicateSubscriberRow({ reportToken: delivered.subscriber.reportToken });
+  } else {
+    console.log('PLACEHOLDER [sale] none found for this order; the delivered row stands alone');
+  }
+
+  // A2: the measurement. The buyer has just told us which survey was theirs,
+  // so this is the only moment at which inference can be marked right or
+  // wrong without guessing. would_infer rides on the placeholder's notes.
+  const wouldId = placeholder && typeof placeholder.notes === 'string'
+    ? (placeholder.notes.match(/would_infer=([^\s]+)/) || [])[1]
+    : null;
+  const verdict = inferenceVerdict({
+    wouldHaveInferredId: wouldId && wouldId !== 'none' ? wouldId : null,
+    recoveredId: row.id,
+  });
+  console.log('INFERENCE_CHECK would-have-been=' + verdict
+    + ' recoveredRow=' + row.id + ' wouldHaveChosen=' + (wouldId || 'unknown'));
+
   await alertRecoveryUsed({ payingEmail, surveyEmail: typed, restaurantName: restaurant, product });
   RECOVERY_ATTEMPTS.delete(payingEmail);
 
@@ -4794,6 +4946,8 @@ async function handlePaymentWebhook(req, res) {
   let claimedRowId = null;
   let surveyEmailForAlert = null;
   let candidatePool = [];
+  let wouldHaveInferredId = null;
+  let shadowAlert = false;
 
   // v8.11.17 [A1]: A MEMORY HIT MUST STILL RETIRE THE TABLE ROW.
   //
@@ -4815,9 +4969,17 @@ async function handlePaymentWebhook(req, res) {
     const now = Date.now();
     const candidates = await fetchPendingCandidates({ payingEmail: email, now });
     candidatePool = candidates;
-    const m = matchPendingReport({ payingEmail: email, candidates, now });
-    console.log('PENDING_MATCH [pending] decision=' + m.decision + ' reason=' + m.reason
-      + ' candidates=' + candidates.length + ' domain=' + emailDomainOnly(email));
+    const raw = matchPendingReport({ payingEmail: email, candidates, now });
+    // v8.11.18 [A2]: inference ships switched off. The matcher still computes
+    // it, nothing is delivered on it, and the buyer goes down the recovery
+    // path exactly as for "none". RVP_INFER_DELIVERY=true turns it on.
+    const m = applyShadowMode({ result: raw, deliverInferred: process.env.RVP_INFER_DELIVERY });
+    wouldHaveInferredId = m.wouldHaveInferredId;
+    shadowAlert = m.alert;
+    console.log('PENDING_MATCH [pending] decision=' + m.logDecision + ' reason=' + m.reason
+      + ' candidates=' + candidates.length + ' domain=' + emailDomainOnly(email)
+      + ' deliverInferred=' + (process.env.RVP_INFER_DELIVERY === 'true' ? 'on' : 'off')
+      + (m.wouldHaveInferredId ? ' wouldHaveChosen=' + m.wouldHaveInferredId : ''));
     if (m.match) {
       saved = {
         report: m.match.report || {},
@@ -4848,12 +5010,39 @@ async function handlePaymentWebhook(req, res) {
     // The payment is still recorded. Losing the HubSpot marker as well would
     // turn a delivery failure into a lost sale.
     await markPurchasedAndEmail(email, firstName || '', payload.restaurantName || '', {}, product);
-    // B4: and the product's own table records it too, which it did not before.
-    await recordUnmatchedSale({
-      payingEmail: email, firstName: firstName || '',
-      restaurantName: payload.restaurantName || '', product,
+
+    // v8.11.18 [A2]: shadow mode still alerts, so the rule can be watched.
+    if (shadowAlert) {
+      const wouldRow = candidatePool.find(c => c && c.id === wouldHaveInferredId);
+      await alertInferredMatch({
+        payingEmail: email, surveyEmail: wouldRow && wouldRow.email_normalized,
+        restaurantName: payload.restaurantName || '', product,
+        reason: 'shadow-mode-not-delivered', shadow: true,
+      });
+    }
+
+    // v8.11.18 [A3]: a recovery link is a bearer credential that fetches a
+    // report, and the placeholder row is a line in the revenue table. The
+    // webhook is still unauthenticated, so a forged post naming the
+    // attacker's own address must earn NEITHER. Both are created only when
+    // the call carried a VALID secret. Everything else here is exactly
+    // v8.11.10 behaviour.
+    const mayRecover = recoveryAllowed(secretStatus);
+    if (mayRecover) {
+      await recordUnmatchedSale({
+        payingEmail: email, firstName: firstName || '',
+        restaurantName: payload.restaurantName || '', product,
+        wouldHaveInferredId,
+      });
+    } else {
+      console.log('UNMATCHED_SALE [sale] skipped: secret status=' + secretStatus
+        + ', no placeholder row and no recovery link on an unauthenticated call');
+    }
+    await notifyCacheMiss({
+      email, firstName, product,
+      restaurantName: payload.restaurantName || '',
+      offerRecovery: mayRecover,
     });
-    await notifyCacheMiss({ email, firstName, product, restaurantName: payload.restaurantName || '' });
     return;
   }
 

@@ -185,3 +185,80 @@ export function selectRowToClaim({ decision, matchedRow, payingEmail, candidates
     .sort((a, b) => Number(b.saved_at) - Number(a.saved_at));
   return mine.length ? mine[0] : null;
 }
+
+// ── Shadow mode (v8.11.18) [A2] ─────────────────────────────────────────────
+//
+// INFERENCE SHIPS SWITCHED OFF.
+//
+// The matcher still computes "inferred". Nothing is ever delivered on it. The
+// buyer goes down the recovery path exactly as if the answer had been "none",
+// and the alert still fires, so the rule can be watched running against real
+// orders before anything depends on it.
+//
+// The rule has never been right or wrong about a real customer, and the only
+// corpus available to judge it is 86 percent batch testing. Delivering on it
+// unmeasured would be trusting a rule whose failure mode is handing one
+// customer another customer's report.
+//
+// HOW IT GETS MEASURED. When a buyer later recovers, they type the address
+// they used, which names the row that was actually theirs. Comparing that to
+// the row inference would have chosen turns the question into a count:
+// INFERENCE_CHECK would-have-been=right|wrong|no-inference.
+//
+// Only the exact string 'true' turns delivery on. Any other value, including
+// 'TRUE', '1' and 'yes', leaves it off: a flag that controls who receives
+// somebody's business data should not be switched by a typo.
+export function applyShadowMode({ result, deliverInferred }) {
+  const on = deliverInferred === true || deliverInferred === 'true';
+  if (!result || result.decision !== 'inferred') {
+    return {
+      decision: result ? result.decision : 'none',
+      match: result ? result.match : null,
+      reason: result ? result.reason : 'no-result',
+      logDecision: result ? result.decision : 'none',
+      wouldHaveInferredId: null,
+      alert: false,
+    };
+  }
+  if (on) {
+    return {
+      decision: 'inferred', match: result.match, reason: result.reason,
+      logDecision: 'inferred',
+      wouldHaveInferredId: (result.match && result.match.id) || null,
+      alert: true,
+    };
+  }
+  return {
+    decision: 'none', match: null, reason: result.reason,
+    logDecision: 'would-infer',
+    wouldHaveInferredId: (result.match && result.match.id) || null,
+    alert: true,
+  };
+}
+
+// Was the row inference would have chosen the row the buyer actually owned?
+// "wrong" covers the case where inference named a row and recovery produced a
+// different one OR none at all: both mean inference was not right.
+export function inferenceVerdict({ wouldHaveInferredId, recoveredId } = {}) {
+  if (!wouldHaveInferredId) return 'no-inference';
+  return wouldHaveInferredId === recoveredId ? 'right' : 'wrong';
+}
+
+// ── The secret gate (v8.11.18) [A3] ─────────────────────────────────────────
+//
+// THE WEBHOOK IS STILL UNAUTHENTICATED. v8.11.10 reads a secret and enforces
+// nothing, deliberately, because requiring one would break every genuine Wix
+// call while the automation posts to the bare URL.
+//
+// A recovery link is a BEARER CREDENTIAL that fetches a report. Anyone can
+// POST to /payment-webhook naming any address; if that earned a link, an
+// attacker would post their own address, receive a link, and use it to guess
+// at other people's surveys. The placeholder subscriber row is the same
+// problem in a smaller way: a forged post would write a fake sale into the
+// revenue table.
+//
+// So both are created ONLY when the call carried a VALID secret. Everything
+// else on a cache miss behaves exactly as v8.11.10 did.
+export function recoveryAllowed(secretStatus) {
+  return secretStatus === 'valid';
+}
