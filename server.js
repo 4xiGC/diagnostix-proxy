@@ -2,7 +2,8 @@ import express from 'express';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
 import { describeShape, emailDomainOnly } from './lib-webhook-log.js';
-import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES } from './lib-pending.js';
+import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
+         matchPendingReport, emailDomain, INFER_WINDOW_MS } from './lib-pending.js';
 
 // v8.11.10: LOGGING CANNOT INTERRUPT A PURCHASE.
 //
@@ -4168,6 +4169,111 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
   return subscriber;
 }
 
+// ── Pending report lookup and claiming (v8.11.12) ───────────────────────────
+//
+// G4: both of these return a safe default on ANY failure. A missing table,
+// missing credentials or a slow Supabase produces an empty candidate list,
+// which makes the matcher answer "none", which is exactly today's behaviour.
+// Nothing here can turn a working purchase into a failure.
+async function fetchPendingCandidates({ payingEmail, now }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey) return [];
+  const H = { apikey: dbKey, Authorization: 'Bearer ' + dbKey };
+  const since = new Date(now - INFER_WINDOW_MS).toISOString();
+  const out = [];
+  const seen = new Set();
+  const pull = async (qs, label) => {
+    try {
+      const r = await fetch(url + '/rest/v1/pending_reports?' + qs, { headers: H });
+      if (!r.ok) {
+        console.log('PENDING_READ [pending] ' + label + ' failed ' + r.status);
+        return;
+      }
+      for (const row of await r.json()) {
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        out.push({
+          id: row.id,
+          email_normalized: row.email_normalized,
+          saved_at: Date.parse(row.saved_at),
+          claimed_at: row.claimed_at,
+          product: row.product,
+          report: row.report,
+          survey: row.survey,
+        });
+      }
+    } catch (e) {
+      console.log('PENDING_READ [pending] ' + label + ' error ' + (e && e.message));
+    }
+  };
+  // Two narrow reads rather than one broad one: the exact address at any age,
+  // and everything unclaimed inside the window. The matcher decides between
+  // them; this only supplies what it is allowed to consider.
+  await pull('select=*&claimed_at=is.null&email_normalized=eq.'
+    + encodeURIComponent(normalizeEmail(payingEmail)) + '&order=saved_at.desc&limit=5', 'exact');
+  await pull('select=*&claimed_at=is.null&saved_at=gte.' + encodeURIComponent(since)
+    + '&order=saved_at.desc&limit=25', 'window');
+  return out;
+}
+
+// Claims a row. The WHERE clause requires claimed_at to still be null, so two
+// concurrent webhooks cannot both claim the same report: the second patches
+// zero rows and says so.
+async function claimPendingReport({ id, claimedBy }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey || !id) return false;
+  try {
+    const r = await fetch(url + '/rest/v1/pending_reports?id=eq.' + encodeURIComponent(id)
+      + '&claimed_at=is.null', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', apikey: dbKey,
+                 Authorization: 'Bearer ' + dbKey, Prefer: 'return=representation' },
+      body: JSON.stringify({ claimed_at: new Date().toISOString(), claimed_by: String(claimedBy || 'unknown') }),
+    });
+    if (!r.ok) { console.log('PENDING_CLAIM [pending] failed ' + r.status); return false; }
+    const rows = await r.json();
+    const ok = Array.isArray(rows) && rows.length === 1;
+    console.log('PENDING_CLAIM [pending] ' + (ok ? 'ok' : 'already-claimed-by-another-call')
+      + ' by=' + claimedBy);
+    return ok;
+  } catch (e) {
+    console.log('PENDING_CLAIM [pending] error ' + (e && e.message));
+    return false;
+  }
+}
+
+// G3: an inferred delivery is never silent.
+async function alertInferredMatch({ payingEmail, surveyEmail, restaurantName, product, reason }) {
+  const INTERNAL_TO = 'hello@4xiconsulting.com';
+  const esc = (v) => String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  try {
+    await sendEmailViaResend({
+      to: INTERNAL_TO,
+      subject: 'INFERRED match delivered a paid report',
+      fromName: 'DiagnostiX Alerts',
+      html: '<p><strong>A paid report was delivered on an INFERRED match, not an exact one.</strong></p>'
+        + '<ul>'
+        + '<li>paying address domain: ' + esc(emailDomain(payingEmail)) + '</li>'
+        + '<li>survey address domain: ' + esc(emailDomain(surveyEmail)) + '</li>'
+        + '<li>addresses equal: no (an exact match would not be inferred)</li>'
+        + '<li>restaurant: ' + esc(restaurantName || '(not supplied)') + '</li>'
+        + '<li>product: ' + esc(product) + '</li>'
+        + '<li>rule: ' + esc(reason) + '</li>'
+        + '</ul>'
+        + '<p>The rule fired because exactly ONE unclaimed survey existed in the '
+        + Math.round(INFER_WINDOW_MS / 60000) + ' minute window. Two would have refused. '
+        + 'The report was delivered to the PAYING address, never redirected to the survey one.</p>'
+        + '<p>If this is the wrong report, the survey row is claimed and named above by domain; '
+        + 'reply here and it can be unclaimed by hand.</p>',
+    });
+  } catch (e) {
+    console.log('[webhook] INFERRED alert failed: ' + (e && e.message));
+  }
+}
+
 // ── /payment-webhook ─────────────────────────────────────────
 //
 // v8.11.10, THREE CHANGES, NONE OF THEM ENFORCEMENT.
@@ -4254,7 +4360,36 @@ async function handlePaymentWebhook(req, res) {
   // five minutes" and resolved both identically. A rule that is right sometimes
   // and catastrophically wrong otherwise, with no way to tell which, is not a
   // rule.
-  const saved = reportStore.get(email);
+  // v8.11.12: memory first, then the table, then the matcher.
+  //
+  // The Map is still the fast path and still authoritative when it hits: an
+  // entry there is an EXACT address match by construction, because
+  // /save-report keys it by the normalized survey address.
+  let saved = reportStore.get(email);
+  let matchDecision = saved ? 'exact' : null;
+  let matchReason = saved ? 'memory-exact' : null;
+  let claimedRowId = null;
+  let surveyEmailForAlert = null;
+
+  if (!saved) {
+    const now = Date.now();
+    const candidates = await fetchPendingCandidates({ payingEmail: email, now });
+    const m = matchPendingReport({ payingEmail: email, candidates, now });
+    console.log('PENDING_MATCH [pending] decision=' + m.decision + ' reason=' + m.reason
+      + ' candidates=' + candidates.length + ' domain=' + emailDomainOnly(email));
+    if (m.match) {
+      saved = {
+        report: m.match.report || {},
+        survey: m.match.survey || {},
+        product: m.match.product || product,
+        savedAt: m.match.saved_at,
+      };
+      matchDecision = m.decision;
+      matchReason = m.reason;
+      claimedRowId = m.match.id;
+      surveyEmailForAlert = m.match.email_normalized;
+    }
+  }
 
   if (!saved) {
     // CACHE_MISS is greppable on purpose, and uptimeSec is the point of it.
@@ -4276,7 +4411,7 @@ async function handlePaymentWebhook(req, res) {
     return;
   }
 
-  console.log('[webhook] Match type: exact');
+  console.log('[webhook] Match type: ' + matchDecision + ' (' + matchReason + ')');
 
   const report     = saved.report || {};
   const survey     = saved.survey || {};
@@ -4315,6 +4450,20 @@ async function handlePaymentWebhook(req, res) {
     planType,
     amountPaid
   });
+
+  // The row is claimed only once a subscriber exists, so a failure earlier in
+  // this handler leaves the survey available to the recovery link rather than
+  // burning it.
+  if (claimedRowId) {
+    await claimPendingReport({ id: claimedRowId, claimedBy: matchDecision });
+  }
+  // G3: an inferred delivery is never silent.
+  if (matchDecision === 'inferred') {
+    await alertInferredMatch({
+      payingEmail: destEmail, surveyEmail: surveyEmailForAlert,
+      restaurantName: restaurant, product, reason: matchReason,
+    });
+  }
 
   const supaShaped = {
     email:           subscriber.email,
