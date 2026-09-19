@@ -73,3 +73,16 @@ comment on column public.pending_reports.recovery_attempts is
 --
 -- If pg_cron is not available, run the delete by hand monthly. It is
 -- idempotent and safe to run at any time.
+
+-- ── A6: ROW LEVEL SECURITY ──────────────────────────────────────────────────
+-- The SUPABASE_KEY this service uses carries the sb_secret_ prefix, which is
+-- Supabase secret key, the service role equivalent. It BYPASSES row level
+-- security, so enabling RLS with no policies is safe for this service and
+-- closes the table to every other caller, including the publishable key that
+-- a browser could hold.
+--
+-- No policies are created on purpose. A table with RLS on and no policies is
+-- readable and writable by the service role and by nobody else. Adding a
+-- policy later is a deliberate act; leaving RLS off would mean the table is
+-- reachable by any key with the anon or publishable role.
+alter table public.pending_reports enable row level security;

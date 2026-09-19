@@ -2488,6 +2488,28 @@ async function persistPendingReport({ key, report, survey, product, savedAt }) {
   }
 }
 
+//
+// v8.11.16 [A5]: THE LIMITS PROTECT THE DATABASE WRITE, NOT THE SAVE.
+//
+// The first version of this returned 413 and 429 before touching the Map,
+// which put a brand new failure mode in front of a survey that used to
+// succeed: a caller over the limit lost their report entirely, and the report
+// cannot be regenerated without re-running the assessment. That is a worse
+// outcome than the open door the limits exist to close.
+//
+// So the in-memory save and the 200 ALWAYS happen, exactly as they did before
+// any of this work. The limits decide one thing only: whether the row is also
+// written to the database. A limited request logs PENDING_WRITE skipped and
+// nothing else about it changes.
+//
+// CLIENT IP BEHIND RAILWAY. Express is not configured with 'trust proxy'
+// anywhere in this service, so req.ip is Railway's edge address and is the
+// SAME for every caller: rate limiting on it would be a single global bucket
+// that one busy customer could exhaust for everyone. The forwarded address is
+// therefore the one used, taking the FIRST entry of x-forwarded-for, which is
+// the value Railway sets. It is client-supplied and spoofable, which is why it
+// is a mitigation on a database write and not an authentication decision, and
+// why the per-address bucket exists beside it.
 app.post('/save-report', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const { email, report, survey, product } = req.body || {};
@@ -2498,24 +2520,27 @@ app.post('/save-report', async (req, res) => {
   const key = normalizeEmail(email);
   const now = Date.now();
 
-  const bytes = saveSizeBytes(report, survey);
-  if (bytes > MAX_SAVE_BYTES) {
-    console.log('SAVE_REJECTED [save-report] oversize bytes=' + bytes + ' cap=' + MAX_SAVE_BYTES
-      + ' domain=' + emailDomainOnly(key));
-    return res.status(413).json({ error: 'report too large' });
-  }
-
-  const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
-  if (saveRateExceeded(SAVE_RATE.byEmail, key, SAVE_RATE_MAX_EMAIL, now)
-      || saveRateExceeded(SAVE_RATE.byIp, ip, SAVE_RATE_MAX_IP, now)) {
-    console.log('SAVE_REJECTED [save-report] rate limited domain=' + emailDomainOnly(key));
-    return res.status(429).json({ error: 'too many saves, try again later' });
-  }
-
-  // The Map first, and the response next. Everything after this is best effort.
+  // The Map first, and the response next. Nothing below can change either.
   reportStore.set(key, { report, survey, product: product || 'full', savedAt: now });
+  const bytes = saveSizeBytes(report, survey);
   console.log('[save-report] Saved for domain:', emailDomainOnly(key), 'bytes=' + bytes);
   res.status(200).json({ ok: true });
+
+  // Everything from here decides only whether the DATABASE also gets it.
+  let skip = null;
+  if (bytes > MAX_SAVE_BYTES) {
+    skip = 'oversize-' + bytes + '-cap-' + MAX_SAVE_BYTES;
+  } else {
+    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const ip = fwd || req.ip || '';
+    if (saveRateExceeded(SAVE_RATE.byEmail, key, SAVE_RATE_MAX_EMAIL, now)) skip = 'rate-limit-address';
+    else if (saveRateExceeded(SAVE_RATE.byIp, ip, SAVE_RATE_MAX_IP, now)) skip = 'rate-limit-ip';
+  }
+
+  if (skip) {
+    console.log('PENDING_WRITE [pending] skipped reason=' + skip + ' domain=' + emailDomainOnly(key));
+    return;
+  }
 
   persistPendingReport({ key, report, survey, product, savedAt: now })
     .catch(e => console.log('PENDING_WRITE [pending] unexpected ' + (e && e.message)));
