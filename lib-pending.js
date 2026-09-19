@@ -387,3 +387,31 @@ export function webhookEnforcement(secretStatus) {
     reason: 'secret-' + (typeof secretStatus === 'string' && secretStatus ? secretStatus : 'unknown'),
   };
 }
+
+// ── C3: a misrouted webhook path is loud (v8.11.23) ─────────────────────────
+//
+// On 2026-09-19 the Wix automation was set to /payment-webhook<secret> with no
+// slash. Express matched neither route, every sale 404'd at the edge, and the
+// service logged nothing at all because the handler was never entered. The
+// only trace was in Railway's edge log, which nobody reads until something is
+// already known to be wrong. It was invisible for part of an afternoon.
+//
+// FOUR CHARACTERS AND A LENGTH. The tail of a misrouted path is very often the
+// secret itself, glued on wrong. Four characters is enough to tell two
+// mistyped URLs apart in a log; the length is enough to say "that looks like
+// the 64 character secret" without printing any more of it.
+export function misroutedHint(path) {
+  const PREFIX = '/payment-webhook';
+  const out = { misrouted: false, hint: '', tailLength: 0 };
+  if (typeof path !== 'string' || !path.startsWith(PREFIX)) return out;
+  const tail = path.slice(PREFIX.length);
+  // The two real routes: the bare path, and exactly one more segment.
+  if (tail === '' || tail === '/') return out;
+  if (tail[0] === '/' && tail.indexOf('/', 1) === -1) return out;
+  // Anything else reaches no handler: the no-slash form, and deeper paths.
+  const raw = tail[0] === '/' ? tail.slice(1) : tail;
+  out.misrouted = true;
+  out.hint = raw.slice(0, 4);
+  out.tailLength = raw.length;
+  return out;
+}

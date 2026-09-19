@@ -9,7 +9,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
          markSpent, memoryHitVerdict,
          alertThrottle, ALERT_THROTTLE_MS,
-         webhookEnforcement } from './lib-pending.js';
+         webhookEnforcement, misroutedHint } from './lib-pending.js';
 
 // v8.11.10: LOGGING CANNOT INTERRUPT A PURCHASE.
 //
@@ -5395,6 +5395,35 @@ async function handlePaymentWebhook(req, res) {
 // code change. As of v8.11.22 both enforce the secret when one is configured.
 app.post('/payment-webhook', handlePaymentWebhook);
 app.post('/payment-webhook/:secret', handlePaymentWebhook);
+
+// ── v8.11.23 [C3]: a path that reaches neither route is no longer silent ────
+//
+// 2026-09-19. The Wix automation was set to /payment-webhook<secret> with no
+// slash between them. Express matched neither route above, returned its
+// default 404, and this service logged NOTHING, because the handler was never
+// entered. Every sale failed for part of an afternoon and the only evidence
+// was a 404 line in Railway's edge log, which nobody looks at until something
+// is already known to be wrong.
+//
+// Mounted immediately after the two real routes, so it sees only what they did
+// not take. It calls next() for everything else and therefore cannot shadow a
+// route defined later in the file.
+app.use((req, res, next) => {
+  if (req.method !== 'POST') return next();
+  const m = misroutedHint(req.path);
+  if (!m.misrouted) return next();
+  res.status(404).json({ ok: false, error: 'not found' });
+  console.log('WEBHOOK_MISROUTED [webhook] 404 path=/payment-webhook[' + m.hint + '...]'
+    + ' tailLen=' + m.tailLength
+    + ' hasSlash=' + (req.path.charAt('/payment-webhook'.length) === '/' ? 'yes' : 'NO'));
+  alertWebhookProblem({
+    kind: 'REJECTED payment webhook',
+    detail: 'misrouted path: /payment-webhook[' + m.hint + '...], '
+      + m.tailLength + ' characters after the prefix, '
+      + (req.path.charAt('/payment-webhook'.length) === '/'
+          ? 'too many path segments' : 'NO SLASH before the secret'),
+  }).catch(() => {});
+});
 
 // ── Update the stored payload after the comparison lands ───────────────────
 // Swallows its own failure on purpose. The customer's report has already been
