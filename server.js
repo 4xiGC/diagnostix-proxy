@@ -2869,7 +2869,10 @@ async function markPurchasedAndEmail(email, firstName, restaurantName, report, p
           subscription_active: product === 'annual'
         }})
       });
-      console.log('[hubspot] Marked purchased:', email, product);
+      // v8.11.14 [B5]: domain only. This line printed a customer's address on
+      // every purchase, matched or not, and it is the one that fired for the
+      // 2026-09-19 cache miss.
+      console.log('[hubspot] Marked purchased domain:', emailDomainOnly(email), product);
 
       await fetch('https://api.hubapi.com/crm/v3/objects/notes', {
         method: 'POST',
@@ -2886,7 +2889,7 @@ async function markPurchasedAndEmail(email, firstName, restaurantName, report, p
         })
       });
     }
-    console.log('[hubspot] Note added for:', email);
+    console.log('[hubspot] Note added for domain:', emailDomainOnly(email));
   } catch(e) {
     console.log('[hubspot] markPurchasedAndEmail failed:', e.message);
   }
@@ -4189,6 +4192,77 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
   return subscriber;
 }
 
+// ── recordUnmatchedSale (v8.11.14) [B4] ─────────────────────────────────────
+//
+// THE PRODUCT'S OWN TABLE DID NOT RECORD THE SALE. On 2026-09-19 a buyer paid,
+// the matcher found nothing, and `subscribers` stayed at 88 rows. The only
+// trace of the money was two emails and a HubSpot flag. Nothing queryable.
+//
+// A row is now written for every genuine paid order, matched or not. What it
+// can honestly carry when no report is matched:
+//
+//   email            the PAYING address, because that is the customer
+//   plan_type,
+//   amount_paid      from the order, same as a matched sale
+//   subscribed_at    now
+//   active           annual only, same rule as a matched sale
+//   report_token     NULL. There is no report, so there must be no link. A
+//                    token here would render an empty page at /report.
+//   baseline_report  NULL, and baseline_score 0, for the same reason.
+//   reports_sent     0, because none was.
+//   restaurant_name  whatever the order carried, usually nothing.
+//   notes            a marker naming the state, so these rows are findable.
+//
+// NULL report_token is the load-bearing part. `GET /report` requires a token
+// of at least 16 characters and looks it up, so an unmatched row is invisible
+// to it, which is correct: there is nothing to show yet. When the buyer later
+// recovers their report, deliverPaidReport writes a full row through
+// createCustomer with a real token, and this placeholder is superseded.
+//
+// Best effort. A failure here must never turn a delivered report into an
+// error, so it logs and returns.
+async function recordUnmatchedSale({ payingEmail, firstName, restaurantName, product }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey) { console.log('UNMATCHED_SALE [sale] skipped: supabase not configured'); return false; }
+  const planType = product === 'annual' ? 'annual' : 'one_off';
+  const amountPaid = planType === 'annual' ? 99.99 : 24.99;
+  try {
+    const r = await fetch(url + '/rest/v1/subscribers', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json', apikey: dbKey,
+        Authorization: 'Bearer ' + dbKey, Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({
+        email:           payingEmail,
+        first_name:      firstName || null,
+        restaurant_name: restaurantName || null,
+        plan_type:       planType,
+        amount_paid:     amountPaid,
+        active:          planType === 'annual',
+        subscribed_at:   new Date().toISOString(),
+        reports_sent:    0,
+        baseline_score:  0,
+        baseline_report: null,
+        report_token:    null,
+        notes:           'UNMATCHED_AT_PURCHASE: paid, no survey matched. Awaiting recovery link.',
+      }),
+    });
+    if (!r.ok) {
+      const txt = await r.text().catch(() => '');
+      console.log('UNMATCHED_SALE [sale] failed ' + r.status + ' ' + txt.slice(0, 160));
+      return false;
+    }
+    console.log('UNMATCHED_SALE [sale] recorded domain=' + emailDomainOnly(payingEmail)
+      + ' plan=' + planType + ' amount=' + amountPaid);
+    return true;
+  } catch (e) {
+    console.log('UNMATCHED_SALE [sale] error ' + (e && e.message));
+    return false;
+  }
+}
+
 // ── Recovery links (v8.11.13) ───────────────────────────────────────────────
 //
 // When the matcher answers "none" the buyer has paid and has nothing. The
@@ -4728,6 +4802,11 @@ async function handlePaymentWebhook(req, res) {
     // The payment is still recorded. Losing the HubSpot marker as well would
     // turn a delivery failure into a lost sale.
     await markPurchasedAndEmail(email, firstName || '', payload.restaurantName || '', {}, product);
+    // B4: and the product's own table records it too, which it did not before.
+    await recordUnmatchedSale({
+      payingEmail: email, firstName: firstName || '',
+      restaurantName: payload.restaurantName || '', product,
+    });
     await notifyCacheMiss({ email, firstName, product, restaurantName: payload.restaurantName || '' });
     return;
   }
@@ -4748,7 +4827,24 @@ async function handlePaymentWebhook(req, res) {
 
   safeLog(() => '[webhook] Payment confirmed for: ' + maskAddr(destEmail) + ' ' + product + ' | Restaurant: ' + restaurant);
 
-  // Legacy HubSpot purchase marker (kept for backward compatibility).
+  // ── B5: WHICH CONTACT IS MARKED PURCHASED ────────────────────────────
+  //
+  // THE PAYING ADDRESS, AND ONLY THAT ONE, ON EVERY PATH.
+  //
+  // The paying address is the customer of record: it is who the money came
+  // from, who the receipt names, and who a refund would go to. On an exact
+  // match the two addresses are the same, so nothing changes. On an inferred
+  // or recovered match they differ, and marking BOTH would write
+  // report_purchased=true onto a contact who has not bought anything, which
+  // is the same class of error as v8.9.37's rule 3: a billing fact asserted
+  // about the wrong person. In an inferred match the survey address is a
+  // guess, and a guess must not become a CRM fact.
+  //
+  // The survey address is not lost: it is in the pending_reports row, named
+  // by domain in the inferred and recovery alerts, and reachable by hand.
+  // Attaching it to the HubSpot contact as a NOTE rather than a flag is the
+  // right next step and is deliberately not done here, because it needs a
+  // decision about what that note says when the match was a guess.
   await markPurchasedAndEmail(destEmail, resolvedFirstName, restaurant, report, product);
 
   if (!report || Object.keys(report).length === 0) {
