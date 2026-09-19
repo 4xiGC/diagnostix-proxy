@@ -2,6 +2,7 @@ import express from 'express';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
 import { describeShape, emailDomainOnly } from './lib-webhook-log.js';
+import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES } from './lib-pending.js';
 
 // v8.11.10: LOGGING CANNOT INTERRUPT A PURCHASE.
 //
@@ -2410,16 +2411,111 @@ Rules:
 });
 
 // ── /save-report ─────────────────────────────────────────────
-app.post('/save-report', (req, res) => {
+//
+// v8.11.11: WRITES THROUGH TO A TABLE, KEEPS THE MAP AS A CACHE.
+//
+// Until now a finished survey lived only in an in-memory Map, so every deploy
+// and every restart destroyed the report of anyone sitting between the survey
+// and the payment. That is not a rare window: the 12:47 test purchase on
+// 2026-09-19 missed for a different reason, but the same handler is one
+// restart away from losing a paid customer's only copy.
+//
+// G4, DEPLOY SAFETY. The table write is BEST EFFORT and comes last. If the
+// table does not exist, if the credentials are missing, if Supabase is down or
+// slow, the Map is already written and the response is already 200. A failure
+// is logged under a greppable marker and changes nothing the caller sees. This
+// can therefore be deployed before the migration is run, in either order.
+//
+// THE ROUTE IS OPEN. No auth, CORS '*', and now it writes to a database, so it
+// gains a size cap and a small rate limit. Both are deliberately far above
+// anything a real survey produces: the largest report ever stored is 21,469
+// bytes against a 262,144 byte cap, and a real operator saves once.
+const SAVE_RATE = { byEmail: new Map(), byIp: new Map() };
+const SAVE_RATE_WINDOW_MS = 60 * 60 * 1000;
+const SAVE_RATE_MAX_EMAIL = 5;
+const SAVE_RATE_MAX_IP = 30;
+
+function saveRateExceeded(bucket, key, max, now) {
+  if (!key) return false;
+  const hits = (bucket.get(key) || []).filter(t => now - t < SAVE_RATE_WINDOW_MS);
+  hits.push(now);
+  bucket.set(key, hits);
+  // Opportunistic sweep so the Map cannot grow without bound.
+  if (bucket.size > 5000) {
+    for (const [k, v] of bucket) {
+      const live = v.filter(t => now - t < SAVE_RATE_WINDOW_MS);
+      if (live.length) bucket.set(k, live); else bucket.delete(k);
+    }
+  }
+  return hits.length > max;
+}
+
+// Best effort, never throws, never blocks the response.
+async function persistPendingReport({ key, report, survey, product, savedAt }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey) { console.log('PENDING_WRITE [pending] skipped: supabase not configured'); return false; }
+  try {
+    const r = await fetch(url + '/rest/v1/pending_reports', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: dbKey,
+        Authorization: 'Bearer ' + dbKey,
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({
+        email_normalized: key,
+        product: product || 'full',
+        report: report || null,
+        survey: survey || null,
+        saved_at: new Date(savedAt).toISOString(),
+      }),
+    });
+    if (!r.ok) {
+      const txt = await r.text().catch(() => '');
+      console.log('PENDING_WRITE [pending] failed ' + r.status + ' ' + txt.slice(0, 160));
+      return false;
+    }
+    console.log('PENDING_WRITE [pending] ok domain=' + emailDomainOnly(key));
+    return true;
+  } catch (e) {
+    console.log('PENDING_WRITE [pending] error ' + (e && e.message));
+    return false;
+  }
+}
+
+app.post('/save-report', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  const { email, report, survey, product } = req.body;
+  const { email, report, survey, product } = req.body || {};
   if (!email || !report) {
     return res.status(400).json({ error: 'email and report required' });
   }
-  const key = email.toLowerCase().trim();
-  reportStore.set(key, { report, survey, product: product || 'full', savedAt: Date.now() });
-  console.log('[save-report] Saved for:', key);
+
+  const key = normalizeEmail(email);
+  const now = Date.now();
+
+  const bytes = saveSizeBytes(report, survey);
+  if (bytes > MAX_SAVE_BYTES) {
+    console.log('SAVE_REJECTED [save-report] oversize bytes=' + bytes + ' cap=' + MAX_SAVE_BYTES
+      + ' domain=' + emailDomainOnly(key));
+    return res.status(413).json({ error: 'report too large' });
+  }
+
+  const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
+  if (saveRateExceeded(SAVE_RATE.byEmail, key, SAVE_RATE_MAX_EMAIL, now)
+      || saveRateExceeded(SAVE_RATE.byIp, ip, SAVE_RATE_MAX_IP, now)) {
+    console.log('SAVE_REJECTED [save-report] rate limited domain=' + emailDomainOnly(key));
+    return res.status(429).json({ error: 'too many saves, try again later' });
+  }
+
+  // The Map first, and the response next. Everything after this is best effort.
+  reportStore.set(key, { report, survey, product: product || 'full', savedAt: now });
+  console.log('[save-report] Saved for domain:', emailDomainOnly(key), 'bytes=' + bytes);
   res.status(200).json({ ok: true });
+
+  persistPendingReport({ key, report, survey, product, savedAt: now })
+    .catch(e => console.log('PENDING_WRITE [pending] unexpected ' + (e && e.message)));
 });
 
 // ── /get-report ──────────────────────────────────────────────
