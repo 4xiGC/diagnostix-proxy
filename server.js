@@ -8,7 +8,8 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          signRecoveryToken, verifyRecoveryToken,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
          markSpent, memoryHitVerdict,
-         alertThrottle, ALERT_THROTTLE_MS } from './lib-pending.js';
+         alertThrottle, ALERT_THROTTLE_MS,
+         webhookEnforcement } from './lib-pending.js';
 
 // v8.11.10: LOGGING CANNOT INTERRUPT A PURCHASE.
 //
@@ -4751,6 +4752,66 @@ function markMemorySpent({ email, token, reason }) {
   }
 }
 
+// ── C2 and C3: the Wix URL is wrong, and somebody has to find out ───────────
+//
+// A rejected call and a misrouted path are the same condition wearing two
+// coats: the automation is pointed somewhere that does not work, and it will
+// stay that way on every order until a human changes it. On 2026-09-19 exactly
+// that cost part of an afternoon of sales, and the only trace was a 404 in
+// Railway's edge log.
+//
+// ONE THROTTLE SHARED BY BOTH, because a broken URL usually produces both.
+// Ten minutes: loud enough to notice within one order cycle, quiet enough that
+// an unauthenticated endpoint cannot be looped to flood the alert mailbox.
+// Suppressed calls are counted and reported in the next alert that does send,
+// so the throttle hides the volume for ten minutes and never hides it for good.
+//
+// NOTHING FROM THE BODY EVER APPEARS HERE. A rejected call's body is attacker
+// controlled, and the whole point of rejecting it is to stop acting on it.
+const WEBHOOK_ALERT = { lastAt: 0, suppressed: 0 };
+
+async function alertWebhookProblem({ kind, detail }) {
+  try {
+    WEBHOOK_ALERT.suppressed += 1;
+    const t = alertThrottle({ lastSentAt: WEBHOOK_ALERT.lastAt, now: Date.now() });
+    if (!t.send) {
+      console.log('WEBHOOK_ALERT [webhook] suppressed, ' + WEBHOOK_ALERT.suppressed
+        + ' since the last one, next in '
+        + Math.max(0, Math.ceil((ALERT_THROTTLE_MS - t.elapsed) / 1000)) + 's');
+      return false;
+    }
+    const n = WEBHOOK_ALERT.suppressed;
+    WEBHOOK_ALERT.lastAt = Date.now();
+    WEBHOOK_ALERT.suppressed = 0;
+    const esc = (v) => String(v == null ? '' : v)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    console.log('WEBHOOK_ALERT [webhook] sent kind=' + kind + ' covering=' + n + ' call(s)');
+    await sendEmailViaResend({
+      to: 'hello@4xiconsulting.com',
+      subject: kind,
+      fromName: 'DiagnostiX Alerts',
+      html: '<p><strong>' + esc(kind) + '</strong></p>'
+        + '<p>A call reached /payment-webhook and was not processed. If this is the '
+        + 'Wix automation, no sale is being delivered until the URL is fixed.</p>'
+        + '<ul>'
+        + '<li>' + esc(detail) + '</li>'
+        + '<li>calls covered by this alert: ' + n + '</li>'
+        + '<li>next alert possible in: ' + Math.round(ALERT_THROTTLE_MS / 60000) + ' minutes</li>'
+        + '</ul>'
+        + '<p>The correct URL is the bare path plus a slash plus the secret. On '
+        + '2026-09-19 the secret was glued on with no slash, every sale 404ed, and '
+        + 'nothing was logged by the service at all.</p>'
+        + '<p>Nothing from the request body appears in this alert, deliberately: a '
+        + 'rejected call is not trusted enough to quote.</p>',
+    });
+    return true;
+  } catch (e) {
+    // An alert must never be able to fail a request.
+    console.log('WEBHOOK_ALERT [webhook] error ' + (e && e.message));
+    return false;
+  }
+}
+
 // G3: an inferred delivery is never silent.
 async function alertInferredMatch({ payingEmail, surveyEmail, restaurantName, product, reason, shadow }) {
   const INTERNAL_TO = 'hello@4xiconsulting.com';
@@ -4986,10 +5047,31 @@ async function alertRecoveryUsed({ payingEmail, surveyEmail, restaurantName, pro
 //    replaced by the shape of the body, key names and value types only.
 //
 // 3. THE RESPONSE IS UNCHANGED. Still 200 { ok: true }, still sent first.
+//
+// ── v8.11.22 [C2]: POINT 1 AND POINT 3 ABOVE NO LONGER HOLD ─────────────────
+//
+// The secret IS enforced now. Two production orders carried status=valid, on
+// 2026-09-19 at 18:09Z and 20:29Z, so the automation is known to send it and
+// the condition that made enforcement unsafe is gone.
+//
+// THE RESPONSE ORDER, WHICH IS THE PART TO READ CAREFULLY.
+//
+//   before:  res.status(200)  ->  read secret  ->  slow work
+//   after:   read secret  ->  res.status(200 or 401)  ->  slow work
+//
+// Exactly one thing now precedes the response: reading req.params.secret and
+// comparing two buffers with timingSafeEqual. No I/O, no await, no body
+// parsing beyond what Express already did. A VALID call still gets its 200
+// before HubSpot, Supabase, the peer comparison and every email, which is the
+// property that keeps Wix from timing out and retrying during the ninety
+// seconds the peer comparison takes.
+//
+// A rejected call gets a 401 and nothing else happens: no HubSpot write, no
+// subscriber row, no email to the address in the body, no recovery link. The
+// 401 is the point. Wix records the response in its Run Log, so the automation
+// shows as failing instead of logging a success for a sale that never arrived.
 async function handlePaymentWebhook(req, res) {
-  res.status(200).json({ ok: true });
-
-  // Secret status, observed and never enforced. The value is never logged.
+  // Secret status. The value is never logged.
   const presented = String((req.params && req.params.secret) || '');
   const expected = String(process.env.RVP_WEBHOOK_SECRET || '');
   let secretStatus;
@@ -5006,7 +5088,30 @@ async function handlePaymentWebhook(req, res) {
     } catch (_) { ok = false; }
     secretStatus = ok ? 'valid' : 'invalid';
   }
-  safeLog(() => `WEBHOOK_SECRET [webhook] status=${secretStatus} presentedLen=${presented.length}`);
+  const gate = webhookEnforcement(secretStatus);
+  safeLog(() => `WEBHOOK_SECRET [webhook] status=${secretStatus} presentedLen=${presented.length}`
+    + ` enforcing=${gate.enforcing ? 'yes' : 'no'}`);
+
+  if (gate.reject) {
+    // Nothing below this line runs. The body is never parsed for an address,
+    // so a forged call cannot cause an email to anyone.
+    res.status(gate.httpStatus).json({ ok: false, error: 'unauthorized' });
+    console.log('WEBHOOK_REJECTED [webhook] ' + gate.httpStatus
+      + ' reason=' + gate.reason + ' presentedLen=' + presented.length);
+    await alertWebhookProblem({
+      kind: 'REJECTED payment webhook',
+      detail: 'secret status: ' + secretStatus + ', presented length: ' + presented.length,
+    });
+    return;
+  }
+
+  if (!gate.enforcing) {
+    console.log('WEBHOOK_ENFORCEMENT [webhook] off: RVP_WEBHOOK_SECRET is not set, '
+      + 'this call is processed exactly as v8.11.10 did');
+  }
+
+  res.status(200).json({ ok: true });
+
   safeLog(() => `WEBHOOK_SHAPE [webhook] body=${safeShape(req.body)}`);
 
   const body = req.body;
@@ -5287,7 +5392,7 @@ async function handlePaymentWebhook(req, res) {
 
 
 // Registered on both routes so Wix can move to the path-secret form without a
-// code change. Neither rejects anything today.
+// code change. As of v8.11.22 both enforce the secret when one is configured.
 app.post('/payment-webhook', handlePaymentWebhook);
 app.post('/payment-webhook/:secret', handlePaymentWebhook);
 

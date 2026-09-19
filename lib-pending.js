@@ -353,3 +353,37 @@ export function alertThrottle({ lastSentAt, now, windowMs } = {}) {
   }
   return { send: true, elapsed, windowMs: w };
 }
+
+// ── C2: the webhook secret is enforced (v8.11.22) ───────────────────────────
+//
+// WHY THIS IS SAFE NOW AND WAS NOT IN v8.11.10. Enforcement was deliberately
+// withheld because the Wix automation posted to the bare URL, and requiring a
+// secret would have broken every genuine call the moment it deployed. Two
+// production orders have since carried status=valid, 2026-09-19 18:09Z and
+// 20:29Z, so the automation is known to send it.
+//
+// FAIL CLOSED. Only two statuses avoid rejection: 'valid', and
+// 'not-configured', which means RVP_WEBHOOK_SECRET is unset and the service
+// returns to v8.11.10 behaviour. Anything else, including a value nobody
+// planned for, is rejected. The escape hatch is clearing the variable, which
+// is a deliberate act, rather than a status string falling through a gap.
+//
+// 401 RATHER THAN 403 OR A SILENT 200. Wix records the response in its Run
+// Log, so a 401 is the difference between "this automation is failing" and a
+// log full of successes for sales that never arrived. A silent 200 on a
+// rejected call is what let the 2026-09-19 misroute hide for an afternoon.
+//
+// ONE ARGUMENT, ON PURPOSE. This rule cannot read the body, so it cannot be
+// talked into trusting it.
+export function webhookEnforcement(secretStatus) {
+  if (secretStatus === 'not-configured') {
+    return { enforcing: false, reject: false, httpStatus: 200, reason: 'enforcement-off' };
+  }
+  if (secretStatus === 'valid') {
+    return { enforcing: true, reject: false, httpStatus: 200, reason: 'secret-valid' };
+  }
+  return {
+    enforcing: true, reject: true, httpStatus: 401,
+    reason: 'secret-' + (typeof secretStatus === 'string' && secretStatus ? secretStatus : 'unknown'),
+  };
+}
