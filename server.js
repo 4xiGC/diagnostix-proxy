@@ -5020,7 +5020,15 @@ async function handlePaymentWebhook(req, res) {
     await markPurchasedAndEmail(email, firstName || '', payload.restaurantName || '', {}, product);
 
     // v8.11.18 [A2]: shadow mode still alerts, so the rule can be watched.
-    if (shadowAlert) {
+    //
+    // v8.11.20: GATED ON THE SECRET TOO. The ship gate asked whether a call
+    // without a valid secret is processed exactly as in v8.11.10, and this was
+    // the one place it was not: an unauthenticated POST triggered an outbound
+    // internal email, which anybody could repeat to flood hello@. It is also
+    // pointless, because a forged call's would-infer says nothing about
+    // whether the rule is right for real orders. The PENDING_MATCH log line
+    // stays on every call, because a log line amplifies nothing.
+    if (shadowAlert && recoveryAllowed(secretStatus)) {
       const wouldRow = candidatePool.find(c => c && c.id === wouldHaveInferredId);
       await alertInferredMatch({
         payingEmail: email, surveyEmail: wouldRow && wouldRow.email_normalized,
