@@ -3,7 +3,7 @@ import fetch from 'node-fetch';
 import crypto from 'crypto';
 import { describeShape, emailDomainOnly } from './lib-webhook-log.js';
 import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
-         matchPendingReport, emailDomain, INFER_WINDOW_MS,
+         matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
          signRecoveryToken, verifyRecoveryToken,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS } from './lib-pending.js';
 
@@ -4793,10 +4793,28 @@ async function handlePaymentWebhook(req, res) {
   let matchReason = saved ? 'memory-exact' : null;
   let claimedRowId = null;
   let surveyEmailForAlert = null;
+  let candidatePool = [];
+
+  // v8.11.17 [A1]: A MEMORY HIT MUST STILL RETIRE THE TABLE ROW.
+  //
+  // It used to deliver and never touch the table, leaving the row unclaimed
+  // and therefore a live candidate for the next buyer:
+  //
+  //   11:30  Y finishes a survey
+  //   12:00  X finishes a survey, pays from the SAME address, memory hit,
+  //          delivered, row left UNCLAIMED
+  //   12:05  Y pays from a DIFFERENT address. The window holds exactly one
+  //          unclaimed row, X's, and Y is delivered X's report.
+  //
+  // Every step of the matcher was right. The row was never retired.
+  if (saved) {
+    candidatePool = await fetchPendingCandidates({ payingEmail: email, now: Date.now() });
+  }
 
   if (!saved) {
     const now = Date.now();
     const candidates = await fetchPendingCandidates({ payingEmail: email, now });
+    candidatePool = candidates;
     const m = matchPendingReport({ payingEmail: email, candidates, now });
     console.log('PENDING_MATCH [pending] decision=' + m.decision + ' reason=' + m.reason
       + ' candidates=' + candidates.length + ' domain=' + emailDomainOnly(email));
@@ -4892,8 +4910,21 @@ async function handlePaymentWebhook(req, res) {
 
   // The row is claimed only once delivery has succeeded, so a failure earlier
   // leaves the survey available to the recovery link rather than burning it.
-  if (delivered && claimedRowId) {
-    await claimPendingReport({ id: claimedRowId, claimedBy: matchDecision });
+  //
+  // v8.11.17 [A1]: selectRowToClaim names the row for EVERY path, including
+  // the memory hit that has no row object in hand. Best effort: a failure here
+  // logs and never blocks a sale that has already been delivered.
+  if (delivered) {
+    const toClaim = selectRowToClaim({
+      decision: matchReason, matchedRow: claimedRowId ? { id: claimedRowId } : null,
+      payingEmail: email, candidates: candidatePool,
+    });
+    if (toClaim && toClaim.id) {
+      await claimPendingReport({ id: toClaim.id, claimedBy: matchDecision });
+    } else {
+      console.log('PENDING_CLAIM [pending] nothing to claim for this delivery path='
+        + matchReason + ' candidates=' + candidatePool.length);
+    }
   }
   // G3: an inferred delivery is never silent.
   if (delivered && matchDecision === 'inferred') {

@@ -151,3 +151,37 @@ export function verifyRecoveryToken({ token, secret, now }) {
     return { ok: false, reason: 'malformed' };
   }
 }
+
+// ── selectRowToClaim (v8.11.17) [A1] ────────────────────────────────────────
+//
+// WHICH ROW A DELIVERY MUST RETIRE.
+//
+// A memory hit used to deliver without touching the table, so the
+// pending_reports row stayed unclaimed and remained a live candidate for
+// somebody else:
+//
+//   11:30  Y finishes a survey
+//   12:00  X finishes a survey, pays from the SAME address, memory hit,
+//          delivered, row left UNCLAIMED
+//   12:05  Y pays from a DIFFERENT address. The window holds exactly one
+//          unclaimed row, X's, so Y is delivered X's report.
+//
+// Every step of the matcher was right. The row was never retired. A delivered
+// survey has to stop being a candidate, whichever path delivered it.
+//
+// When the matcher supplied a row, that row is the answer and no re-derivation
+// is allowed to disagree with it. When the delivery came from memory there is
+// no row object in hand, so the newest unclaimed row for the PAYING address is
+// named: a memory hit is an exact address match by construction, because
+// /save-report keys the Map by the normalized survey address.
+export function selectRowToClaim({ decision, matchedRow, payingEmail, candidates }) {
+  if (matchedRow && matchedRow.id) return matchedRow;
+  const paying = normalizeEmail(payingEmail);
+  if (!paying || paying.indexOf('@') < 1) return null;
+  const list = Array.isArray(candidates) ? candidates : [];
+  const mine = list
+    .filter(c => c && typeof c === 'object' && c.claimed_at == null
+      && normalizeEmail(c.email_normalized) === paying)
+    .sort((a, b) => Number(b.saved_at) - Number(a.saved_at));
+  return mine.length ? mine[0] : null;
+}
