@@ -262,3 +262,94 @@ export function inferenceVerdict({ wouldHaveInferredId, recoveredId } = {}) {
 export function recoveryAllowed(secretStatus) {
   return secretStatus === 'valid';
 }
+
+// ── C1: a memory hit must still be for sale (v8.11.21) ──────────────────────
+//
+// PRODUCTION, 2026-09-19 20:29Z. A buyer who had bought the Zulu report at
+// 18:09Z saved a FarmShop survey under a different address and paid again from
+// the SAME address as before. The process had not restarted, the Map still
+// held Zulu under the paying address, memory-exact hit, and Zulu was delivered
+// a second time. FarmShop was never considered. PENDING_CLAIM correctly
+// refused to retire the FarmShop row, because its address was not the paying
+// address, and logged "nothing to claim ... candidates=1".
+//
+// Every rule downstream of the Map was right. The Map is a cache with no
+// invalidation, consulted ahead of the table that has invalidation.
+//
+// THE RULE. A memory entry is believed only when the pending row it came from
+// is still unclaimed. Two independent signals retire it:
+//
+//   1. spentAt, set on THIS process after any successful delivery
+//   2. the row being claimed, which also covers a delivery by another process
+//
+// Either alone is enough, and spentAt is checked first so that an unreachable
+// table cannot resurrect a report this process has already sold.
+//
+// THE DELIBERATE HOLE. When the table cannot answer, or when the entry never
+// got a row id because PENDING_WRITE was skipped or failed, memory is trusted
+// exactly as before and the trust is LOGGED. Memory is then the only copy of
+// that report, and a report cannot be regenerated without re-running the
+// assessment. Refusing here would convert a wrong-report bug into a no-report
+// bug, which is worse for the buyer and harder to notice.
+export function markSpent(entry, { at, token } = {}) {
+  if (!entry || typeof entry !== 'object') return null;
+  // A Wix retry must not move the timestamp. The first sale is the sale.
+  if (entry.spentAt) return entry;
+  return Object.assign({}, entry, {
+    spentAt: typeof at === 'number' ? at : Date.now(),
+    spentToken: token == null ? null : String(token),
+  });
+}
+
+// rowState is what the table said about entry.pendingId:
+//   { reachable: false }                        the query failed or was skipped
+//   { reachable: true, found: false }           no such row
+//   { reachable: true, found: true, claimed: b} the row, and whether it is spent
+export function memoryHitVerdict({ entry, rowState } = {}) {
+  if (!entry || typeof entry !== 'object') {
+    return { trust: false, reason: 'no-entry' };
+  }
+  // Checked before anything else on purpose: see THE DELIBERATE HOLE above.
+  if (entry.spentAt) {
+    return { trust: false, reason: 'spent' };
+  }
+  if (!entry.pendingId) {
+    return { trust: true, trusted: true, reason: 'no-pending-id' };
+  }
+  if (!rowState || rowState.reachable !== true) {
+    return { trust: true, trusted: true, reason: 'table-unreachable' };
+  }
+  if (rowState.found !== true) {
+    // A reachable table saying the row is gone. Retention is not scheduled and
+    // nothing else deletes these, so this is a hand edit or a wrong id. Refuse
+    // rather than resell: the buyer still reaches the report by recovery.
+    return { trust: false, reason: 'row-missing' };
+  }
+  if (rowState.claimed === true) {
+    return { trust: false, reason: 'row-claimed' };
+  }
+  return { trust: true, reason: 'row-unclaimed' };
+}
+
+// ── C2 and C3: one alert per ten minutes, never a flood ─────────────────────
+//
+// A rejected webhook and a misrouted path are both "the Wix URL is wrong",
+// which is a condition that repeats on every order until a human fixes it. One
+// alert has to be loud enough to notice and quiet enough that a misconfigured
+// automation, or someone probing the endpoint, cannot turn the alert mailbox
+// into the outage.
+export const ALERT_THROTTLE_MS = 10 * 60 * 1000;
+
+export function alertThrottle({ lastSentAt, now, windowMs } = {}) {
+  const w = typeof windowMs === 'number' ? windowMs : ALERT_THROTTLE_MS;
+  const last = Number(lastSentAt) || 0;
+  const t = Number(now) || 0;
+  // A negative elapsed time means the clock moved backwards, or lastSentAt is
+  // in the future. Either way, suppress: unlocking on a bad clock is how a
+  // throttle becomes a loop.
+  const elapsed = t - last;
+  if (last > 0 && (elapsed < 0 || elapsed < w)) {
+    return { send: false, elapsed, windowMs: w };
+  }
+  return { send: true, elapsed, windowMs: w };
+}

@@ -6,7 +6,9 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
-         RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS } from './lib-pending.js';
+         RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
+         markSpent, memoryHitVerdict,
+         alertThrottle, ALERT_THROTTLE_MS } from './lib-pending.js';
 
 // v8.11.10: LOGGING CANNOT INTERRUPT A PURCHASE.
 //
@@ -2455,10 +2457,21 @@ function saveRateExceeded(bucket, key, max, now) {
 }
 
 // Best effort, never throws, never blocks the response.
+// v8.11.21 [C1]: RETURNS THE ROW ID, NOT A BOOLEAN.
+//
+// The id is the link between the Map entry and the row that can be claimed.
+// Linking by id rather than by timestamp is the point: two surveys saved in
+// the same second under the same address would be indistinguishable by
+// savedAt, and a clock skew between this process and Postgres would make a
+// timestamp comparison wrong in a way nothing would ever notice.
+//
+// Returns the id on success, or null on every failure. A null id makes the
+// entry fall into the "trust memory and log it" branch of memoryHitVerdict,
+// which is the same behaviour this code had before C1.
 async function persistPendingReport({ key, report, survey, product, savedAt }) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
-  if (!url || !dbKey) { console.log('PENDING_WRITE [pending] skipped: supabase not configured'); return false; }
+  if (!url || !dbKey) { console.log('PENDING_WRITE [pending] skipped: supabase not configured'); return null; }
   try {
     const r = await fetch(url + '/rest/v1/pending_reports', {
       method: 'POST',
@@ -2466,7 +2479,7 @@ async function persistPendingReport({ key, report, survey, product, savedAt }) {
         'Content-Type': 'application/json',
         apikey: dbKey,
         Authorization: 'Bearer ' + dbKey,
-        Prefer: 'return=minimal',
+        Prefer: 'return=representation',
       },
       body: JSON.stringify({
         email_normalized: key,
@@ -2479,13 +2492,19 @@ async function persistPendingReport({ key, report, survey, product, savedAt }) {
     if (!r.ok) {
       const txt = await r.text().catch(() => '');
       console.log('PENDING_WRITE [pending] failed ' + r.status + ' ' + txt.slice(0, 160));
-      return false;
+      return null;
     }
-    console.log('PENDING_WRITE [pending] ok domain=' + emailDomainOnly(key));
-    return true;
+    let id = null;
+    try {
+      const rows = await r.json();
+      id = Array.isArray(rows) && rows.length && rows[0] && rows[0].id ? String(rows[0].id) : null;
+    } catch (_) { id = null; }
+    console.log('PENDING_WRITE [pending] ok domain=' + emailDomainOnly(key)
+      + ' row=' + (id || 'unknown'));
+    return id;
   } catch (e) {
     console.log('PENDING_WRITE [pending] error ' + (e && e.message));
-    return false;
+    return null;
   }
 }
 
@@ -2522,7 +2541,13 @@ app.post('/save-report', async (req, res) => {
   const now = Date.now();
 
   // The Map first, and the response next. Nothing below can change either.
-  reportStore.set(key, { report, survey, product: product || 'full', savedAt: now });
+  //
+  // v8.11.21 [C1]: pendingId starts null and is filled in when the row lands.
+  // Until then the entry reads as "no pending id", which means memory is
+  // trusted, which is exactly the behaviour that existed before C1. A survey
+  // paid for in the two seconds before the insert returns is therefore
+  // delivered, not refused.
+  reportStore.set(key, { report, survey, product: product || 'full', savedAt: now, pendingId: null });
   const bytes = saveSizeBytes(report, survey);
   console.log('[save-report] Saved for domain:', emailDomainOnly(key), 'bytes=' + bytes);
   res.status(200).json({ ok: true });
@@ -2544,6 +2569,19 @@ app.post('/save-report', async (req, res) => {
   }
 
   persistPendingReport({ key, report, survey, product, savedAt: now })
+    .then((pendingId) => {
+      if (!pendingId) return;
+      // Guarded on savedAt: if the same address saved a NEWER survey while this
+      // insert was in flight, the Map already holds that one and stamping this
+      // id onto it would point the newer entry at the older row.
+      const cur = reportStore.get(key);
+      if (cur && cur.savedAt === now) {
+        reportStore.set(key, Object.assign({}, cur, { pendingId }));
+      } else {
+        console.log('PENDING_WRITE [pending] row ' + pendingId
+          + ' not linked to memory: a newer survey replaced the entry');
+      }
+    })
     .catch(e => console.log('PENDING_WRITE [pending] unexpected ' + (e && e.message)));
 });
 
@@ -4653,6 +4691,66 @@ async function claimPendingReport({ id, claimedBy }) {
   }
 }
 
+// v8.11.21 [C1]: is the row behind a memory entry still unclaimed?
+//
+// A primary key lookup, deliberately separate from fetchPendingCandidates.
+// The candidate pool could not answer this question: it asks only for
+// UNCLAIMED rows, so a claimed row and a row outside the window both come back
+// as "absent" and the two mean opposite things. This query distinguishes
+// unreachable, missing, and claimed, because the fallback differs for each.
+//
+// Never throws. On any failure it reports the table as unreachable, which
+// makes memoryHitVerdict trust memory, which is pre-C1 behaviour.
+async function fetchPendingRowState({ id }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey || !id) return { reachable: false };
+  try {
+    const r = await fetch(url + '/rest/v1/pending_reports?select=id,claimed_at&id=eq.'
+      + encodeURIComponent(id) + '&limit=1',
+      { headers: { apikey: dbKey, Authorization: 'Bearer ' + dbKey } });
+    if (!r.ok) {
+      console.log('PENDING_STATE [pending] failed ' + r.status);
+      return { reachable: false };
+    }
+    const rows = await r.json();
+    if (!Array.isArray(rows) || !rows.length) return { reachable: true, found: false };
+    return { reachable: true, found: true, claimed: rows[0].claimed_at != null };
+  } catch (e) {
+    console.log('PENDING_STATE [pending] error ' + (e && e.message));
+    return { reachable: false };
+  }
+}
+
+// v8.11.21 [C1]: after a successful delivery, the entry is spent.
+//
+// Marked, not deleted. A delete would fix the resale and break Wix retries: a
+// second webhook for the same order would find nothing in memory and nothing
+// unclaimed in the table, and would turn a delivered sale into a cache miss
+// with a spurious recovery email. A spent entry still holds the report, so a
+// retry can be answered from it if that is ever wired up.
+//
+// Called for the PAYING address and, when they differ, the SURVEY address:
+// both now name a report that has been sold.
+function markMemorySpent({ email, token, reason }) {
+  try {
+    const key = normalizeEmail(email);
+    if (!key) return false;
+    const cur = reportStore.get(key);
+    if (!cur) return false;
+    if (cur.spentAt) return false;
+    reportStore.set(key, markSpent(cur, { at: Date.now(), token }));
+    console.log('MEMORY_SPENT [webhook] entry marked spent domain=' + emailDomainOnly(key)
+      + ' reason=' + reason);
+    return true;
+  } catch (e) {
+    // Best effort by design: a failure here must never fail a delivery that
+    // has already happened.
+    console.log('MEMORY_SPENT [webhook] error ' + (e && e.message));
+    return false;
+  }
+}
+
 // G3: an inferred delivery is never silent.
 async function alertInferredMatch({ payingEmail, surveyEmail, restaurantName, product, reason, shadow }) {
   const INTERNAL_TO = 'hello@4xiconsulting.com';
@@ -4791,6 +4889,15 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   }
 
   await claimPendingReport({ id: row.id, claimedBy: 'recovery' });
+
+  // v8.11.21 [C1]: both addresses are retired in memory too. The typed address
+  // is the survey's, and the paying address may well hold a stale entry of its
+  // own; neither is for sale after this.
+  const recoveredToken = delivered.subscriber && delivered.subscriber.reportToken;
+  markMemorySpent({ email: typed, token: recoveredToken, reason: 'delivered-recovery-survey-side' });
+  if (normalizeEmail(payingEmail) !== normalizeEmail(typed)) {
+    markMemorySpent({ email: payingEmail, token: recoveredToken, reason: 'delivered-recovery' });
+  }
 
   // A4: one sale, one row. The placeholder this order already wrote is filled
   // in, and the row createCustomer just inserted is removed, so the amount is
@@ -4948,7 +5055,31 @@ async function handlePaymentWebhook(req, res) {
   // The Map is still the fast path and still authoritative when it hits: an
   // entry there is an EXACT address match by construction, because
   // /save-report keys it by the normalized survey address.
-  let saved = reportStore.get(email);
+  //
+  // v8.11.21 [C1]: AND IT MUST STILL BE FOR SALE.
+  //
+  // An entry is an exact match on ADDRESS. That says nothing about whether the
+  // report has already been sold, and on 2026-09-19 it had been: the same
+  // buyer paid twice from one address, two hours apart, on one process, and
+  // received the first report both times. The second survey was never read.
+  let memoryEntry = reportStore.get(email);
+  let memoryVerdict = { trust: false, reason: 'no-entry' };
+  if (memoryEntry) {
+    const rowState = memoryEntry.spentAt
+      ? null                                      // already decided; skip the query
+      : await fetchPendingRowState({ id: memoryEntry.pendingId });
+    memoryVerdict = memoryHitVerdict({ entry: memoryEntry, rowState });
+    if (memoryVerdict.trusted) {
+      console.log('MEMORY_TRUSTED [webhook] believed without checking the table reason='
+        + memoryVerdict.reason + ' domain=' + emailDomainOnly(email));
+    } else if (!memoryVerdict.trust) {
+      console.log('MEMORY_STALE [webhook] entry not for sale reason=' + memoryVerdict.reason
+        + ' domain=' + emailDomainOnly(email)
+        + ' falling through to the table');
+    }
+  }
+
+  let saved = memoryVerdict.trust ? memoryEntry : null;
   let matchDecision = saved ? 'exact' : null;
   let matchReason = saved ? 'memory-exact' : null;
   let claimedRowId = null;
@@ -5129,6 +5260,20 @@ async function handlePaymentWebhook(req, res) {
     } else {
       console.log('PENDING_CLAIM [pending] nothing to claim for this delivery path='
         + matchReason + ' candidates=' + candidatePool.length);
+    }
+
+    // v8.11.21 [C1]: the Map entry is retired too, on every path.
+    //
+    // The table claim above is not enough on its own. It fixes the NEXT
+    // process and any process that reads the table, but this one would keep
+    // answering from the Map until it restarts, which is precisely the two
+    // hours and twenty minutes that separated the two Zulu deliveries.
+    const token = delivered.subscriber && delivered.subscriber.reportToken;
+    markMemorySpent({ email, token, reason: 'delivered-' + matchReason });
+    // The survey address, when the match came from the table and the two
+    // differ. That entry now names a report that has been sold as well.
+    if (surveyEmailForAlert && normalizeEmail(surveyEmailForAlert) !== normalizeEmail(email)) {
+      markMemorySpent({ email: surveyEmailForAlert, token, reason: 'delivered-' + matchReason + '-survey-side' });
     }
   }
   // G3: an inferred delivery is never silent.
