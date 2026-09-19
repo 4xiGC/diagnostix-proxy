@@ -3,7 +3,9 @@ import fetch from 'node-fetch';
 import crypto from 'crypto';
 import { describeShape, emailDomainOnly } from './lib-webhook-log.js';
 import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
-         matchPendingReport, emailDomain, INFER_WINDOW_MS } from './lib-pending.js';
+         matchPendingReport, emailDomain, INFER_WINDOW_MS,
+         signRecoveryToken, verifyRecoveryToken,
+         RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS } from './lib-pending.js';
 
 // v8.11.10: LOGGING CANNOT INTERRUPT A PURCHASE.
 //
@@ -2787,6 +2789,22 @@ async function notifyCacheMiss({ email, firstName, product, restaurantName }) {
   const esc = (s) => String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const who = restaurantName ? ` for ${esc(restaurantName)}` : '';
+
+  // v8.11.13: the buyer is no longer told to wait for us. The commonest cause
+  // of this email is that the address on their Wix account is not the one they
+  // typed into the survey, and they are the only person who knows the other
+  // one. The link lets them say it. If RVP_RECOVERY_SECRET is unset the link
+  // is omitted and the email reads exactly as it did before, which is what
+  // makes this deployable before the variable is set.
+  const recoverUrl = buildRecoveryUrl(email);
+  const recoverBlock = recoverUrl
+    ? `<p style="background:#eaf6f1;border-left:4px solid #0b6b57;padding:12px 14px;border-radius:4px;">
+<strong>You can fix this yourself in one step.</strong><br>
+If the email on your payment is not the one you typed into the survey,
+<a href="${esc(recoverUrl)}">tell us which address you used</a> and we will send the
+report straight away. The link works for 14 days.</p>`
+    : '';
+
   try {
     await sendEmailViaResend({
       to: email,
@@ -2794,10 +2812,12 @@ async function notifyCacheMiss({ email, firstName, product, restaurantName }) {
       fromName: 'DiagnostiX',
       html: `<p>Hello${firstName ? ' ' + esc(firstName) : ''},</p>
 <p>Your payment went through, and we could not locate the HealthCheck report${who}
-to attach to it. This is our fault rather than anything you did.</p>
-<p>Reply to this email or write to
+to attach to it. This usually means the email on your payment is different from
+the one you used in the survey.</p>
+${recoverBlock}
+<p>Or reply to this email or write to
 <a href="mailto:${INTERNAL_TO}">${INTERNAL_TO}</a> and we will put it right.
-Your payment is recorded, so there is nothing further for you to do.</p>
+Your payment is recorded, so nothing is lost either way.</p>
 <p>DiagnostiX, 4xi Global Consulting</p>`,
     });
   } catch (e) {
@@ -4169,6 +4189,171 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
   return subscriber;
 }
 
+// ── Recovery links (v8.11.13) ───────────────────────────────────────────────
+//
+// When the matcher answers "none" the buyer has paid and has nothing. The
+// cache-miss email now carries a signed link to a page where they name the
+// address they used in the survey.
+//
+// ATTEMPT COUNTING IS IN MEMORY, AND THAT IS A STATED WEAKNESS. Five guesses
+// per link, keyed by the paying address the token carries. A restart resets
+// the counter. It is not a table because a failed guess identifies no row, so
+// there is nothing to count against; the recovery_attempts and
+// recovery_locked columns in migration 001 are reserved for a later per-row
+// counter and are NOT written by this build. The exposure is small because a
+// valid token is required and only the payer is sent one, but it is real and
+// it is not hidden here.
+const RECOVERY_ATTEMPTS = new Map();
+
+function recoverySecret() {
+  return process.env.RVP_RECOVERY_SECRET || '';
+}
+
+function buildRecoveryUrl(payingEmail) {
+  const secret = recoverySecret();
+  if (!secret) return null;
+  const base = process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app';
+  const t = signRecoveryToken({ payingEmail, issuedAt: Date.now(), secret });
+  return base.replace(/\/$/, '') + '/recover?t=' + encodeURIComponent(t);
+}
+
+const recoveryEsc = (v) => String(v == null ? '' : v)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function renderRecoveryPage({ token, message, done }) {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Find your DiagnostiX report</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f6f7f8;
+       margin:0;padding:40px 16px;color:#1d2125;line-height:1.55}
+  .card{max-width:560px;margin:0 auto;background:#fff;border-radius:10px;padding:32px 28px;
+        box-shadow:0 2px 12px rgba(0,0,0,.08)}
+  h1{font-size:1.35rem;margin:0 0 12px}
+  label{display:block;font-weight:600;margin:20px 0 6px;font-size:.92rem}
+  input[type=email]{width:100%;padding:11px 12px;font-size:1rem;border:1px solid #c6ccd2;
+        border-radius:6px;box-sizing:border-box}
+  button{margin-top:18px;background:#0b6b57;color:#fff;border:0;border-radius:6px;
+         padding:12px 22px;font-size:1rem;font-weight:600;cursor:pointer}
+  .msg{margin-top:18px;padding:12px 14px;border-radius:6px;background:#fdf3e3;
+       border-left:4px solid #d08a1f;font-size:.93rem}
+  .ok{background:#eaf6f1;border-left-color:#0b6b57}
+  p.sub{color:#5b656e;font-size:.93rem}
+</style></head><body><div class="card">
+<h1>Find your DiagnostiX report</h1>
+${done ? '' : `<p class="sub">Your payment went through and we could not match it to a finished
+HealthCheck. That happens when the email on your Wix account is not the one you typed into the
+survey. Tell us the survey email and we will send the report straight away.</p>`}
+${message ? `<div class="msg${done ? ' ok' : ''}">${recoveryEsc(message)}</div>` : ''}
+${done ? '' : `<form method="POST" action="/recover">
+<input type="hidden" name="t" value="${recoveryEsc(token)}">
+<label for="email">The email you used in the survey</label>
+<input id="email" name="email" type="email" required autocomplete="email" placeholder="you@yourrestaurant.com">
+<button type="submit">Send my report</button>
+</form>`}
+</div></body></html>`;
+}
+
+// ── deliverPaidReport (v8.11.13) ────────────────────────────────────────────
+//
+// EXTRACTED VERBATIM from the webhook so the recovery route runs the SAME
+// paid flow rather than a second implementation of it that can drift. The
+// only additions are the `source` label on the completion line and `alsoTo`,
+// which recovery uses to send a second copy to the survey address.
+//
+// Callers: the payment webhook, and POST /recover.
+async function deliverPaidReport({ destEmail, firstName, restaurant, location,
+                                   report, survey, product, planType, amountPaid,
+                                   source, alsoTo }) {
+
+  const subscriber = await createCustomer({
+    email: destEmail,
+    firstName: firstName,
+    restaurantName: restaurant,
+    location: survey.location || '',
+    website:  survey.website  || '',
+    report,
+    survey,
+    planType,
+    amountPaid
+  });
+
+  const supaShaped = {
+    email:           subscriber.email,
+    first_name:      subscriber.firstName,
+    restaurant_name: subscriber.restaurantName,
+    plan_type:       subscriber.planType,
+    amount_paid:     subscriber.amountPaid,
+    active:          planType === 'annual',
+    subscribed_at:   new Date(subscriber.subscribedAt).toISOString(),
+    next_report_at:  subscriber.nextReportAt ? new Date(subscriber.nextReportAt).toISOString() : null,
+    report_token:    subscriber.reportToken
+  };
+
+  // ── Peer comparison ──
+  // After createCustomer, before the email. The stored payload is updated
+  // in place so GET /report?token= renders the same thing the email announces.
+  // Either branch writes SOMETHING: a fragment or a sentence saying why there
+  // is none. A missing key would render as a section quietly left out.
+  const peerNames = (report.competitors || [])
+    .map((c) => (c && c.name ? String(c.name).trim() : ''))
+    .filter(Boolean);
+  const cmp = await fetchPeerComparison({
+    subjectName: restaurant,
+    subjectLocation: location,
+    subjectPillars: Object.fromEntries(
+      Object.entries(report.pillars || {}).map(([k, v]) => [k, v && typeof v.score === 'number' ? v.score : null])
+    ),
+    peerNames,
+  });
+  if (cmp.ok) {
+    report.peerComparisonHtml = cmp.html;
+    report.peerComparisonAbsent = null;
+    console.log('[webhook] peer comparison ok in ' + cmp.ms + 'ms'
+      + (cmp.stats ? ' named=' + cmp.stats.named + ' assessed=' + cmp.stats.assessed + ' excluded=' + cmp.stats.excluded : '')
+      + ' runId=' + cmp.runId);
+  } else {
+    report.peerComparisonHtml = null;
+    report.peerComparisonAbsent = PEER_COMPARISON_ABSENT;
+    await notifyPeerComparisonUnavailable({
+      email: destEmail, restaurantName: restaurant,
+      reason: cmp.reason, detail: cmp.detail, ms: cmp.ms,
+    });
+  }
+
+  // Persist the updated payload. createCustomer already wrote baseline_report
+  // without the comparison, so without this patch the page and the email would
+  // disagree. Failure here is logged and does not stop the email: the customer
+  // getting their report matters more than the comparison reaching the page.
+  await patchBaselineReport(subscriber.reportToken, report);
+
+  const reportUrl = (process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app')
+                   + '/report?token=' + subscriber.reportToken;
+
+  await Promise.all([
+    sendCustomerReportEmail({ subscriber: supaShaped, report, reportNumber: 1, survey }),
+    pushReportContextToHubSpot({ subscriber: supaShaped, report, reportNumber: 1, reportUrl, baseline: report })
+  ]);
+
+  safeLog(() => '[deliver] complete for ' + maskAddr(destEmail) + ' | plan: ' + planType + ' | source: ' + source);
+
+  // Recovery delivers to BOTH addresses: the payer, who is the customer of
+  // record, and the survey address they named, which is where they expected it.
+  if (alsoTo && normalizeEmail(alsoTo) !== normalizeEmail(destEmail)) {
+    try {
+      await sendCustomerReportEmail({
+        subscriber: Object.assign({}, supaShaped, { email: alsoTo }),
+        report, reportNumber: 1, survey,
+      });
+      safeLog(() => '[deliver] second copy sent to ' + maskAddr(alsoTo));
+    } catch (e) {
+      console.log('[deliver] second copy failed: ' + (e && e.message));
+    }
+  }
+
+  return { subscriber, supaShaped, reportUrl };
+}
+
 // ── Pending report lookup and claiming (v8.11.12) ───────────────────────────
 //
 // G4: both of these return a safe default on ANY failure. A missing table,
@@ -4272,6 +4457,142 @@ async function alertInferredMatch({ payingEmail, surveyEmail, restaurantName, pr
   } catch (e) {
     console.log('[webhook] INFERRED alert failed: ' + (e && e.message));
   }
+}
+
+
+// ── GET /recover and POST /recover (v8.11.13) ───────────────────────────────
+//
+// The buyer email is no longer a dead end. Both routes fail closed: a bad,
+// expired or absent token renders the same refusal, and neither reveals
+// whether any particular address exists.
+app.get('/recover', (req, res) => {
+  const token = String(req.query.t || '');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  if (!recoverySecret()) {
+    console.log('RECOVERY [recover] GET refused: RVP_RECOVERY_SECRET not set');
+    return res.status(503).send(renderRecoveryPage({ token, done: true,
+      message: 'Report recovery is not available right now. Please reply to your receipt and we will sort it out.' }));
+  }
+  const v = verifyRecoveryToken({ token, secret: recoverySecret(), now: Date.now() });
+  if (!v.ok) {
+    console.log('RECOVERY [recover] GET rejected reason=' + v.reason);
+    return res.status(400).send(renderRecoveryPage({ token, done: true,
+      message: v.reason === 'expired'
+        ? 'This link has expired. Reply to your receipt and we will send your report.'
+        : 'This link is not valid. Reply to your receipt and we will send your report.' }));
+  }
+  res.status(200).send(renderRecoveryPage({ token }));
+});
+
+app.post('/recover', express.urlencoded({ extended: false }), async (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  const token = String((req.body && req.body.t) || '');
+  const typed = normalizeEmail((req.body && req.body.email) || '');
+  const secret = recoverySecret();
+  const now = Date.now();
+
+  const v = verifyRecoveryToken({ token, secret, now });
+  if (!secret || !v.ok) {
+    console.log('RECOVERY [recover] POST rejected reason=' + (secret ? v.reason : 'no-secret'));
+    return res.status(400).send(renderRecoveryPage({ token, done: true,
+      message: 'This link is not valid or has expired. Reply to your receipt and we will send your report.' }));
+  }
+
+  const payingEmail = v.payingEmail;
+  const used = RECOVERY_ATTEMPTS.get(payingEmail) || 0;
+  if (used >= RECOVERY_MAX_ATTEMPTS) {
+    console.log('RECOVERY [recover] locked attempts=' + used + ' domain=' + emailDomainOnly(payingEmail));
+    return res.status(429).send(renderRecoveryPage({ token, done: true,
+      message: 'Too many attempts on this link. We have been alerted and will email you directly.' }));
+  }
+
+  if (!typed || typed.indexOf('@') < 1) {
+    RECOVERY_ATTEMPTS.set(payingEmail, used + 1);
+    return res.status(400).send(renderRecoveryPage({ token,
+      message: 'That does not look like an email address. '
+        + Math.max(0, RECOVERY_MAX_ATTEMPTS - used - 1) + ' attempts left.' }));
+  }
+
+  // EXACT match on the typed address only. The window rule is switched off
+  // here (windowMs: 0) because the buyer has told us the address: there is
+  // nothing left to infer, and inferring anyway would be the v8.9.37 mistake
+  // wearing a different hat.
+  const candidates = await fetchPendingCandidates({ payingEmail: typed, now });
+  const m = matchPendingReport({ payingEmail: typed, candidates, now, windowMs: 0 });
+  console.log('RECOVERY [recover] attempt decision=' + m.decision + ' reason=' + m.reason
+    + ' candidates=' + candidates.length
+    + ' payingDomain=' + emailDomainOnly(payingEmail) + ' typedDomain=' + emailDomainOnly(typed));
+
+  if (m.decision !== 'exact' || !m.match) {
+    const next = used + 1;
+    RECOVERY_ATTEMPTS.set(payingEmail, next);
+    if (next >= RECOVERY_MAX_ATTEMPTS) {
+      console.log('RECOVERY [recover] LOCKED domain=' + emailDomainOnly(payingEmail));
+      await alertRecoveryLocked({ payingEmail, attempts: next });
+    }
+    return res.status(404).send(renderRecoveryPage({ token,
+      message: 'We have no unclaimed report for that address. '
+        + Math.max(0, RECOVERY_MAX_ATTEMPTS - next) + ' attempts left.' }));
+  }
+
+  const row = m.match;
+  const report = row.report || {};
+  const survey = row.survey || {};
+  const restaurant = survey.name || '';
+  const product = row.product || 'full';
+  const planType = product === 'annual' ? 'annual' : 'one_off';
+  const amountPaid = planType === 'annual' ? 99.99 : 24.99;
+
+  const delivered = await deliverPaidReport({
+    destEmail: payingEmail,
+    firstName: survey.contactName || survey.firstName || '',
+    restaurant, location: survey.location || '',
+    report, survey, product, planType, amountPaid,
+    source: 'recovery', alsoTo: typed,
+  });
+
+  if (!delivered) {
+    console.log('RECOVERY [recover] delivery failed, row left unclaimed');
+    return res.status(500).send(renderRecoveryPage({ token, done: true,
+      message: 'We found your report and could not send it. We have been alerted and will email you directly.' }));
+  }
+
+  await claimPendingReport({ id: row.id, claimedBy: 'recovery' });
+  await alertRecoveryUsed({ payingEmail, surveyEmail: typed, restaurantName: restaurant, product });
+  RECOVERY_ATTEMPTS.delete(payingEmail);
+
+  return res.status(200).send(renderRecoveryPage({ token, done: true,
+    message: 'Sent. Your report is on its way to both addresses. You can close this page.' }));
+});
+
+async function alertRecoveryLocked({ payingEmail, attempts }) {
+  try {
+    await sendEmailViaResend({
+      to: 'hello@4xiconsulting.com',
+      subject: 'Recovery link LOCKED after ' + attempts + ' attempts',
+      fromName: 'DiagnostiX Alerts',
+      html: '<p><strong>A paid buyer has run out of recovery attempts.</strong></p>'
+        + '<ul><li>paying address domain: ' + recoveryEsc(emailDomain(payingEmail)) + '</li>'
+        + '<li>attempts: ' + recoveryEsc(attempts) + '</li></ul>'
+        + '<p>They have paid and still have nothing. Find their survey by hand and send it.</p>',
+    });
+  } catch (e) { console.log('[recover] locked alert failed: ' + (e && e.message)); }
+}
+
+async function alertRecoveryUsed({ payingEmail, surveyEmail, restaurantName, product }) {
+  try {
+    await sendEmailViaResend({
+      to: 'hello@4xiconsulting.com',
+      subject: 'Recovery link used: a paid report was matched by hand',
+      fromName: 'DiagnostiX Alerts',
+      html: '<p><strong>A buyer recovered their own report through the link.</strong></p>'
+        + '<ul><li>paying address domain: ' + recoveryEsc(emailDomain(payingEmail)) + '</li>'
+        + '<li>survey address domain: ' + recoveryEsc(emailDomain(surveyEmail)) + '</li>'
+        + '<li>restaurant: ' + recoveryEsc(restaurantName || '(not supplied)') + '</li>'
+        + '<li>product: ' + recoveryEsc(product) + '</li></ul>'
+        + '<p>Delivered to BOTH addresses. The survey row is now claimed.</p>',
+    });
+  } catch (e) { console.log('[recover] used alert failed: ' + (e && e.message)); }
 }
 
 // ── /payment-webhook ─────────────────────────────────────────
@@ -4439,91 +4760,26 @@ async function handlePaymentWebhook(req, res) {
   const planType = product === 'annual' ? 'annual' : 'one_off';
   const amountPaid = planType === 'annual' ? 99.99 : Number(payload.amountPaid || payload.amount || 24.99);
 
-  const subscriber = await createCustomer({
-    email: destEmail,
-    firstName: resolvedFirstName,
-    restaurantName: restaurant,
-    location: survey.location || '',
-    website:  survey.website  || '',
-    report,
-    survey,
-    planType,
-    amountPaid
+  const delivered = await deliverPaidReport({
+    destEmail, firstName: resolvedFirstName, restaurant,
+    location, report, survey, product, planType, amountPaid,
+    source: 'webhook-' + matchDecision,
   });
 
-  // The row is claimed only once a subscriber exists, so a failure earlier in
-  // this handler leaves the survey available to the recovery link rather than
-  // burning it.
-  if (claimedRowId) {
+  // The row is claimed only once delivery has succeeded, so a failure earlier
+  // leaves the survey available to the recovery link rather than burning it.
+  if (delivered && claimedRowId) {
     await claimPendingReport({ id: claimedRowId, claimedBy: matchDecision });
   }
   // G3: an inferred delivery is never silent.
-  if (matchDecision === 'inferred') {
+  if (delivered && matchDecision === 'inferred') {
     await alertInferredMatch({
       payingEmail: destEmail, surveyEmail: surveyEmailForAlert,
       restaurantName: restaurant, product, reason: matchReason,
     });
   }
-
-  const supaShaped = {
-    email:           subscriber.email,
-    first_name:      subscriber.firstName,
-    restaurant_name: subscriber.restaurantName,
-    plan_type:       subscriber.planType,
-    amount_paid:     subscriber.amountPaid,
-    active:          planType === 'annual',
-    subscribed_at:   new Date(subscriber.subscribedAt).toISOString(),
-    next_report_at:  subscriber.nextReportAt ? new Date(subscriber.nextReportAt).toISOString() : null,
-    report_token:    subscriber.reportToken
-  };
-
-  // ── Peer comparison ──
-  // After createCustomer, before the email. The stored payload is updated
-  // in place so GET /report?token= renders the same thing the email announces.
-  // Either branch writes SOMETHING: a fragment or a sentence saying why there
-  // is none. A missing key would render as a section quietly left out.
-  const peerNames = (report.competitors || [])
-    .map((c) => (c && c.name ? String(c.name).trim() : ''))
-    .filter(Boolean);
-  const cmp = await fetchPeerComparison({
-    subjectName: restaurant,
-    subjectLocation: location,
-    subjectPillars: Object.fromEntries(
-      Object.entries(report.pillars || {}).map(([k, v]) => [k, v && typeof v.score === 'number' ? v.score : null])
-    ),
-    peerNames,
-  });
-  if (cmp.ok) {
-    report.peerComparisonHtml = cmp.html;
-    report.peerComparisonAbsent = null;
-    console.log('[webhook] peer comparison ok in ' + cmp.ms + 'ms'
-      + (cmp.stats ? ' named=' + cmp.stats.named + ' assessed=' + cmp.stats.assessed + ' excluded=' + cmp.stats.excluded : '')
-      + ' runId=' + cmp.runId);
-  } else {
-    report.peerComparisonHtml = null;
-    report.peerComparisonAbsent = PEER_COMPARISON_ABSENT;
-    await notifyPeerComparisonUnavailable({
-      email: destEmail, restaurantName: restaurant,
-      reason: cmp.reason, detail: cmp.detail, ms: cmp.ms,
-    });
-  }
-
-  // Persist the updated payload. createCustomer already wrote baseline_report
-  // without the comparison, so without this patch the page and the email would
-  // disagree. Failure here is logged and does not stop the email: the customer
-  // getting their report matters more than the comparison reaching the page.
-  await patchBaselineReport(subscriber.reportToken, report);
-
-  const reportUrl = (process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app')
-                   + '/report?token=' + subscriber.reportToken;
-
-  await Promise.all([
-    sendCustomerReportEmail({ subscriber: supaShaped, report, reportNumber: 1, survey }),
-    pushReportContextToHubSpot({ subscriber: supaShaped, report, reportNumber: 1, reportUrl, baseline: report })
-  ]);
-
-  safeLog(() => '[webhook] Full flow complete for ' + maskAddr(destEmail) + ' | plan: ' + planType);
 }
+
 
 // Registered on both routes so Wix can move to the path-secret form without a
 // code change. Neither rejects anything today.

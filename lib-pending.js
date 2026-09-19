@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Pending reports: normalization and size limits.
+// Pending reports: normalization, size limits, matching and recovery links.
 //
 // PURE. No I/O, no env, no clock of its own: every function that needs the
 // time takes it as an argument, so the rules can be tested at a fixed instant
@@ -14,6 +14,8 @@
 //   min 5,994  median 13,047  mean 12,397  p90 16,713  max 21,469 bytes.
 // The cap is ~12x the largest report ever stored, so it cannot reject a real
 // one, and it stops /save-report being an open door to a database.
+import crypto from 'crypto';
+
 export const MAX_SAVE_BYTES = 262144;          // 256 KiB
 
 export function normalizeEmail(email) {
@@ -101,4 +103,51 @@ export function matchPendingReport({ payingEmail, candidates, now, windowMs }) {
     return { decision: 'none', match: null, reason: 'ambiguous-' + inWindow.length + '-candidates-in-window' };
   }
   return { decision: 'none', match: null, reason: 'no-candidate-in-window' };
+}
+
+export const RECOVERY_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+export const RECOVERY_MAX_ATTEMPTS = 5;
+
+// ── Recovery links ──────────────────────────────────────────────────────────
+//
+// HMAC-SHA256 over the paying address and an expiry, base64url. It proves the
+// link came from us and has not been edited.
+//
+// IT DOES NOT PROVE SINGLE USE. A token cannot know it has been spent, so
+// single use lives on the row (claimed_at) and the attempt counter lives on
+// the row too (recovery_attempts, recovery_locked). Anything else would be a
+// claim the token is not able to make.
+const b64url = (buf) => Buffer.from(buf).toString('base64')
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64url = (s) => Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+
+export function signRecoveryToken({ payingEmail, issuedAt, secret, ttlMs }) {
+  const issued = Number(issuedAt);
+  const payload = {
+    e: normalizeEmail(payingEmail),
+    i: issued,
+    x: issued + (typeof ttlMs === 'number' ? ttlMs : RECOVERY_TTL_MS),
+  };
+  const body = b64url(JSON.stringify(payload));
+  const sig = b64url(crypto.createHmac('sha256', String(secret)).update(body).digest());
+  return body + '.' + sig;
+}
+
+export function verifyRecoveryToken({ token, secret, now }) {
+  try {
+    const parts = String(token == null ? '' : token).split('.');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return { ok: false, reason: 'malformed' };
+    const [body, sig] = parts;
+    const expect = b64url(crypto.createHmac('sha256', String(secret)).update(body).digest());
+    const a = Buffer.from(sig), b = Buffer.from(expect);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return { ok: false, reason: 'bad-signature' };
+    }
+    const payload = JSON.parse(unb64url(body).toString('utf8'));
+    if (!payload || typeof payload.x !== 'number') return { ok: false, reason: 'malformed-payload' };
+    if (Number(now) > payload.x) return { ok: false, reason: 'expired' };
+    return { ok: true, payingEmail: payload.e, issuedAt: payload.i, expiresAt: payload.x };
+  } catch (_) {
+    return { ok: false, reason: 'malformed' };
+  }
 }
