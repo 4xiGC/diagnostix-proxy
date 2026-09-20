@@ -5,6 +5,7 @@ import { describeShape, emailDomainOnly, addrLabel } from './lib-webhook-log.js'
 import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
          deliveryProvenanceLines, swapLinkSentence, swapEligibility, SWAP_NOTE_PREFIX,
+         isDuplicateSubmission, DUPLICATE_WINDOW_MS, DUPLICATE_CLAIM_LABEL,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
@@ -2649,6 +2650,54 @@ function saveRateExceeded(bucket, key, max, now) {
 // Returns the id on success, or null on every failure. A null id makes the
 // entry fall into the "trust memory and log it" branch of memoryHitVerdict,
 // which is the same behaviour this code had before C1.
+// ── Duplicate submissions (v8.11.33) ──────────────────────────────
+//
+// The Drum & Monkey was saved twice under one address on 2026-09-20, three
+// minutes apart, and both rows are still unclaimed. The older one is
+// unreachable: a payment buys the newest, and nothing revisits the rest.
+//
+// The older row is marked claimed_by = 'superseded-duplicate' rather than
+// deleted. A delete would destroy a report that cannot be regenerated without
+// re-running the assessment, and the label is the record of why the row stopped
+// being a candidate.
+//
+// BEST EFFORT, AND AFTER THE NEW ROW EXISTS. Nothing here may fail a save: the
+// survey is already in the Map and already answered 200 by this point, and a
+// failure to tidy an older row is not a reason to lose a new one.
+async function supersedeDuplicateRows({ key, newRowId, survey, savedAt }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey || !newRowId) return 0;
+  try {
+    const since = new Date(Number(savedAt) - DUPLICATE_WINDOW_MS).toISOString();
+    const r = await fetch(url + '/rest/v1/pending_reports?select=id,email_normalized,survey,saved_at,claimed_at'
+      + '&claimed_at=is.null&email_normalized=eq.' + encodeURIComponent(key)
+      + '&saved_at=gte.' + encodeURIComponent(since) + '&order=saved_at.desc&limit=10',
+      { headers: { apikey: dbKey, Authorization: 'Bearer ' + dbKey } });
+    if (!r.ok) { console.log('DUPLICATE [pending] lookup failed ' + r.status); return 0; }
+    const rows = await r.json();
+    const incoming = { id: newRowId, survey, saved_at: Number(savedAt), claimed_at: null };
+    let n = 0;
+    for (const row of (Array.isArray(rows) ? rows : [])) {
+      const existing = { id: row.id, survey: row.survey, saved_at: Date.parse(row.saved_at),
+                         claimed_at: row.claimed_at };
+      if (!isDuplicateSubmission({ existing, incoming })) continue;
+      const ok = await claimPendingReport({ id: row.id, claimedBy: DUPLICATE_CLAIM_LABEL });
+      if (ok) {
+        n++;
+        console.log('DUPLICATE [pending] superseded row=' + row.id
+          + ' by=' + newRowId + ' reason=same-restaurant-within-'
+          + (DUPLICATE_WINDOW_MS / 60000) + 'min addr=' + addrLabel(key));
+      }
+    }
+    if (n === 0) console.log('DUPLICATE [pending] none to supersede addr=' + addrLabel(key));
+    return n;
+  } catch (e) {
+    console.log('DUPLICATE [pending] error ' + (e && e.message));
+    return 0;
+  }
+}
+
 async function persistPendingReport({ key, report, survey, product, savedAt }) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
@@ -2682,6 +2731,9 @@ async function persistPendingReport({ key, report, survey, product, savedAt }) {
     } catch (_) { id = null; }
     console.log('PENDING_WRITE [pending] ok domain=' + addrLabel(key)
       + ' row=' + (id || 'unknown'));
+    // v8.11.33: the same survey submitted twice is one survey. Best effort,
+    // after the row exists, and never allowed to fail the save.
+    if (id) await supersedeDuplicateRows({ key, newRowId: id, survey, savedAt });
     return id;
   } catch (e) {
     console.log('PENDING_WRITE [pending] error ' + (e && e.message));

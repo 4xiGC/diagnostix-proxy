@@ -238,6 +238,68 @@ export function swapEligibility(args) {
   return { allowed: true, mode: 'recovery', reason: 'placeholder-order' };
 }
 
+// ── Duplicate submissions (v8.11.33) ──────────────────────────────
+//
+// On 2026-09-20 The Drum & Monkey was saved twice under one address, three
+// minutes and twenty four seconds apart. Both rows are still unclaimed. A
+// payment from that address would buy the newer one and strand the older one
+// forever, and the buyer would be told "you have 1 other completed survey
+// waiting" about a survey that is the same survey.
+//
+// SAMENESS IS BY PLACES ID WHERE THERE IS ONE. A Places id is the identity of
+// a restaurant; a name is not. "The Drum & Monkey" and "Drum and Monkey" are
+// one pub, and two branches of a chain share a name and are two subjects.
+// Name plus location is the fallback and is a weaker signal, which is why the
+// window is short and why two BLANK names never match: two unnamed surveys are
+// unknown, not identical.
+export const DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
+export const DUPLICATE_CLAIM_LABEL = 'superseded-duplicate';
+
+function normName(v) {
+  return String(v == null ? '' : v)
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+export function isDuplicateSubmission(args) {
+  try {
+    const a = (args && typeof args === 'object') ? args : {};
+    const ex = (a.existing && typeof a.existing === 'object') ? a.existing : null;
+    const inc = (a.incoming && typeof a.incoming === 'object') ? a.incoming : null;
+    if (!ex || !inc) return false;
+    if (ex === inc) return false;
+    if (ex.id != null && inc.id != null && ex.id === inc.id) return false;
+
+    // Never relabel a row that has already been sold.
+    if (ex.claimed_at != null) return false;
+
+    const w = typeof a.windowMs === 'number' ? a.windowMs : DUPLICATE_WINDOW_MS;
+    const te = Number(ex.saved_at), ti = Number(inc.saved_at);
+    if (!Number.isFinite(te) || !Number.isFinite(ti)) return false;
+    if (Math.abs(ti - te) > w) return false;
+
+    const se = (ex.survey && typeof ex.survey === 'object') ? ex.survey : {};
+    const si = (inc.survey && typeof inc.survey === 'object') ? inc.survey : {};
+
+    const pe = String(se.placeId || se.place_id || '').trim();
+    const pi = String(si.placeId || si.place_id || '').trim();
+    // A Places id on BOTH sides is the whole answer, either way.
+    if (pe && pi) return pe === pi;
+
+    const ne = normName(se.name), ni = normName(si.name);
+    if (!ne || !ni) return false;
+    if (ne !== ni) return false;
+
+    const le = normName(se.location), li = normName(si.location);
+    if (!le || !li) return false;
+    return le === li;
+  } catch (_) {
+    return false;
+  }
+}
+
 export const RECOVERY_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 export const RECOVERY_MAX_ATTEMPTS = 5;
 
