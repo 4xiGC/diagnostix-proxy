@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import { describeShape, emailDomainOnly, addrLabel } from './lib-webhook-log.js';
 import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
-         deliveryProvenanceLines,
+         deliveryProvenanceLines, swapLinkSentence, swapEligibility, SWAP_NOTE_PREFIX,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
@@ -3281,7 +3281,7 @@ async function pushLastEngaged(email) {
 }
 
 // ── CUSTOMER WELCOME / REPORT EMAIL ──────────────────────────
-async function sendCustomerReportEmail({ subscriber, report, reportNumber, survey, provenance }) {
+async function sendCustomerReportEmail({ subscriber, report, reportNumber, survey, provenance, swapUrl }) {
   const baseUrl = process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app';
 
   // Subscriber object can arrive in two shapes (Supabase snake_case vs in-memory camelCase).
@@ -3327,6 +3327,12 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber, surve
     surveySavedAt: (survey && survey.savedAt) || null,
   });
 
+  // v8.11.31: ONE SWAP PER ORDER, offered to everybody who paid on a call we
+  // could authenticate. swapUrl is null when the webhook secret was absent or
+  // wrong, and an empty string here means the sentence is simply not rendered:
+  // an unauthenticated call must not be handed a signed link.
+  const swapLine = swapLinkSentence(swapUrl);
+
   // Score color matches the survey banding (green ≥65, amber ≥45, red <45)
   const scoreColor = score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24';
   const escE = (s) => String(s ?? '')
@@ -3367,7 +3373,7 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber, surve
 
       <div style="font-family:'League Spartan',Arial,sans-serif;font-size:20px;font-weight:900;color:#1B1464;margin:0 0 14px;line-height:1.25">${escE(headline)}</div>
       <p style="font-family:'League Spartan',Arial,sans-serif;font-size:14px;line-height:1.65;color:#444;margin:0 0 14px;font-weight:400">Hi ${escE(firstName)}, ${escE(intro)}</p>
-      <div style="font-family:'League Spartan',Arial,sans-serif;font-size:14px;line-height:1.65;color:#1B1464;margin:0 0 24px;padding:14px 16px;background:#F5F4FC;border-left:4px solid #0072BC;border-radius:6px;font-weight:500">${provLines.map(l => '<div style="margin:0 0 6px">' + escE(l) + '</div>').join('')}</div>
+      <div style="font-family:'League Spartan',Arial,sans-serif;font-size:14px;line-height:1.65;color:#1B1464;margin:0 0 24px;padding:14px 16px;background:#F5F4FC;border-left:4px solid #0072BC;border-radius:6px;font-weight:500">${provLines.map(l => '<div style="margin:0 0 6px">' + escE(l) + '</div>').join('')}${swapLine ? '<div style="margin:10px 0 0;font-weight:400;color:#444;font-size:13px">' + escE(swapLine).replace(escE(String(swapUrl)), '<a href="' + escE(String(swapUrl)) + '" style="color:#0072BC;word-break:break-all">' + escE(String(swapUrl)) + '</a>') + '</div>' : ''}</div>
 
       <!-- Score block -->
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#F5F4FC;border-radius:10px;margin:0 0 28px">
@@ -4523,6 +4529,75 @@ async function findPlaceholderRow({ payingEmail }) {
   }
 }
 
+// ── The swap (v8.11.31) ─────────────────────────────────────────────────────
+//
+// findOrderRow returns the NEWEST subscriber row for the paying address,
+// delivered or placeholder. findPlaceholderRow cannot answer this: it filters
+// on report_token IS NULL, so a delivered order comes back as "absent", which
+// is the same answer as "no such order" and means the opposite thing.
+async function findOrderRow({ payingEmail }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey) return null;
+  try {
+    const r = await fetch(url + '/rest/v1/subscribers?select=*'
+      + '&email=eq.' + encodeURIComponent(normalizeEmail(payingEmail))
+      + '&order=subscribed_at.desc&limit=1',
+      { headers: { apikey: dbKey, Authorization: 'Bearer ' + dbKey } });
+    if (!r.ok) { console.log('SWAP [swap] order lookup failed ' + r.status); return null; }
+    const rows = await r.json();
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  } catch (e) {
+    console.log('SWAP [swap] order lookup error ' + (e && e.message));
+    return null;
+  }
+}
+
+// ONE SALE STAYS ONE SUBSCRIBER ROW.
+//
+// The swap replaces what the order delivered, in place. createCustomer has
+// already inserted a fresh row by the time this runs, so that one is removed
+// afterwards, exactly as the placeholder path does. amount_paid, plan_type and
+// subscribed_at are deliberately NOT restated: the order recorded those once,
+// and rewriting them would be inventing a second sale.
+//
+// The SWAPPED note is what makes the link single use. A token cannot know it
+// has been spent, and the attempt counter only counts FAILURES, so without a
+// marker on the row one signed link would hand out one more report for every
+// address the holder could name.
+async function recordSwapOnOrderRow({ orderId, subscriber, report, restaurantName }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey || !orderId) return false;
+  try {
+    const r = await fetch(url + '/rest/v1/subscribers?id=eq.' + encodeURIComponent(orderId), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', apikey: dbKey,
+                 Authorization: 'Bearer ' + dbKey, Prefer: 'return=representation' },
+      body: JSON.stringify({
+        restaurant_name: subscriber.restaurantName || null,
+        location:        subscriber.location || null,
+        website:         subscriber.website || null,
+        report_token:    subscriber.reportToken,
+        baseline_report: report || null,
+        baseline_score:  (report && report.healthCheckScore) || 0,
+        reports_sent:    1,
+        notes: SWAP_NOTE_PREFIX + ' delivered ' + String(restaurantName || 'a different survey')
+          + ' in place of the original, by the swap link, on ' + new Date().toISOString() + '.',
+      }),
+    });
+    if (!r.ok) { console.log('SWAP [swap] record failed ' + r.status); return false; }
+    const rows = await r.json();
+    const ok = Array.isArray(rows) && rows.length === 1;
+    console.log('SWAP [swap] ' + (ok ? 'recorded on the order row, the link is now spent'
+                                     : 'nothing recorded'));
+    return ok;
+  } catch (e) {
+    console.log('SWAP [swap] record error ' + (e && e.message));
+    return false;
+  }
+}
+
 async function supersedePlaceholderRow({ placeholderId, subscriber, report }) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
@@ -4737,7 +4812,7 @@ ${done ? '' : `<form method="POST" action="/recover">
 // Callers: the payment webhook, and POST /recover.
 async function deliverPaidReport({ destEmail, firstName, restaurant, location,
                                    report, survey, product, planType, amountPaid,
-                                   source, alsoTo, surveySavedAt, otherWaitingCount }) {
+                                   source, alsoTo, surveySavedAt, otherWaitingCount, swapUrl }) {
 
   const subscriber = await createCustomer({
     email: destEmail,
@@ -4807,7 +4882,7 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
     sendCustomerReportEmail({ subscriber: supaShaped, report, reportNumber: 1, survey,
       // v8.11.30: the buyer is told which survey this answers, and whether any
       // of their own are still waiting.
-      provenance: { restaurantName: restaurant, surveySavedAt, otherWaitingCount } }),
+      provenance: { restaurantName: restaurant, surveySavedAt, otherWaitingCount }, swapUrl }),
     pushReportContextToHubSpot({ subscriber: supaShaped, report, reportNumber: 1, reportUrl, baseline: report })
   ]);
 
@@ -5119,8 +5194,36 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   // here (windowMs: 0) because the buyer has told us the address: there is
   // nothing left to infer, and inferring anyway would be the v8.9.37 mistake
   // wearing a different hat.
+  // v8.11.31: WHICH MODE, AND MAY THIS LINK BE USED AT ALL.
+  //
+  // The same signed link now arrives with every paid delivery, so it is used
+  // in two situations: an order that delivered nothing (recovery, unchanged
+  // behaviour) and an order that delivered the wrong survey (swap, new). The
+  // difference is visible on the order's subscriber row, and so is whether the
+  // one swap it is entitled to has already been taken.
+  //
+  // Checked BEFORE the candidate lookup so a spent link cannot even learn
+  // whether a given address has an unclaimed survey.
+  const orderRow = await findOrderRow({ payingEmail });
+  const elig = swapEligibility({ orderRow });
+  console.log('SWAP [swap] mode=' + elig.mode + ' allowed=' + elig.allowed
+    + ' reason=' + elig.reason + ' addr=' + addrLabel(payingEmail));
+  if (!elig.allowed) {
+    return res.status(409).send(renderRecoveryPage({ token, done: true,
+      message: 'This link has already been used once. Each order includes one swap. '
+        + 'Reply to your receipt and we will sort out anything else.' }));
+  }
+
   const candidates = await fetchPendingCandidates({ payingEmail: typed, now });
-  const m = matchPendingReport({ payingEmail: typed, candidates, now, windowMs: 0 });
+  let m;
+  try {
+    m = matchPendingReport({ payingEmail: typed, candidates, now, windowMs: 0 });
+  } catch (e) {
+    console.log('RECOVERY [recover] candidates unorderable: ' + (e && e.message));
+    await alertWebhookProblem({ kind: 'unorderable-candidates',
+      detail: 'matchPendingReport refused the candidate rows on the recovery path. ' + (e && e.message) });
+    m = { decision: 'none', match: null, reason: 'candidates-unorderable' };
+  }
   // rule=exact-only is stated because the matcher's own reason string reads
   // "no-candidate-in-window" here, which would tell an operator the window
   // rule had been applied. It has not: windowMs is 0 on this path.
@@ -5169,7 +5272,7 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
       message: 'We found your report and could not send it. We have been alerted and will email you directly.' }));
   }
 
-  await claimPendingReport({ id: row.id, claimedBy: 'recovery' });
+  await claimPendingReport({ id: row.id, claimedBy: elig.mode === 'swap' ? 'swap' : 'recovery' });
 
   // v8.11.21 [C1]: both addresses are retired in memory too. The typed address
   // is the survey's, and the paying address may well hold a stale entry of its
@@ -5178,6 +5281,27 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   markMemorySpent({ email: typed, token: recoveredToken, reason: 'delivered-recovery-survey-side' });
   if (normalizeEmail(payingEmail) !== normalizeEmail(typed)) {
     markMemorySpent({ email: payingEmail, token: recoveredToken, reason: 'delivered-recovery' });
+  }
+
+  // v8.11.31: A SWAP REPLACES WHAT THE ORDER DELIVERED, IN PLACE.
+  //
+  // One sale, one subscriber row, on both paths. The difference is which row
+  // is the survivor: recovery fills in the placeholder this order wrote, and a
+  // swap overwrites the row that already carries the wrong report. Either way
+  // the row createCustomer just inserted is removed.
+  if (elig.mode === 'swap' && orderRow && orderRow.id && delivered.subscriber) {
+    const swapped = await recordSwapOnOrderRow({
+      orderId: orderRow.id, subscriber: delivered.subscriber, report,
+      restaurantName: restaurant,
+    });
+    if (swapped) await deleteDuplicateSubscriberRow({
+      reportToken: delivered.subscriber.reportToken, keepId: orderRow.id,
+    });
+    await alertSwapUsed({ payingEmail, surveyEmail: typed, restaurantName: restaurant, product });
+    RECOVERY_ATTEMPTS.delete(payingEmail);
+    return res.status(200).send(renderRecoveryPage({ token, done: true,
+      message: 'Sent. Your report for ' + restaurant + ' is on its way to both addresses. '
+        + 'You can close this page.' }));
   }
 
   // A4: one sale, one row. The placeholder this order already wrote is filled
@@ -5243,6 +5367,38 @@ async function alertRecoveryUsed({ payingEmail, surveyEmail, restaurantName, pro
         + '<p>Delivered to BOTH addresses. The survey row is now claimed.</p>',
     });
   } catch (e) { console.log('[recover] used alert failed: ' + (e && e.message)); }
+}
+
+// ── The swap alert (v8.11.31) ────────────
+//
+// Every one of these describes a condition that was already happening and that
+// nobody could see. All go through alertWebhookProblem's existing throttle, so
+// a misconfiguration cannot turn into a mailstorm, and all are addressed in
+// domain plus local part length, never in full.
+
+// A swap was used. Distinct from alertRecoveryUsed: recovery means the
+//    order delivered nothing, a swap means it delivered the wrong thing, and
+//    the second is a signal about the matching rule rather than about a
+//    mismatched address.
+async function alertSwapUsed({ payingEmail, surveyEmail, restaurantName, product }) {
+  try {
+    await sendEmailViaResend({
+      to: 'hello@4xiconsulting.com',
+      subject: 'Swap link used: a buyer corrected which report they were sent',
+      fromName: 'DiagnostiX Alerts',
+      html: '<p><strong>A buyer used their one swap.</strong> The order had already been '
+        + 'delivered, and they told us it was the wrong survey.</p>'
+        + '<ul><li>paying address: ' + recoveryEsc(addrLabel(payingEmail)) + '</li>'
+        + '<li>survey address: ' + recoveryEsc(addrLabel(surveyEmail)) + '</li>'
+        + '<li>restaurant now delivered: ' + recoveryEsc(restaurantName || '(not supplied)') + '</li>'
+        + '<li>product: ' + recoveryEsc(product) + '</li></ul>'
+        + '<p>Delivered to BOTH addresses. The survey row is claimed by=swap and the '
+        + 'link is spent. One sale, one subscriber row.</p>'
+        + '<p>Worth reading alongside the STALE EXACT alert for the same order, if there '
+        + 'is one: together they say the matching rule picked a survey the buyer did not '
+        + 'want, and which one they wanted instead.</p>',
+    });
+  } catch (e) { console.log('[alert] swap-used failed: ' + (e && e.message)); }
 }
 
 // ── /payment-webhook ─────────────────────────────────────────
@@ -5634,6 +5790,11 @@ async function handlePaymentWebhook(req, res) {
     source: 'webhook-' + matchDecision,
     surveySavedAt: (saved && saved.savedAt) || null,
     otherWaitingCount,
+    // v8.11.31: the swap link rides on the SAME gate that already decides
+    // whether this call may be offered recovery at all. An unauthenticated
+    // caller must never be handed a signed link, because the link is the
+    // authority to be sent somebody's report.
+    swapUrl: recoveryAllowed(secretStatus) ? buildRecoveryUrl(email) : null,
   });
 
   // The row is claimed only once delivery has succeeded, so a failure earlier

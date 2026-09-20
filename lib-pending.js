@@ -191,6 +191,53 @@ export function deliveryProvenanceLines(args) {
   return lines;
 }
 
+// ── The swap (v8.11.31) ─────────────────────────────────────────────────────
+//
+// ONE CORRECTION PER ORDER, OFFERED TO EVERYBODY.
+//
+// The recovery link already existed, and was only ever sent when NOTHING
+// matched a payment. On 2026-09-20 something DID match, it was the wrong
+// survey, and the buyer had no route at all. The same link now goes out with
+// every paid delivery, and it does two jobs:
+//
+//   recovery   the order delivered nothing; the subscriber row is a placeholder
+//   swap       the order delivered something; the buyer wants a different one
+//
+// SINGLE USE IS THE POINT. The attempt counter only counts FAILURES, so it
+// cannot stop a successful replay: without this, one signed link would hand
+// out one more report every time somebody named another address that happened
+// to have an unclaimed survey. The marker lives on the order's subscriber row
+// rather than in the token, because a token cannot know it has been spent.
+export const SWAP_NOTE_PREFIX = 'SWAPPED:';
+
+export function swapLinkSentence(url) {
+  const u = String(url == null ? '' : url).trim();
+  if (!u) return '';
+  return 'Expected a different restaurant? If you completed the survey under another '
+    + 'email address, use this link within 14 days and we will send that report '
+    + 'instead: ' + u;
+}
+
+// Which mode this link is being used in, and whether it may be used at all.
+//
+// A MISSING ORDER ROW IS ALLOWED. The table may be unreachable, or the row may
+// predate this release. Refusing a paying customer because we cannot find
+// their receipt is the wrong failure to choose: the worst case is a recovery
+// that behaves exactly as it did before this release.
+export function swapEligibility(args) {
+  const a = (args && typeof args === 'object') ? args : {};
+  const row = (a.orderRow && typeof a.orderRow === 'object') ? a.orderRow : null;
+  if (!row) return { allowed: true, mode: 'recovery', reason: 'no-order-row' };
+
+  const notes = String(row.notes == null ? '' : row.notes);
+  if (notes.indexOf(SWAP_NOTE_PREFIX) >= 0) {
+    return { allowed: false, mode: 'swap', reason: 'already-swapped' };
+  }
+  // A delivered order has a report token. A placeholder does not.
+  if (row.report_token) return { allowed: true, mode: 'swap', reason: 'delivered-order' };
+  return { allowed: true, mode: 'recovery', reason: 'placeholder-order' };
+}
+
 export const RECOVERY_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 export const RECOVERY_MAX_ATTEMPTS = 5;
 
