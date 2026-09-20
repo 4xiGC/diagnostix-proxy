@@ -11,6 +11,8 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          alertThrottle, ALERT_THROTTLE_MS,
          webhookEnforcement, misroutedHint } from './lib-pending.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { attachPlaceIdentity, dedupePeersByPlaceId, peerReviewVolumes,
+         placesResolutionSummary } from './lib-places-peers.js';
 import { newLedger, noteSearch, noteResults, summarizeEvidence,
          renderEvidenceSentence, formatCount, evidencePanelHtml } from './lib-evidence.js';
 
@@ -1621,7 +1623,10 @@ app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => 
     ]);
     const co = compResult.merged;
     const compUserResults = compResult.userResults || [];
-    const compPlacesData = compResult.placesData || { places: [], focalRating: null, focalReviewCount: null, focalGeo: null };
+    // v8.11.26 [RVP-A]: focalPlaceId added to the fallback shape. Without it
+    // the fallback silently produced a focal with no id, which now means no
+    // focal review count at all rather than a wrong one.
+    const compPlacesData = compResult.placesData || { places: [], focalRating: null, focalReviewCount: null, focalGeo: null, focalPlaceId: null };
     // Scraping summary: count which categories returned 'no data' so empty-report cases are visible in logs.
     const cats = { GOOGLE:g, REVIEWS:rv, STAFF:st, SOCIAL:so, DELIVERY:dl, COMPETITORS:co };
     const webScoring = budgetCorpus(cats, CORPUS_CAPS_SCORING);
@@ -2123,7 +2128,13 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
               name: p.name,
               rating: p.rating,
               reviewCount: p.reviewCount,
-              note: note
+              note: note,
+              // v8.11.26 [RVP-A]: this peer CAME from Places, so its identity
+              // is already known and costs nothing. Dropping it here was why
+              // an injected peer later had to be re-matched by name.
+              placeId: p.placeId || null,
+              placeName: p.name,
+              reviewCountSource: (typeof p.reviewCount === 'number' && p.reviewCount > 0) ? 'places' : 'none',
             });
             existingNamesLower.add(String(p.name).trim().toLowerCase());
           }
@@ -2347,6 +2358,52 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
       console.warn(`[diagnose] COMPETITOR_SOURCE_DEGRADED note added: focalLatLng=${compPlacesData.focalLatLng ? 'present' : 'null'} placesCount=${placesCount}`);
     }
 
+    // ── v8.11.26 [RVP-A]: every peer carries a Google Places id ─────────────
+    //
+    // Peers arrive from three places: injected by PLACES-FILL (identity known
+    // already), named by the model, or named by the owner. Only the first had
+    // an id. The other two were matched by NAME, which produced both defects
+    // this release fixes: "Scoma's Restaurant" twice with 7,211 and 6,396, and
+    // the focal Zulu count of 4,552 from a knowledge graph against 625 from
+    // Places for the same restaurant.
+    //
+    // One findplacefromtext call per unresolved peer, all in parallel, after
+    // the model has already answered. Same endpoint and field list the focal
+    // geocode uses, so this adds call sites rather than a dependency.
+    //
+    // A peer that does not resolve keeps its name and its note and LOSES its
+    // review count. That is deliberate: a number with no place id is a number
+    // with no provenance, and the report is better with a gap than with a
+    // figure a reader cannot check.
+    try {
+      const peersIn = Array.isArray(report.competitors) ? report.competitors : [];
+      const needLookup = peersIn.filter(c => c && typeof c === 'object' && !c.placeId);
+      const searchLoc = location || '';
+      const hits = await Promise.all(needLookup.map(c => {
+        const q = searchLoc ? `${c.name}, ${searchLoc}` : String(c.name || '');
+        return findPlaceForCompetitor(q).catch(e => ({ ok: false, reason: 'threw' }));
+      }));
+      const hitByRef = new Map();
+      needLookup.forEach((c, i) => hitByRef.set(c, hits[i]));
+
+      const resolved = peersIn.map(c => {
+        if (!c || typeof c !== 'object') return c;
+        if (c.placeId) return c;                      // already identified
+        return attachPlaceIdentity(c, hitByRef.get(c));
+      });
+      const beforeCount = resolved.length;
+      report.competitors = dedupePeersByPlaceId(resolved);
+      const summary = placesResolutionSummary(report.competitors);
+      console.log('[diagnose] PLACES-ID ' + summary.line
+        + (beforeCount !== report.competitors.length
+            ? ', ' + (beforeCount - report.competitors.length) + ' duplicate(s) merged on place id'
+            : ', no duplicates'));
+    } catch (e) {
+      // Never worth failing an assessment for. The peers keep whatever they
+      // had, and the evidence panel will simply count fewer of them.
+      console.log('[diagnose] PLACES-ID failed, peers left as they were: ' + (e && e.message));
+    }
+
     console.log('[diagnose] _debug:', JSON.stringify(report._debug));
 
     // ── ALL-1: the evidence base panel, computed here and never by the model ──
@@ -2380,35 +2437,14 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     // "Pizzería Tiramisú" on the Starnberg run), so the key is accent folded.
     try {
       const ev = summarizeEvidence(currentLedger());
-      const byName = new Map();
-      const keyOf = (rawName) => String(rawName || '')
-        .normalize('NFD').replace(/[̀-ͯ]/g, '')
-        .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-      const addVolume = (rawName, count) => {
-        if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) return;
-        const key = keyOf(rawName);
-        if (!key) return;
-        byName.set(key, Math.max(byName.get(key) || 0, Math.round(count)));
+      // v8.11.26 [RVP-A]: counted by PLACE ID, not by folded name. The focal
+      // figure comes from its own place id or is omitted, which is what stops
+      // a knowledge-graph number being printed as a Places one.
+      const focalForVolumes = {
+        placeId: (compPlacesData && compPlacesData.focalPlaceId) || null,
+        reviewCount: (compPlacesData && compPlacesData.focalReviewCount) || null,
       };
-
-      const placesList = (compPlacesData && Array.isArray(compPlacesData.places))
-        ? compPlacesData.places : [];
-      const placesByKey = new Map();
-      for (const p of placesList) {
-        if (p && p.name && typeof p.reviewCount === 'number') {
-          const k = keyOf(p.name);
-          if (k) placesByKey.set(k, Math.max(placesByKey.get(k) || 0, p.reviewCount));
-        }
-      }
-
-      addVolume(name, compPlacesData && compPlacesData.focalReviewCount);
-      // Only peers that actually appear in the report, and only with the figure
-      // Places gave for them.
-      for (const c of (report.competitors || [])) {
-        if (!c || typeof c !== 'object') continue;
-        const k = keyOf(c.name);
-        if (k && placesByKey.has(k)) addVolume(c.name, placesByKey.get(k));
-      }
+      const vol = peerReviewVolumes({ focal: focalForVolumes, peers: report.competitors || [] });
 
       // Recorded so a later audit can check this panel against its inputs.
       // focalReviewCount was absent from _debug until now, which is why the
@@ -2417,10 +2453,13 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
         report._debug.googlePlaces.focalReviewCount =
           (compPlacesData && typeof compPlacesData.focalReviewCount === 'number')
             ? compPlacesData.focalReviewCount : null;
-        report._debug.googlePlaces.volumesCountedFrom = 'places-only';
+        report._debug.googlePlaces.volumesCountedFrom = 'place-id-only';
+        report._debug.googlePlaces.focalPlaceIdPresent =
+          !!(compPlacesData && compPlacesData.focalPlaceId);
+        report._debug.googlePlaces.peersUnresolved = vol.unresolved;
       }
-      const reviewsTotal = [...byName.values()].reduce((a, b) => a + b, 0);
-      const sourcesCounted = byName.size;
+      const reviewsTotal = vol.total;
+      const sourcesCounted = vol.counted;
 
       report.evidence = {
         searchesRun:     ev.searchesRun,
@@ -2438,7 +2477,8 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
         + ' returned=' + ev.resultsReturned + ' read=' + ev.resultsRead
         + ' sites=' + ev.distinctSites
         + ' reviewVolumes=' + (reviewsTotal > 0 ? formatCount(reviewsTotal) : '(none)')
-        + ' across=' + sourcesCounted);
+        + ' across=' + sourcesCounted
+        + ' peersWithoutPlaceId=' + vol.unresolved);
     } catch (e) {
       // The panel is never worth failing an assessment for. A report with no
       // evidence block renders no panel, which is the zero case by design.
