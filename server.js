@@ -2135,6 +2135,10 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
               placeId: p.placeId || null,
               placeName: p.name,
               reviewCountSource: (typeof p.reviewCount === 'number' && p.reviewCount > 0) ? 'places' : 'none',
+              // v8.11.28: the rating is Places-sourced here too, by the same
+              // argument as the count.
+              ratingSource: (typeof p.rating === 'number' && Number.isFinite(p.rating)) ? 'places' : 'none',
+              noDataReason: null,
             });
             existingNamesLower.add(String(p.name).trim().toLowerCase());
           }

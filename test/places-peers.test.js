@@ -32,7 +32,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   attachPlaceIdentity, dedupePeersByPlaceId, peerReviewVolumes,
-  peerDisplayCount, placesResolutionSummary,
+  peerDisplayCount, peerDisplayRating, placesResolutionSummary,
 } from '../lib-places-peers.js';
 
 // ── attaching identity ──────────────────────────────────────────────────────
@@ -231,4 +231,53 @@ test('the summary is honest when nothing resolved', () => {
   const s = placesResolutionSummary([{ placeId: null }, { placeId: null }]);
   assert.equal(s.resolved, 0);
   assert.equal(s.unresolved, 2);
+});
+
+// ── v8.11.28 [RVP-A]: an unresolved peer shows no rating either ─────────────
+//
+// The first version of this package dropped the review COUNT for a peer with
+// no Places match but kept its RATING. That is half a fix: a star rating from
+// a search knowledge graph has exactly the provenance problem the count had,
+// and 4.8 stars on a card is a stronger claim than a review volume.
+//
+// A peer with no confident Places match is still LISTED, because removing it
+// would change the competitive set the model reasoned about. It shows no
+// number at all, and says why in one plain phrase.
+
+test('an unresolved peer loses its RATING as well as its count', () => {
+  const out = attachPlaceIdentity(
+    { name: 'Some Place', reviewCount: 9000, rating: 4.8 },
+    { ok: false, reason: 'ZERO_RESULTS' });
+  assert.equal(out.reviewCount, null);
+  assert.equal(out.rating, null, 'a knowledge-graph rating survived');
+  assert.equal(out.ratingSource, 'none');
+});
+
+test('an unresolved peer is still listed, and says why in one phrase', () => {
+  const out = attachPlaceIdentity({ name: 'Some Place', rating: 4.8 }, { ok: false, reason: 'ZERO_RESULTS' });
+  assert.equal(out.name, 'Some Place', 'the peer was dropped instead of listed');
+  assert.ok(typeof out.noDataReason === 'string' && out.noDataReason.length > 8, out.noDataReason);
+  assert.ok(!out.noDataReason.includes('—') && !out.noDataReason.includes('–'), 'dash in customer copy');
+  assert.ok(/not matched|no match|could not/i.test(out.noDataReason), out.noDataReason);
+});
+
+test('a RESOLVED peer takes its rating from Places, not from search', () => {
+  const out = attachPlaceIdentity(
+    { name: 'Zulu', rating: 4.9, reviewCount: 4552 },
+    { ok: true, placeId: 'PID', name: 'Zulu', rating: 4.4, reviewCount: 625 });
+  assert.equal(out.rating, 4.4, 'the search rating survived');
+  assert.equal(out.ratingSource, 'places');
+  assert.equal(out.noDataReason, null);
+});
+
+test('a resolved peer with no Places rating shows none', () => {
+  const out = attachPlaceIdentity({ name: 'X', rating: 4.9 }, { ok: true, placeId: 'P', name: 'X', rating: null, reviewCount: 10 });
+  assert.equal(out.rating, null);
+  assert.equal(out.ratingSource, 'none');
+});
+
+test('peerDisplayRating mirrors peerDisplayCount', () => {
+  assert.equal(peerDisplayRating({ rating: 4.4, ratingSource: 'places' }), 4.4);
+  assert.equal(peerDisplayRating({ rating: 4.8, ratingSource: 'search' }), null);
+  assert.equal(peerDisplayRating(null), null);
 });

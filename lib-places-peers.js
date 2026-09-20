@@ -45,7 +45,16 @@ export function attachPlaceIdentity(peer, placeHit) {
     const n = asInt(h.reviewCount);
     out.reviewCount = n;                      // null when Places has no count
     out.reviewCountSource = n === null ? 'none' : 'places';
-    if (typeof h.rating === 'number') out.placeRating = h.rating;
+    // v8.11.28: the RATING comes from Places too, or not at all. The first
+    // version of this package dropped the count and kept the rating, which is
+    // half a fix: a star rating from a search knowledge graph has exactly the
+    // provenance problem the count had, and 4.8 stars on a card is a stronger
+    // claim than a review volume.
+    const rt = (typeof h.rating === 'number' && Number.isFinite(h.rating)) ? h.rating : null;
+    out.rating = rt;
+    out.ratingSource = rt === null ? 'none' : 'places';
+    out.placeRating = rt;
+    out.noDataReason = null;
   } else {
     // No identity, so no number. Whatever count arrived from search is dropped
     // here rather than shown without provenance.
@@ -54,6 +63,14 @@ export function attachPlaceIdentity(peer, placeHit) {
     out.placesMiss = (h && typeof h.reason === 'string' && h.reason) ? h.reason : 'unresolved';
     out.reviewCount = null;
     out.reviewCountSource = 'none';
+    out.rating = null;
+    out.ratingSource = 'none';
+    out.placeRating = null;
+    // The peer is still LISTED. Removing it would change the competitive set
+    // the model reasoned about, and the card saying why is more useful than a
+    // card quietly missing two numbers. US spelling, no dashes: this is
+    // customer copy.
+    out.noDataReason = 'Not matched to a Google listing, so no rating or review count is shown.';
   }
   return out;
 }
@@ -117,6 +134,15 @@ export function peerDisplayCount(peer) {
   if (!peer || typeof peer !== 'object') return null;
   if (peer.reviewCountSource !== 'places') return null;
   return asInt(peer.reviewCount);
+}
+
+
+// Mirrors peerDisplayCount. A rating is shown only when Places gave it.
+export function peerDisplayRating(peer) {
+  if (!peer || typeof peer !== 'object') return null;
+  if (peer.ratingSource !== 'places') return null;
+  const r = peer.rating;
+  return (typeof r === 'number' && Number.isFinite(r)) ? r : null;
 }
 
 export function placesResolutionSummary(peers) {

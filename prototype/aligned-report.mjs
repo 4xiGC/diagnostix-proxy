@@ -245,17 +245,22 @@ export function renderAlignedReportHtml({ subscriber, report }) {
   const comps = Array.isArray(r.competitors) ? r.competitors : [];
   const peerRows = comps.map(c => {
     if (!c || typeof c !== 'object') return '';
-    const rating = num(c.rating);
-    // A review count is shown ONLY when it came from Places. This is the
-    // RVP-A rule, carried into the format so the prototype cannot reintroduce
-    // an unprovenanced number.
-    const showCount = c.reviewCountSource === 'places' ? fmt(c.reviewCount) : null;
-    const legacyCount = c.reviewCountSource === undefined ? fmt(c.reviewCount) : null;
-    const shown = showCount || legacyCount;
-    const meta = [
-      rating ? esc(rating) + ' rating' : null,
-      shown ? esc(shown) + ' reviews' : '<span class="no-count">no Places count</span>',
-    ].filter(Boolean).join('<br>');
+    // A rating and a review count are shown ONLY when they came from Places.
+    // This is the RVP-A rule carried into the format, so the prototype cannot
+    // reintroduce an unprovenanced number. A report stored BEFORE v8.11.26 has
+    // no provenance fields at all, and those legacy numbers are shown as they
+    // were rather than silently blanked: this is a format change, not a
+    // content change, and blanking them would lose content.
+    const legacy = c.reviewCountSource === undefined && c.ratingSource === undefined;
+    const showRating = legacy ? num(c.rating) : (c.ratingSource === 'places' ? num(c.rating) : null);
+    const showCount = legacy ? fmt(c.reviewCount) : (c.reviewCountSource === 'places' ? fmt(c.reviewCount) : null);
+    const parts = [
+      showRating ? esc(showRating) + ' rating' : null,
+      showCount ? esc(showCount) + ' reviews' : null,
+    ].filter(Boolean);
+    const meta = parts.length
+      ? parts.join('<br>')
+      : `<span class="no-count">${esc(c.noDataReason || 'No Google listing matched.')}</span>`;
     return `<div class="peer">
       <div><div class="nm">${esc(c.name || '(unnamed)')}</div>${
         c.note ? `<div class="note">${esc(c.note)}</div>` : ''}</div>
