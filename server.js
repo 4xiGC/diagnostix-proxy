@@ -5369,14 +5369,48 @@ async function alertRecoveryUsed({ payingEmail, surveyEmail, restaurantName, pro
   } catch (e) { console.log('[recover] used alert failed: ' + (e && e.message)); }
 }
 
-// ── The swap alert (v8.11.31) ────────────
+// ── The three alerts that make a substitution visible (v8.11.31) ────────────
 //
 // Every one of these describes a condition that was already happening and that
 // nobody could see. All go through alertWebhookProblem's existing throttle, so
 // a misconfiguration cannot turn into a mailstorm, and all are addressed in
 // domain plus local part length, never in full.
 
-// A swap was used. Distinct from alertRecoveryUsed: recovery means the
+// 1. An OLD survey was delivered while NEWER ones sat waiting under other
+//    addresses. This is exactly 2026-09-20: a 17 hour old FarmShop row was the
+//    only exact match, and two Drum & Monkey rows from four and eight minutes
+//    earlier were invisible to the rule that chose it.
+async function alertStaleExact({ payingEmail, delivered, newerElsewhere }) {
+  try {
+    const ageH = (ms) => (ms / 3600000).toFixed(1) + 'h';
+    await alertWebhookProblem({
+      kind: 'stale-exact',
+      detail: 'STALE EXACT: delivered an older survey while newer ones were waiting.\n'
+        + 'delivered: ' + (delivered.restaurantName || '(unnamed)')
+        + ', age ' + ageH(delivered.ageMs) + ', address ' + addrLabel(payingEmail) + '\n'
+        + 'newer and still unclaimed, under other addresses:\n'
+        + newerElsewhere.map(r => '  ' + (r.restaurantName || '(unnamed)')
+            + ', age ' + ageH(r.ageMs) + ', address ' + addrLabel(r.email)).join('\n')
+        + '\nThe rule was applied correctly. Whether it chose the survey the buyer '
+        + 'wanted is a different question, and the swap link is how they answer it.',
+    });
+  } catch (e) { console.log('[alert] stale-exact failed: ' + (e && e.message)); }
+}
+
+// 2. A delivery left other unclaimed rows under the SAME address. Nothing
+//    revisits those, so without this they are stranded in silence.
+async function alertStrandedRows({ payingEmail, stranded }) {
+  try {
+    await alertWebhookProblem({
+      kind: 'stranded-rows',
+      detail: 'A delivery left ' + stranded.length + ' unclaimed survey(s) under the same '
+        + 'address ' + addrLabel(payingEmail) + '. Nothing will revisit them.\n'
+        + stranded.map(r => '  row ' + r.id + '  ' + (r.restaurantName || '(unnamed)')).join('\n'),
+    });
+  } catch (e) { console.log('[alert] stranded failed: ' + (e && e.message)); }
+}
+
+// 3. A swap was used. Distinct from alertRecoveryUsed: recovery means the
 //    order delivered nothing, a swap means it delivered the wrong thing, and
 //    the second is a signal about the matching rule rather than about a
 //    mismatched address.
@@ -5779,9 +5813,47 @@ async function handlePaymentWebhook(req, res) {
     c && c.claimed_at == null
     && normalizeEmail(c.email_normalized) === normalizeEmail(email)
     && (!toClaim || c.id !== toClaim.id)).length;
-  if (otherWaitingCount > 0) {
-    console.log('STRANDED [pending] this delivery leaves ' + otherWaitingCount
+  const strandedRows = candidatePool.filter(c =>
+    c && c.claimed_at == null
+    && normalizeEmail(c.email_normalized) === normalizeEmail(email)
+    && (!toClaim || c.id !== toClaim.id));
+  if (strandedRows.length > 0) {
+    console.log('STRANDED [pending] this delivery leaves ' + strandedRows.length
       + ' unclaimed survey(s) under the same address addr=' + addrLabel(email));
+    await alertStrandedRows({ payingEmail: email, stranded: strandedRows.map(r => ({
+      id: r.id, restaurantName: (r.survey && r.survey.name) || '' })) });
+  }
+
+  // v8.11.31: WAS THIS AN OLD SURVEY DELIVERED WHILE NEWER ONES WAITED?
+  //
+  // This is 2026-09-20 exactly. A 17 hour old FarmShop row was the only exact
+  // match for the paying address, and two Drum & Monkey rows from four and
+  // eight minutes earlier were under a different address and therefore
+  // invisible to the rule that chose it. The rule was right. Nobody could see
+  // that it had been asked the wrong question.
+  //
+  // Two hours is the threshold because a survey finished in the same sitting
+  // as the payment is the ordinary case and must not alert. Anything older,
+  // with something newer waiting, is worth one look.
+  const STALE_EXACT_MS = 2 * 60 * 60 * 1000;
+  const deliveredAgeMs = (saved && saved.savedAt) ? (Date.now() - Number(saved.savedAt)) : 0;
+  if (Number.isFinite(deliveredAgeMs) && deliveredAgeMs > STALE_EXACT_MS) {
+    const newerElsewhere = candidatePool.filter(c =>
+      c && c.claimed_at == null
+      && normalizeEmail(c.email_normalized) !== normalizeEmail(email)
+      && Number(c.saved_at) > Number(saved.savedAt));
+    if (newerElsewhere.length > 0) {
+      console.log('STALE_EXACT [pending] delivered a survey ' + (deliveredAgeMs / 3600000).toFixed(1)
+        + 'h old while ' + newerElsewhere.length + ' newer unclaimed survey(s) waited under other addresses');
+      await alertStaleExact({
+        payingEmail: email,
+        delivered: { restaurantName: restaurant, ageMs: deliveredAgeMs },
+        newerElsewhere: newerElsewhere.map(r => ({
+          restaurantName: (r.survey && r.survey.name) || '',
+          ageMs: Date.now() - Number(r.saved_at),
+          email: r.email_normalized })),
+      });
+    }
   }
 
   const delivered = await deliverPaidReport({
