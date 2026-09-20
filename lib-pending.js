@@ -132,6 +132,65 @@ export function matchPendingReport({ payingEmail, candidates, now, windowMs }) {
   return { decision: 'none', match: null, reason: 'no-candidate-in-window' };
 }
 
+// ── deliveryProvenanceLines (v8.11.30) ──────────────────────────────────────
+//
+// WHAT THE BUYER IS TOLD ABOUT WHICH SURVEY THEY JUST BOUGHT.
+//
+// On 2026-09-20 a buyer paid and received FarmShop, a survey completed the
+// previous evening, while the survey they had finished four minutes earlier
+// sat unclaimed under a different address. The delivery email named neither
+// the restaurant nor the date, so the substitution was only discoverable by
+// opening the report and reading it.
+//
+// The rule chosen is NOT "refuse when unsure". An age limit does not work
+// here: 24 hours would not have excluded a 17 hour old row, and it would
+// refuse a legitimate buyer coming back two days later. The rule is never
+// refuse, always say what was delivered, always offer one correction.
+//
+// PURE, so the exact customer sentences are tested without sending anything.
+//
+// THE DATE IS UTC ON PURPOSE. saved_at is a timestamptz and the server runs in
+// UTC, but "the date" is otherwise a function of whichever machine rendered
+// the email, and a report that names a different day depending on where it was
+// formatted is worse than one that names a fixed one.
+export function deliveryProvenanceLines(args) {
+  // A destructuring default catches undefined and not null, and this is called
+  // from a delivery path where a throw would cost a paid customer their email.
+  const a = (args && typeof args === 'object') ? args : {};
+  const { restaurantName, surveySavedAt, otherWaitingCount } = a;
+  const lines = [];
+
+  const name = String(restaurantName == null ? '' : restaurantName).trim();
+  // Never emit a sentence with a hole in it. A blank name is rarer than a
+  // wrong one and "the restaurant in your survey" is still true.
+  const subject = name || 'the restaurant in your survey';
+
+  const t = Number(surveySavedAt);
+  let dateText = '';
+  if (Number.isFinite(t) && t > 0) {
+    const d = new Date(t);
+    if (!Number.isNaN(d.getTime())) {
+      const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+                      'July', 'August', 'September', 'October', 'November', 'December'];
+      dateText = MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate() + ', ' + d.getUTCFullYear();
+    }
+  }
+
+  lines.push(dateText
+    ? 'This report covers ' + subject + ', from the survey completed on ' + dateText + '.'
+    : 'This report covers ' + subject + '.');
+
+  const n = Number(otherWaitingCount);
+  if (Number.isFinite(n) && n >= 1) {
+    const k = Math.floor(n);
+    lines.push('You have ' + k + ' other completed survey' + (k === 1 ? '' : 's')
+      + ' waiting under this address. '
+      + 'Reply to this email and we will help you with those.');
+  }
+
+  return lines;
+}
+
 export const RECOVERY_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 export const RECOVERY_MAX_ATTEMPTS = 5;
 

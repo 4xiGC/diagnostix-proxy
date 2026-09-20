@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { describeShape, emailDomainOnly, addrLabel } from './lib-webhook-log.js';
 import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
+         deliveryProvenanceLines,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
@@ -3280,7 +3281,7 @@ async function pushLastEngaged(email) {
 }
 
 // ── CUSTOMER WELCOME / REPORT EMAIL ──────────────────────────
-async function sendCustomerReportEmail({ subscriber, report, reportNumber, survey }) {
+async function sendCustomerReportEmail({ subscriber, report, reportNumber, survey, provenance }) {
   const baseUrl = process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app';
 
   // Subscriber object can arrive in two shapes (Supabase snake_case vs in-memory camelCase).
@@ -3316,6 +3317,15 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber, surve
     headline = 'Your Month 8 progress report is ready';
     intro = 'Eight months on from your baseline, your third DiagnostiX report is ready. Inside you will find a year-to-date comparison across all three reports for every pillar. At the 12-month anniversary of your subscription, you will receive a reminder with the option to renew DiagnostiX Annual for another year of progress tracking.';
   }
+
+  // v8.11.30: WHICH SURVEY THIS REPORT ANSWERS, stated before anything else
+  // the buyer has to read. The sentences are built by deliveryProvenanceLines
+  // in lib-pending.js, where they are unit tested as strings, so the copy
+  // cannot drift inside an HTML template nobody renders in a test.
+  const provLines = deliveryProvenanceLines(provenance || {
+    restaurantName: restaurant,
+    surveySavedAt: (survey && survey.savedAt) || null,
+  });
 
   // Score color matches the survey banding (green ≥65, amber ≥45, red <45)
   const scoreColor = score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24';
@@ -3356,7 +3366,8 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber, surve
     <tr><td style="background:#ffffff;padding:32px;border-radius:0 0 14px 14px">
 
       <div style="font-family:'League Spartan',Arial,sans-serif;font-size:20px;font-weight:900;color:#1B1464;margin:0 0 14px;line-height:1.25">${escE(headline)}</div>
-      <p style="font-family:'League Spartan',Arial,sans-serif;font-size:14px;line-height:1.65;color:#444;margin:0 0 24px;font-weight:400">Hi ${escE(firstName)}, ${escE(intro)}</p>
+      <p style="font-family:'League Spartan',Arial,sans-serif;font-size:14px;line-height:1.65;color:#444;margin:0 0 14px;font-weight:400">Hi ${escE(firstName)}, ${escE(intro)}</p>
+      <div style="font-family:'League Spartan',Arial,sans-serif;font-size:14px;line-height:1.65;color:#1B1464;margin:0 0 24px;padding:14px 16px;background:#F5F4FC;border-left:4px solid #0072BC;border-radius:6px;font-weight:500">${provLines.map(l => '<div style="margin:0 0 6px">' + escE(l) + '</div>').join('')}</div>
 
       <!-- Score block -->
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#F5F4FC;border-radius:10px;margin:0 0 28px">
@@ -4726,7 +4737,7 @@ ${done ? '' : `<form method="POST" action="/recover">
 // Callers: the payment webhook, and POST /recover.
 async function deliverPaidReport({ destEmail, firstName, restaurant, location,
                                    report, survey, product, planType, amountPaid,
-                                   source, alsoTo }) {
+                                   source, alsoTo, surveySavedAt, otherWaitingCount }) {
 
   const subscriber = await createCustomer({
     email: destEmail,
@@ -4793,7 +4804,10 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
                    + '/report?token=' + subscriber.reportToken;
 
   await Promise.all([
-    sendCustomerReportEmail({ subscriber: supaShaped, report, reportNumber: 1, survey }),
+    sendCustomerReportEmail({ subscriber: supaShaped, report, reportNumber: 1, survey,
+      // v8.11.30: the buyer is told which survey this answers, and whether any
+      // of their own are still waiting.
+      provenance: { restaurantName: restaurant, surveySavedAt, otherWaitingCount } }),
     pushReportContextToHubSpot({ subscriber: supaShaped, report, reportNumber: 1, reportUrl, baseline: report })
   ]);
 
@@ -5140,6 +5154,13 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
     restaurant, location: survey.location || '',
     report, survey, product, planType, amountPaid,
     source: 'recovery', alsoTo: typed,
+    // v8.11.30: recovery delivers a named survey too, and the buyer who has
+    // just had to go and find it is the one who most needs to be told which
+    // one arrived. otherWaitingCount is deliberately 0 here: the count is
+    // about the PAYING address, and on this path the buyer has just told us
+    // the survey lives somewhere else.
+    surveySavedAt: row.saved_at || null,
+    otherWaitingCount: 0,
   });
 
   if (!delivered) {
@@ -5579,10 +5600,40 @@ async function handlePaymentWebhook(req, res) {
   const planType = product === 'annual' ? 'annual' : 'one_off';
   const amountPaid = planType === 'annual' ? 99.99 : Number(payload.amountPaid || payload.amount || 24.99);
 
+  // v8.11.30: WHICH ROW IS ABOUT TO BE RETIRED, computed BEFORE delivery.
+  //
+  // The claim happens after delivery, deliberately, so a failed send leaves the
+  // survey available to the recovery link rather than burning it. But the email
+  // has to name the survey it is answering and count what else is waiting, and
+  // both need the row identified first. selectRowToClaim is a pure function of
+  // inputs that do not change in between, so calling it early and reusing the
+  // answer cannot make the two disagree.
+  const toClaim = selectRowToClaim({
+    decision: matchReason, matchedRow: claimedRowId ? { id: claimedRowId } : null,
+    payingEmail: email, candidates: candidatePool,
+  });
+
+  // Other surveys THIS BUYER has waiting, under the address they paid from.
+  // The exact pull in fetchPendingCandidates returns unclaimed rows for the
+  // paying address only, so this counts what the buyer could still be sent
+  // without any address guessing at all. Surveys under a DIFFERENT address are
+  // not counted here and are not this sentence's business: those are what the
+  // swap link is for.
+  const otherWaitingCount = candidatePool.filter(c =>
+    c && c.claimed_at == null
+    && normalizeEmail(c.email_normalized) === normalizeEmail(email)
+    && (!toClaim || c.id !== toClaim.id)).length;
+  if (otherWaitingCount > 0) {
+    console.log('STRANDED [pending] this delivery leaves ' + otherWaitingCount
+      + ' unclaimed survey(s) under the same address addr=' + addrLabel(email));
+  }
+
   const delivered = await deliverPaidReport({
     destEmail, firstName: resolvedFirstName, restaurant,
     location, report, survey, product, planType, amountPaid,
     source: 'webhook-' + matchDecision,
+    surveySavedAt: (saved && saved.savedAt) || null,
+    otherWaitingCount,
   });
 
   // The row is claimed only once delivery has succeeded, so a failure earlier
@@ -5592,10 +5643,6 @@ async function handlePaymentWebhook(req, res) {
   // the memory hit that has no row object in hand. Best effort: a failure here
   // logs and never blocks a sale that has already been delivered.
   if (delivered) {
-    const toClaim = selectRowToClaim({
-      decision: matchReason, matchedRow: claimedRowId ? { id: claimedRowId } : null,
-      payingEmail: email, candidates: candidatePool,
-    });
     if (toClaim && toClaim.id) {
       await claimPendingReport({ id: toClaim.id, claimedBy: matchDecision });
     } else {
