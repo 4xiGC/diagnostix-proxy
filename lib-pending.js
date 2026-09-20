@@ -210,12 +210,68 @@ export function deliveryProvenanceLines(args) {
 // rather than in the token, because a token cannot know it has been spent.
 export const SWAP_NOTE_PREFIX = 'SWAPPED:';
 
+// v8.11.35: THE SENTENCE NO LONGER CARRIES THE URL.
+//
+// It printed a signed recovery link as raw text in the middle of a paragraph,
+// which is long, ugly, and the shape of a phishing email. The link is now a
+// button, and the sentence points at it. The URL still appears once, under the
+// button, in the fallback line, because a button that a mail client strips or
+// fails to render must still leave a working way through.
 export function swapLinkSentence(url) {
   const u = String(url == null ? '' : url).trim();
   if (!u) return '';
   return 'Expected a different restaurant? If you completed the survey under another '
-    + 'email address, use this link within 14 days and we will send that report '
-    + 'instead: ' + u;
+    + 'email address, use the button below within 14 days and we will send that '
+    + 'report instead.';
+}
+
+export const SWAP_BUTTON_LABEL = 'Send me a different report';
+export const RECOVERY_BUTTON_LABEL = 'Find my report';
+export const BUTTON_FALLBACK_LINE = 'If the button does not work, copy this link into your browser:';
+
+// A REAL ANCHOR, NEVER AN IMAGE.
+//
+// Styled to match the primary button already in the delivery email, so the two
+// read as one family. Images-off is the default in a large share of mail
+// clients and the assumed state in most corporate ones, so the button is an
+// anchor with background styling: with images disabled it still renders as a
+// coloured block with readable text, and if the styling is stripped entirely
+// it degrades to an ordinary underlined link with the same label.
+//
+// The fallback line under it carries the URL in full. That is the only place
+// the URL appears as visible text.
+export function renderEmailButton(args) {
+  const a = (args && typeof args === 'object') ? args : {};
+  const url = String(a.url == null ? '' : a.url).trim();
+  const label = String(a.label == null ? '' : a.label).trim();
+  if (!url || !label) return '';
+  const esc = (t) => String(t == null ? '' : t)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const u = esc(url);
+  return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:14px 0 0">'
+    + '<tr><td align="center" style="padding:0 0 10px">'
+    + '<a href="' + u + '" style="display:inline-block;background:#1B1464;'
+    + 'background-image:linear-gradient(135deg,#92278F,#2E3192,#1B1464);color:#ffffff;'
+    + 'text-decoration:none;padding:14px 30px;border-radius:8px;'
+    + "font-family:'League Spartan',Arial,sans-serif;font-weight:900;font-size:13px;"
+    + 'letter-spacing:1.5px;text-transform:uppercase;mso-padding-alt:0">'
+    + esc(label) + '</a>'
+    + '</td></tr>'
+    + '<tr><td align="center" style="font-family:'
+    + "'League Spartan'"
+    + ',Arial,sans-serif;'
+    + 'font-size:11px;color:#999;line-height:1.6;padding:0 6px">'
+    + esc(BUTTON_FALLBACK_LINE)
+    + '<br><span style="color:#1B1464;word-break:break-all;font-weight:500">' + u + '</span>'
+    + '</td></tr></table>';
+}
+
+// The plain-text part keeps the URL in full: a text email has no button to
+// press, so the link is the only thing that can carry the action.
+export function buttonPlainText({ sentence, label, url }) {
+  const u = String(url == null ? '' : url).trim();
+  if (!u) return '';
+  return [String(sentence || ''), '', String(label || '') + ': ' + u].join('\n');
 }
 
 // Which mode this link is being used in, and whether it may be used at all.

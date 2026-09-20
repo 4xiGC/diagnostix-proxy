@@ -23,11 +23,21 @@ import { swapLinkSentence, swapEligibility, SWAP_NOTE_PREFIX } from '../lib-pend
 
 const URL = 'https://example.invalid/recover?t=abc.def';
 
-test('the swap sentence is exactly the copy that was specified', () => {
+// v8.11.35: RESTATED because the COPY CHANGED, not because the test was wrong.
+//
+// The sentence used to end "use this link ... instead: <the full URL>", and
+// this test pinned that, correctly, for v8.11.31. The link is now a button, so
+// the sentence points at the button and the URL appears once underneath it in
+// the fallback line. The assertion that matters is stronger than before: the
+// sentence must contain NO link at all, which the old copy could not have
+// satisfied.
+test('the swap sentence points at the button and carries no link', () => {
   assert.equal(swapLinkSentence(URL),
     'Expected a different restaurant? If you completed the survey under another '
-    + 'email address, use this link within 14 days and we will send that report '
-    + 'instead: ' + URL);
+    + 'email address, use the button below within 14 days and we will send that '
+    + 'report instead.');
+  assert.ok(!swapLinkSentence(URL).includes(URL), 'the URL is still in the sentence');
+  assert.ok(!/https?:\/\//.test(swapLinkSentence(URL)), 'the sentence still contains a link');
 });
 
 test('no url, no sentence: the email never shows a broken link', () => {
