@@ -83,6 +83,33 @@ export function matchPendingReport({ payingEmail, candidates, now, windowMs }) {
     return { decision: 'none', match: null, reason: 'no-paying-email' };
   }
 
+  // v8.11.29: saved_at MUST ALREADY BE A NUMBER, and this says so out loud.
+  //
+  // Both rules below do arithmetic on saved_at. The conversion that makes that
+  // arithmetic valid, Date.parse, happens in fetchPendingCandidates, in
+  // another file, and nothing anywhere states that it has to. Hand this
+  // function a raw PostgREST row and saved_at is the string
+  // "2026-09-19T20:26:50+00:00": Number() of that is NaN, the comparator
+  // returns NaN, and a comparator that returns NaN leaves the array untouched.
+  // The sort becomes a silent no-op, element zero of the caller's ordering
+  // wins, and the unit tests stay green because they pass numbers by hand.
+  //
+  // Refusing loudly is the whole point. A matcher that cannot order its
+  // candidates must not pick one, and it must not be possible to discover that
+  // from a delivered report.
+  //
+  // Only rows still in play are checked: a CLAIMED row with a bad timestamp is
+  // filtered out above and is nobody's problem, and failing a live purchase
+  // over it would be the guard doing more harm than the bug.
+  for (const c of unclaimed) {
+    if (!Number.isFinite(Number(c.saved_at))) {
+      throw new Error('matchPendingReport: saved_at is not a finite number on row '
+        + (c && c.id != null ? c.id : '(no id)')
+        + ' (got ' + JSON.stringify(c && c.saved_at) + '). '
+        + 'Candidates must come from fetchPendingCandidates, which converts with Date.parse.');
+    }
+  }
+
   // (a) exact, newest first
   const exact = unclaimed
     .filter(c => normalizeEmail(c.email_normalized) === paying)

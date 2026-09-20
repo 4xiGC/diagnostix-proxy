@@ -93,6 +93,35 @@ export function emailDomainOnly(email) {
   }
 }
 
+// ── addrLabel (v8.11.29) ────────────────────────────────────────────────────
+// THE DOMAIN, PLUS THE LENGTH OF THE LOCAL PART.
+//
+// emailDomainOnly answers "which provider". That was enough until 2026-09-20,
+// when a buyer paid from one gmail address while the survey they had just
+// finished sat under a different gmail address one character shorter. Every
+// line in the matching path printed "@gmail.com" for both, so the log showed
+// an exact match between two addresses that were not the same one, and the
+// misdelivery was invisible in the only record of it.
+//
+// The length is the smallest thing that separates two addresses on a shared
+// domain. It is not reversible, it is not a fragment of the address, and it
+// costs one integer per line. "@gmail.com len=12" against "@gmail.com len=11"
+// would have named the cause immediately.
+//
+// Total by construction: this runs inside request handlers and on error paths,
+// where a throw from a logging helper would convert a handled failure into a
+// 500.
+export function addrLabel(email) {
+  try {
+    const s = String(email == null ? '' : email).toLowerCase().trim();
+    const i = s.lastIndexOf('@');
+    if (i < 0 || i === s.length - 1) return '(none)';
+    return '@' + s.slice(i + 1) + ' len=' + i;
+  } catch (_) {
+    return '(unmaskable)';
+  }
+}
+
 // ── webhookOutcomeLine ──────────────────────────────────────────────────────
 // ONE LINE PER CALL, ON EVERY EXIT.
 //

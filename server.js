@@ -1,7 +1,7 @@
 import express from 'express';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
-import { describeShape, emailDomainOnly } from './lib-webhook-log.js';
+import { describeShape, emailDomainOnly, addrLabel } from './lib-webhook-log.js';
 import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
@@ -45,8 +45,11 @@ const currentLedger = () => EVIDENCE.getStore() || null;
 function safeLog(build) {
   try { console.log(build()); } catch (_) { /* logging must never interrupt */ }
 }
+// v8.11.29: the domain AND the local part length. emailDomainOnly alone made
+// two different addresses on one provider print identically, which is how the
+// 2026-09-20 misdelivery hid inside a log that was working correctly.
 function maskAddr(v) {
-  try { return emailDomainOnly(v); } catch (_) { return '(unmaskable)'; }
+  try { return addrLabel(v); } catch (_) { return '(unmaskable)'; }
 }
 function safeShape(v) {
   try { return describeShape(v); } catch (_) { return '<undescribable>'; }
@@ -1321,7 +1324,7 @@ async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
   const key = process.env.RESEND_API_KEY;
   const from = process.env.FROM_EMAIL || 'reports@4xi360.com';
   if (!key) {
-    console.log('[email] RESEND_API_KEY missing — skipping send to', to);
+    console.log('[email] RESEND_API_KEY missing, skipping send to', maskAddr(to));
     return { ok: false, reason: 'missing key' };
   }
 
@@ -1374,7 +1377,7 @@ async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
   // First attempt
   let result = await attempt();
   if (result.ok) {
-    console.log('[email] sent to', to, bcc ? '| bcc: ' + (Array.isArray(bcc) ? bcc.join(',') : bcc) : '', '| id:', result.id);
+    console.log('[email] sent to', maskAddr(to), bcc ? '| bcc: ' + maskAddr(Array.isArray(bcc) ? bcc[0] : bcc) : '', '| id:', result.id);
     return result;
   }
 
@@ -1384,7 +1387,7 @@ async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
     await new Promise(resolve => setTimeout(resolve, 2000));
     result = await attempt();
     if (result.ok) {
-      console.log('[email] sent to', to, bcc ? '| bcc: ' + (Array.isArray(bcc) ? bcc.join(',') : bcc) : '', '| id:', result.id, '(after retry)');
+      console.log('[email] sent to', maskAddr(to), bcc ? '| bcc: ' + maskAddr(Array.isArray(bcc) ? bcc[0] : bcc) : '', '| id:', result.id, '(after retry)');
       return result;
     }
     console.log('[email] retry also failed:', result.reason);
@@ -2676,7 +2679,7 @@ async function persistPendingReport({ key, report, survey, product, savedAt }) {
       const rows = await r.json();
       id = Array.isArray(rows) && rows.length && rows[0] && rows[0].id ? String(rows[0].id) : null;
     } catch (_) { id = null; }
-    console.log('PENDING_WRITE [pending] ok domain=' + emailDomainOnly(key)
+    console.log('PENDING_WRITE [pending] ok domain=' + addrLabel(key)
       + ' row=' + (id || 'unknown'));
     return id;
   } catch (e) {
@@ -2726,7 +2729,7 @@ app.post('/save-report', async (req, res) => {
   // delivered, not refused.
   reportStore.set(key, { report, survey, product: product || 'full', savedAt: now, pendingId: null });
   const bytes = saveSizeBytes(report, survey);
-  console.log('[save-report] Saved for domain:', emailDomainOnly(key), 'bytes=' + bytes);
+  console.log('[save-report] Saved for domain:', addrLabel(key), 'bytes=' + bytes);
   res.status(200).json({ ok: true });
 
   // Everything from here decides only whether the DATABASE also gets it.
@@ -2741,7 +2744,7 @@ app.post('/save-report', async (req, res) => {
   }
 
   if (skip) {
-    console.log('PENDING_WRITE [pending] skipped reason=' + skip + ' domain=' + emailDomainOnly(key));
+    console.log('PENDING_WRITE [pending] skipped reason=' + skip + ' domain=' + addrLabel(key));
     return;
   }
 
@@ -2822,7 +2825,7 @@ async function saveToHubSpot(email, firstName, restaurantName, location, report)
         });
       }
     }
-    console.log('[hubspot] Contact saved:', email);
+    console.log('[hubspot] Contact saved:', maskAddr(email));
   } catch(e) {
     console.log('[hubspot] Failed:', e.message);
   }
@@ -3042,7 +3045,7 @@ async function notifyCacheMiss({ email, firstName, product, restaurantName, offe
   // safe default for a bearer credential is not to issue one.
   const recoverUrl = offerRecovery === true ? buildRecoveryUrl(email) : null;
   if (offerRecovery === true && recoverUrl) {
-    console.log('RECOVERY_LINK [recover] included in cache-miss email domain=' + emailDomainOnly(email));
+    console.log('RECOVERY_LINK [recover] included in cache-miss email domain=' + addrLabel(email));
   } else {
     console.log('RECOVERY_LINK [recover] omitted, offerRecovery=' + String(offerRecovery)
       + ' secretConfigured=' + (recoverySecret() ? 'yes' : 'no'));
@@ -3122,7 +3125,7 @@ async function markPurchasedAndEmail(email, firstName, restaurantName, report, p
       // v8.11.14 [B5]: domain only. This line printed a customer's address on
       // every purchase, matched or not, and it is the one that fired for the
       // 2026-09-19 cache miss.
-      console.log('[hubspot] Marked purchased domain:', emailDomainOnly(email), product);
+      console.log('[hubspot] Marked purchased domain:', addrLabel(email), product);
 
       await fetch('https://api.hubapi.com/crm/v3/objects/notes', {
         method: 'POST',
@@ -3139,7 +3142,7 @@ async function markPurchasedAndEmail(email, firstName, restaurantName, report, p
         })
       });
     }
-    console.log('[hubspot] Note added for domain:', emailDomainOnly(email));
+    console.log('[hubspot] Note added for domain:', addrLabel(email));
   } catch(e) {
     console.log('[hubspot] markPurchasedAndEmail failed:', e.message);
   }
@@ -3241,17 +3244,17 @@ async function pushReportContextToHubSpot({ subscriber, report, reportNumber, re
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify({ properties })
       });
-      console.log('[hubspot-ctx] Updated', subscriber.email, '|', subscriber.plan_type, '| report', reportNumber, '| score', score);
+      console.log('[hubspot-ctx] Updated', maskAddr(subscriber.email), '|', subscriber.plan_type, '| report', reportNumber, '| score', score);
     } else {
       await fetch('https://api.hubapi.com/crm/v3/objects/contacts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify({ properties })
       });
-      console.log('[hubspot-ctx] Created', subscriber.email, '|', subscriber.plan_type);
+      console.log('[hubspot-ctx] Created', maskAddr(subscriber.email), '|', subscriber.plan_type);
     }
   } catch(e) {
-    console.log('[hubspot-ctx] Push failed for', subscriber.email, e.message);
+    console.log('[hubspot-ctx] Push failed for', maskAddr(subscriber.email), e.message);
   }
 }
 
@@ -4390,9 +4393,9 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
     console.log('[business-metrics] provided | guest:',  hasGuest  ? guestCountChange    + '%' : 'skipped',
                 '| check:',  hasCheck  ? avgCheckChange      + '%' : 'skipped',
                 '| profit:', hasProfit ? profitabilityChange + '%' : 'skipped',
-                '| email:', email);
+                '| email:', maskAddr(email));
   } else {
-    console.log('[business-metrics] skipped (all) | email:', email);
+    console.log('[business-metrics] skipped (all) | email:', maskAddr(email));
   }
 
   const subscriber = {
@@ -4639,7 +4642,7 @@ async function recordUnmatchedSale({ payingEmail, firstName, restaurantName, pro
       console.log('UNMATCHED_SALE [sale] failed ' + r.status + ' ' + txt.slice(0, 160));
       return false;
     }
-    console.log('UNMATCHED_SALE [sale] recorded domain=' + emailDomainOnly(payingEmail)
+    console.log('UNMATCHED_SALE [sale] recorded domain=' + addrLabel(payingEmail)
       + ' plan=' + planType + ' amount=' + amountPaid);
     return true;
   } catch (e) {
@@ -4937,7 +4940,7 @@ function markMemorySpent({ email, token, reason }) {
     if (!cur) return false;
     if (cur.spentAt) return false;
     reportStore.set(key, markSpent(cur, { at: Date.now(), token }));
-    console.log('MEMORY_SPENT [webhook] entry marked spent domain=' + emailDomainOnly(key)
+    console.log('MEMORY_SPENT [webhook] entry marked spent domain=' + addrLabel(key)
       + ' reason=' + reason);
     return true;
   } catch (e) {
@@ -5086,7 +5089,7 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   const payingEmail = v.payingEmail;
   const used = RECOVERY_ATTEMPTS.get(payingEmail) || 0;
   if (used >= RECOVERY_MAX_ATTEMPTS) {
-    console.log('RECOVERY [recover] locked attempts=' + used + ' domain=' + emailDomainOnly(payingEmail));
+    console.log('RECOVERY [recover] locked attempts=' + used + ' domain=' + addrLabel(payingEmail));
     return res.status(429).send(renderRecoveryPage({ token, done: true,
       message: 'Too many attempts on this link. We have been alerted and will email you directly.' }));
   }
@@ -5109,13 +5112,13 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   // rule had been applied. It has not: windowMs is 0 on this path.
   console.log('RECOVERY [recover] attempt rule=exact-only decision=' + m.decision
     + ' matcherReason=' + m.reason + ' candidates=' + candidates.length
-    + ' payingDomain=' + emailDomainOnly(payingEmail) + ' typedDomain=' + emailDomainOnly(typed));
+    + ' payingDomain=' + addrLabel(payingEmail) + ' typedDomain=' + addrLabel(typed));
 
   if (m.decision !== 'exact' || !m.match) {
     const next = used + 1;
     RECOVERY_ATTEMPTS.set(payingEmail, next);
     if (next >= RECOVERY_MAX_ATTEMPTS) {
-      console.log('RECOVERY [recover] LOCKED domain=' + emailDomainOnly(payingEmail));
+      console.log('RECOVERY [recover] LOCKED domain=' + addrLabel(payingEmail));
       await alertRecoveryLocked({ payingEmail, attempts: next });
     }
     return res.status(404).send(renderRecoveryPage({ token,
@@ -5372,12 +5375,32 @@ async function handlePaymentWebhook(req, res) {
     memoryVerdict = memoryHitVerdict({ entry: memoryEntry, rowState });
     if (memoryVerdict.trusted) {
       console.log('MEMORY_TRUSTED [webhook] believed without checking the table reason='
-        + memoryVerdict.reason + ' domain=' + emailDomainOnly(email));
+        + memoryVerdict.reason + ' addr=' + addrLabel(email));
     } else if (!memoryVerdict.trust) {
       console.log('MEMORY_STALE [webhook] entry not for sale reason=' + memoryVerdict.reason
-        + ' domain=' + emailDomainOnly(email)
+        + ' addr=' + addrLabel(email)
         + ' falling through to the table');
     }
+  }
+
+  // v8.11.29: EVERY OUTCOME OF THE MEMORY LOOKUP NOW SAYS SO.
+  //
+  // Before this, the ordinary successful memory hit printed NOTHING.
+  // memoryHitVerdict returns { trust: true, reason: 'row-unclaimed' } with no
+  // `trusted` flag, so it fell between the two branches above, and a lookup
+  // that found nothing at all printed nothing either, because the whole block
+  // is inside `if (memoryEntry)`.
+  //
+  // On 2026-09-20 that produced two purchases eight minutes apart with not one
+  // memory line between them: the first was a healthy hit, the second was a
+  // total miss, and the log was identical for both. The state that mattered
+  // was the only state nobody could see.
+  if (memoryVerdict.trust && !memoryVerdict.trusted) {
+    console.log('MEMORY_HIT [webhook] entry found and still for sale reason='
+      + memoryVerdict.reason + ' addr=' + addrLabel(email));
+  } else if (!memoryEntry) {
+    console.log('MEMORY_MISS [webhook] no entry for this address reason=no-entry'
+      + ' addr=' + addrLabel(email) + ' going to the table');
   }
 
   let saved = memoryVerdict.trust ? memoryEntry : null;
@@ -5409,7 +5432,24 @@ async function handlePaymentWebhook(req, res) {
     const now = Date.now();
     const candidates = await fetchPendingCandidates({ payingEmail: email, now });
     candidatePool = candidates;
-    const raw = matchPendingReport({ payingEmail: email, candidates, now });
+    // v8.11.29: the matcher now REFUSES to rank candidates it cannot order,
+    // and a refusal must not become a 500 on a purchase that has been paid
+    // for. A throw here means the candidate rows arrived in a shape this
+    // service did not build, which is an operator problem and not the buyer's:
+    // treat it as "no match", alert, and let the recovery path carry them.
+    let raw;
+    try {
+      raw = matchPendingReport({ payingEmail: email, candidates, now });
+    } catch (e) {
+      console.log('PENDING_UNORDERABLE [pending] the matcher refused the candidate rows: '
+        + (e && e.message) + ' addr=' + addrLabel(email));
+      await alertWebhookProblem({
+        kind: 'unorderable-candidates',
+        detail: 'matchPendingReport refused a candidate row. A paid order fell through to '
+          + 'recovery instead of matching. ' + (e && e.message),
+      });
+      raw = { decision: 'none', match: null, reason: 'candidates-unorderable' };
+    }
     // v8.11.18 [A2]: inference ships switched off. The matcher still computes
     // it, nothing is delivered on it, and the buyer goes down the recovery
     // path exactly as for "none". RVP_INFER_DELIVERY=true turns it on.
@@ -5417,7 +5457,7 @@ async function handlePaymentWebhook(req, res) {
     wouldHaveInferredId = m.wouldHaveInferredId;
     shadowAlert = m.alert;
     console.log('PENDING_MATCH [pending] decision=' + m.logDecision + ' reason=' + m.reason
-      + ' candidates=' + candidates.length + ' domain=' + emailDomainOnly(email)
+      + ' candidates=' + candidates.length + ' domain=' + addrLabel(email)
       + ' deliverInferred=' + (process.env.RVP_INFER_DELIVERY === 'true' ? 'on' : 'off')
       + (m.wouldHaveInferredId ? ' wouldHaveChosen=' + m.wouldHaveInferredId : ''));
     if (m.match) {

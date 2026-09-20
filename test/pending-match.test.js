@@ -157,14 +157,32 @@ test('a claimed row does not count toward the ambiguity check', () => {
   assert.equal(r.match.id, 'live');
 });
 
-test('the matcher never throws and never invents a match', () => {
-  for (const c of [undefined, null, [], [null], [{}], 'not an array', 42]) {
+// v8.11.29: RESTATED, NOT WEAKENED.
+//
+// This used to assert that the matcher never throws on ANY input, and [{}] was
+// in the list: a row object carrying no saved_at at all. The saved_at guard
+// added in v8.11.29 throws on exactly that, because a candidate whose
+// timestamp cannot be ordered must not be silently ranked.
+//
+// The two halves were doing different jobs and are now separate. A malformed
+// CONTAINER (not an array, an array of nulls, a number) is still answered with
+// 'none': there is nothing to match and nothing to order. A malformed ROW is
+// now a throw, and it has its own test in matcher-order.test.js. The
+// distinction is the point: the first means "no candidates", the second means
+// "the caller handed me a shape I cannot rank", and answering both with 'none'
+// is how a raw PostgREST row would have been sorted by NaN in silence.
+test('a malformed candidate container never throws and never invents a match', () => {
+  for (const c of [undefined, null, [], [null], 'not an array', 42]) {
     let r;
     assert.doesNotThrow(() => { r = matchPendingReport({ payingEmail: PAYER, candidates: c, now: NOW }); },
       'threw on ' + JSON.stringify(c));
     assert.equal(r.decision, 'none');
     assert.equal(r.match, null);
   }
+  // The row that moved to the other side of the contract, asserted here so the
+  // move is visible from the test that used to cover it.
+  assert.throws(() => matchPendingReport({ payingEmail: PAYER, candidates: [{}], now: NOW }),
+    /saved_at/, 'a row with no saved_at must now be refused, not ranked');
   for (const e of [undefined, null, '', '   ', {}, 12345]) {
     const r = matchPendingReport({ payingEmail: e, candidates: [row({})], now: NOW });
     assert.equal(r.decision, 'none', 'a blank paying address produced a match');
