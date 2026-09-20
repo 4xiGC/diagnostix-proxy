@@ -4938,6 +4938,20 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
     pushReportContextToHubSpot({ subscriber: supaShaped, report, reportNumber: 1, reportUrl, baseline: report })
   ]);
 
+  // v8.11.34: WHAT THE BUYER WAS ACTUALLY TOLD, in the log.
+  //
+  // The sentences that name the delivered survey are the whole of this
+  // release's customer-facing change, and until now the only way to know what
+  // they said on a given order was to ask the buyer to forward the email. The
+  // restaurant name and the survey date are already in the log elsewhere; this
+  // puts them in the form the customer read.
+  //
+  // The swap URL carries a signed token and is NEVER logged. Whether one was
+  // included is what matters and is all that is recorded.
+  safeLog(() => '[deliver] lines | ' + deliveryProvenanceLines({
+    restaurantName: restaurant, surveySavedAt, otherWaitingCount,
+  }).join(' | ') + ' | swapLink=' + (swapUrl ? 'yes' : 'no'));
+
   safeLog(() => '[deliver] complete for ' + maskAddr(destEmail) + ' | plan: ' + planType + ' | source: ' + source);
 
   // Recovery delivers to BOTH addresses: the payer, who is the customer of
