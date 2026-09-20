@@ -3041,7 +3041,7 @@ const PEER_COMPARISON_ABSENT =
 // plus an internal alert, so frequency is measurable from the first occurrence
 // rather than after somebody asks.
 async function notifyPeerComparisonUnavailable({ email, restaurantName, reason, detail, ms }) {
-  console.log('[webhook] PEER_COMPARISON_UNAVAILABLE email=' + email
+  console.log('[webhook] PEER_COMPARISON_UNAVAILABLE addr=' + addrLabel(email)
     + ' reason=' + reason
     + ' elapsedMs=' + (ms || 0)
     + ' uptimeSec=' + Math.round(process.uptime()));
@@ -3051,10 +3051,10 @@ async function notifyPeerComparisonUnavailable({ email, restaurantName, reason, 
   try {
     await sendEmailViaResend({
       to: INTERNAL_TO,
-      subject: 'Peer comparison missing on a paid report, ' + email,
+      subject: 'Peer comparison missing on a paid report, ' + addrLabel(email),
       fromName: 'DiagnostiX Alerts',
       html: '<p><strong>A paid report shipped without its peer comparison.</strong></p>'
-        + '<ul><li>email: ' + esc(email) + '</li>'
+        + '<ul><li>address: ' + esc(addrLabel(email)) + '</li>'
         + '<li>restaurant: ' + esc(restaurantName || '(not supplied)') + '</li>'
         + '<li>reason: ' + esc(reason) + '</li>'
         + '<li>detail: ' + esc(detail || '') + '</li>'
@@ -3122,7 +3122,7 @@ async function notifyCacheMiss({ email, firstName, product, restaurantName, offe
   try {
     await sendEmailViaResend({
       to: INTERNAL_TO,
-      subject: 'ACTION: paid order with no cached report, ' + email,
+      subject: 'ACTION: paid order with no cached report, ' + addrLabel(email),
       fromName: 'DiagnostiX Alerts',
       html: `<p><strong>A paid order could not be matched to a report.</strong></p>
 <ul>
