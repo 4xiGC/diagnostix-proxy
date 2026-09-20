@@ -163,10 +163,15 @@ test('a non-integer or negative total is refused, not rounded', () => {
   }
 });
 
-test('one review is singular-safe, because the wording must not read as broken', () => {
-  const out = renderEvidenceSentence({ reviewsTotal: 1, sourcesCounted: 1 });
-  assert.ok(out && out.includes('1 review'), out);
-  assert.ok(!/\b1 reviews\b/.test(out), 'reads as broken English: ' + out);
+test('the singular branch is now UNREACHABLE, and this records why', () => {
+  // This used to assert that reviewsTotal:1 rendered "1 review and rating".
+  // The two-source rule makes that state impossible: two sources each
+  // contribute at least 1, so the total is at least 2. The singular wording
+  // stays in the function as defensive code, but nothing can reach it, and a
+  // test asserting otherwise would describe a state the system cannot enter.
+  assert.equal(renderEvidenceSentence({ reviewsTotal: 1, sourcesCounted: 1 }), null);
+  const two = renderEvidenceSentence({ reviewsTotal: 2, sourcesCounted: 2 });
+  assert.ok(two.includes('2 reviews and ratings'), two);
 });
 
 test('the sentence contains no dash, per house style', () => {
@@ -260,4 +265,26 @@ test('a sentence with no counts renders no empty grid element', () => {
   }});
   assert.ok(html.includes('12,135'));
   assert.ok(!html.includes('ev-grid'), 'an empty grid element was rendered: ' + html);
+});
+
+// ── the sentence requires at least two sources ──────────────────────────────
+//
+// Found while rehearsing SVP's Edinburgh corpus, which produced exactly one
+// source and therefore "The sources read for this assessment publish 1 review
+// and rating between them." Plural "sources" and "between them" are both false
+// about a single item. Applied here too so the three products do not diverge
+// on what the same sentence means.
+
+test('one source does not earn the sentence, because the wording is plural', () => {
+  assert.equal(renderEvidenceSentence({ reviewsTotal: 4552, sourcesCounted: 1 }), null);
+});
+
+test('two sources do earn it', () => {
+  const out = renderEvidenceSentence({ reviewsTotal: 6078, sourcesCounted: 2 });
+  assert.ok(out && out.includes('6,078'), String(out));
+});
+
+test('the rehearsed Zulu case still renders, because it has three sources', () => {
+  // Guards against the rule being set so high it silences a legitimate panel.
+  assert.ok(renderEvidenceSentence({ reviewsTotal: 6078, sourcesCounted: 3 }));
 });

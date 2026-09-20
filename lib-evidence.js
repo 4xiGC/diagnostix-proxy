@@ -105,7 +105,13 @@ export function renderEvidenceSentence(args) {
       || !Number.isInteger(reviewsTotal) || reviewsTotal <= 0) {
     return null;
   }
-  if (typeof sourcesCounted !== 'number' || !Number.isFinite(sourcesCounted) || sourcesCounted <= 0) {
+  // AT LEAST TWO SOURCES. Found while rehearsing SVP's Edinburgh corpus, which
+  // produced exactly one source and therefore "The sources read for this
+  // assessment publish 1 review and rating between them." Plural "sources" and
+  // "between them" are both false about a single item. Wording integrity, not
+  // a flattering threshold: the counts above the sentence still render, so a
+  // thin assessment still looks thin.
+  if (typeof sourcesCounted !== 'number' || !Number.isFinite(sourcesCounted) || sourcesCounted < 2) {
     return null;
   }
   const n = formatCount(reviewsTotal);
