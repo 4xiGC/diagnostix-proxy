@@ -10,6 +10,25 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          markSpent, memoryHitVerdict,
          alertThrottle, ALERT_THROTTLE_MS,
          webhookEnforcement, misroutedHint } from './lib-pending.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { newLedger, noteSearch, noteResults, summarizeEvidence,
+         renderEvidenceSentence, formatCount, evidencePanelHtml } from './lib-evidence.js';
+
+// ── ALL-1: the evidence ledger, scoped to one assessment ───────────────────
+//
+// AsyncLocalStorage rather than an extra argument on every search call. There
+// are fourteen search call sites across two products in this file; threading a
+// parameter through all of them would touch far more code than the feature is
+// worth and would still miss one. A module-level counter would be worse: two
+// concurrent assessments would add their searches together and BOTH reports
+// would overstate their evidence, which is the exact failure this panel exists
+// to stop.
+//
+// Outside a run (the embedded EVP path, a bare script) getStore() is undefined
+// and every note is a no-op, so nothing is counted that is not an RVP
+// assessment.
+const EVIDENCE = new AsyncLocalStorage();
+const currentLedger = () => EVIDENCE.getStore() || null;
 
 // v8.11.10: LOGGING CANNOT INTERRUPT A PURCHASE.
 //
@@ -217,7 +236,13 @@ async function search(q, opts) {
       const kg = d.knowledgeGraph;
       o += `[${kg.title||''}] Rating:${kg.rating||'N/A'} (${kg.reviewCount||0} reviews) ${kg.description||''}\n`;
     }
-    (d.organic||[]).slice(0,8).forEach(i => { o += `${i.title}: ${i.snippet||''}\n`; });
+    const organic = d.organic || [];
+    // ALL-1: eight is the slice, so eight is what is READ. The ledger records
+    // returned and read separately on purpose: they differ, and the difference
+    // is the honest part of the panel.
+    noteSearch(currentLedger(), { label });
+    noteResults(currentLedger(), { organic, read: Math.min(8, organic.length) });
+    organic.slice(0,8).forEach(i => { o += `${i.title}: ${i.snippet||''}\n`; });
     const ms = Date.now() - t0;
     const out = o || 'no data';
     const flag = (out === 'no data') ? ' EMPTY' : '';
@@ -287,7 +312,13 @@ async function searchStructured(q, opts) {
     }
 
     // Organic results — also scan snippets for rating patterns when KG/places missed it
-    (d.organic||[]).slice(0,8).forEach(i => {
+    const organicS = d.organic || [];
+    // ALL-1: counted here too. searchStructured runs the focal-context probe
+    // and every user-named competitor lookup, so leaving it out would
+    // undercount the searches actually run on this assessment.
+    noteSearch(currentLedger(), { label });
+    noteResults(currentLedger(), { organic: organicS, read: Math.min(8, organicS.length) });
+    organicS.slice(0,8).forEach(i => {
       const titleTxt = String(i.title||'');
       const snippetTxt = String(i.snippet||'');
       text += `${titleTxt}: ${snippetTxt}\n`;
@@ -1522,7 +1553,11 @@ app.get('/health', (req, res) => {
 // this commit could not be reverted on its own.
 
 // ── /diagnose ────────────────────────────────────────────────
-app.post('/diagnose', async (req, res) => {
+app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => {
+  // ALL-1: everything this handler awaits runs inside one ledger, including the
+  // searches launched in parallel below, because AsyncLocalStorage follows the
+  // await chain rather than the call stack.
+  //
   // Measured from handler entry so totalMs covers everything the caller waits
   // for. See the totalMs note in the _debug block below for why this exists.
   const t0 = Date.now();
@@ -2314,6 +2349,103 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
 
     console.log('[diagnose] _debug:', JSON.stringify(report._debug));
 
+    // ── ALL-1: the evidence base panel, computed here and never by the model ──
+    //
+    // The counts come from the ledger, which recorded what the searches
+    // actually returned and how much of it entered the corpus. The review
+    // volumes come from Google Places user_ratings_total for the focal
+    // restaurant and each peer: exact integers, already fetched, already tied
+    // to a place_id. RVP is the only one of the three products where the
+    // volumes need no name matching, so there is no subject test here to get
+    // wrong.
+    //
+    // GOOGLE PLACES ONLY, AND THAT RESTRICTION IS THE WHOLE POINT.
+    //
+    // report.competitors[].reviewCount is MIXED PROVENANCE: some figures come
+    // from Places, some from a Serper knowledge-graph lookup, some from the
+    // Serper backfill. The knowledge graph is not reliable for this. On the
+    // 2026-09-19 Zulu assessment the KG reported 4,552 reviews for the focal
+    // restaurant while Places reported 625 for the same business. Summing the
+    // competitor list would therefore have published a number that is wrong by
+    // a factor of seven and impossible for a reader to check.
+    //
+    // So the volumes are taken from compPlacesData alone: focalReviewCount for
+    // the subject, and the places array for the peers, matched by name. A peer
+    // that reached the report through Serper contributes nothing, which
+    // undercounts rather than overstates, and undercounting is the side to err
+    // on for a figure printed as evidence.
+    //
+    // ONE FIGURE PER DISTINCT BUSINESS, largest wins. The competitor list has
+    // carried the same restaurant under two spellings ("Pizzeria Tiramisu" and
+    // "Pizzería Tiramisú" on the Starnberg run), so the key is accent folded.
+    try {
+      const ev = summarizeEvidence(currentLedger());
+      const byName = new Map();
+      const keyOf = (rawName) => String(rawName || '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const addVolume = (rawName, count) => {
+        if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) return;
+        const key = keyOf(rawName);
+        if (!key) return;
+        byName.set(key, Math.max(byName.get(key) || 0, Math.round(count)));
+      };
+
+      const placesList = (compPlacesData && Array.isArray(compPlacesData.places))
+        ? compPlacesData.places : [];
+      const placesByKey = new Map();
+      for (const p of placesList) {
+        if (p && p.name && typeof p.reviewCount === 'number') {
+          const k = keyOf(p.name);
+          if (k) placesByKey.set(k, Math.max(placesByKey.get(k) || 0, p.reviewCount));
+        }
+      }
+
+      addVolume(name, compPlacesData && compPlacesData.focalReviewCount);
+      // Only peers that actually appear in the report, and only with the figure
+      // Places gave for them.
+      for (const c of (report.competitors || [])) {
+        if (!c || typeof c !== 'object') continue;
+        const k = keyOf(c.name);
+        if (k && placesByKey.has(k)) addVolume(c.name, placesByKey.get(k));
+      }
+
+      // Recorded so a later audit can check this panel against its inputs.
+      // focalReviewCount was absent from _debug until now, which is why the
+      // stored reports cannot be rehearsed for the focal figure.
+      if (report._debug && report._debug.googlePlaces) {
+        report._debug.googlePlaces.focalReviewCount =
+          (compPlacesData && typeof compPlacesData.focalReviewCount === 'number')
+            ? compPlacesData.focalReviewCount : null;
+        report._debug.googlePlaces.volumesCountedFrom = 'places-only';
+      }
+      const reviewsTotal = [...byName.values()].reduce((a, b) => a + b, 0);
+      const sourcesCounted = byName.size;
+
+      report.evidence = {
+        searchesRun:     ev.searchesRun,
+        resultsReturned: ev.resultsReturned,
+        resultsRead:     ev.resultsRead,
+        distinctSites:   ev.distinctSites,
+        // Omitted rather than zeroed when nothing could be counted: a printed
+        // zero reads as a finding about the subject, when it is really an
+        // absence of instrumentation.
+        reviewsTotal:    reviewsTotal > 0 ? reviewsTotal : null,
+        sourcesCounted:  sourcesCounted > 0 ? sourcesCounted : null,
+        reviewsSentence: renderEvidenceSentence({ reviewsTotal, sourcesCounted }),
+      };
+      console.log('[diagnose] EVIDENCE searches=' + ev.searchesRun
+        + ' returned=' + ev.resultsReturned + ' read=' + ev.resultsRead
+        + ' sites=' + ev.distinctSites
+        + ' reviewVolumes=' + (reviewsTotal > 0 ? formatCount(reviewsTotal) : '(none)')
+        + ' across=' + sourcesCounted);
+    } catch (e) {
+      // The panel is never worth failing an assessment for. A report with no
+      // evidence block renders no panel, which is the zero case by design.
+      console.log('[diagnose] EVIDENCE failed, panel omitted: ' + (e && e.message));
+      report.evidence = null;
+    }
+
     // Sanitize here, where the object is complete: the competitor merge, both
     // filters, _debug and the source note have all run. buildBenchmarkRow below
     // reads this same object, so the response and the benchmark row both get the
@@ -2367,7 +2499,7 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     console.error('[diagnose] FAILED:', e.message);
     return res.status(500).json({ error: e.message });
   }
-});
+}));
 
 // ── /translate ───────────────────────────────────────────────
 app.post('/translate', async (req, res) => {
@@ -3839,6 +3971,24 @@ body{
   -webkit-print-color-adjust:exact;print-color-adjust:exact;
 }
 
+/* ALL-1: evidence base panel. auto-fit rather than a fixed column count so a
+   report with three counts does not leave a hole where the fourth would be,
+   and break-inside:avoid so the panel is never split across a printed page. */
+.ev-panel{
+  border:1px solid #e3e1ea;border-radius:8px;padding:18px 20px;
+  background:#fbfbfd;break-inside:avoid;page-break-inside:avoid;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.ev-grid{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+  gap:14px 10px;
+}
+.ev-cell{text-align:center}
+.ev-n{font-size:22px;font-weight:800;color:#1B1464;line-height:1.2;font-variant-numeric:tabular-nums}
+.ev-l{font-size:10px;letter-spacing:0.07em;text-transform:uppercase;color:#6b6880;margin-top:4px}
+.ev-s{margin:14px 0 0;font-size:12.5px;line-height:1.65;color:#555;border-top:1px solid #ecebf1;padding-top:12px}
+@media print{ .ev-panel{border-color:#ccc;background:#fafafa} }
+
 .body-p{font-size:14px;line-height:1.7;color:#333;margin:10px 0}
 
 /* Pillar score rows */
@@ -4099,6 +4249,8 @@ ul.bullet-list li{margin:4px 0}
       <h2 class="rpt-h">Executive Summary</h2>
       <div class="exec-box">${esc(summary)}</div>
     ` : ''}
+
+    ${evidencePanelHtml(report)}
 
     ${pillarRows ? `
       <h2 class="rpt-h">Pillar Scores</h2>
