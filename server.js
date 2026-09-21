@@ -8,6 +8,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          deliveryProvenanceLines, swapLinkSentence, swapEligibility, SWAP_NOTE_PREFIX,
          isDuplicateSubmission, DUPLICATE_WINDOW_MS, DUPLICATE_CLAIM_LABEL,
          swapOrderKey, patchRowsAffected, claimVerdict, outcomeRecord,
+         alertCopyFor, pgErrorFields, recoveryCopy, recoveryNotFound,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
@@ -4523,8 +4524,23 @@ async function writeSubscribers({ what, filter, method, body, rowId }) {
     });
     // return=representation means a 2xx always carries the changed rows, so a
     // zero here is a real zero and not a missing Prefer header.
-    const rows = r.ok ? patchRowsAffected(await r.json().catch(() => null)) : 0;
-    console.log(label + ' http=' + r.status + ' rows=' + rows);
+    const payload = await r.json().catch(() => null);
+    const rows = r.ok ? patchRowsAffected(payload) : 0;
+    // v8.11.42: A NON-2xx NAMES ITS CONSTRAINT.
+    //
+    // On 2026-09-21 this logged `http=409` and nothing else, and it took a
+    // trip to the SQL editor to learn that the constraint was
+    // subscribers_report_token_key. code and the name were in the body all
+    // along. The VALUE that collided is never logged: on this table it is a
+    // report token, which opens the paid report.
+    let extra = '';
+    if (!r.ok) {
+      const f = pgErrorFields(payload);
+      extra = (f.code ? ' code=' + f.code : '')
+        + (f.constraint ? ' constraint=' + f.constraint : '')
+        + (f.details ? ' details=' + JSON.stringify(f.details) : '');
+    }
+    console.log(label + ' http=' + r.status + ' rows=' + rows + extra);
     return { ok: r.ok, status: r.status, rows };
   } catch (e) {
     console.log(label + ' http=ERROR rows=0 ' + (e && e.message));
@@ -4785,7 +4801,14 @@ function buildRecoveryUrl(payingEmail) {
 const recoveryEsc = (v) => String(v == null ? '' : v)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-function renderRecoveryPage({ token, message, done }) {
+// v8.11.42: THE PAGE KNOWS WHICH MODE IT IS IN.
+//
+// The same page served a buyer whose order delivered nothing and a buyer whose
+// order delivered the WRONG survey, using the first one's words. On 2026-09-21
+// a buyer whose report had arrived was told "we could not match it to a
+// finished HealthCheck". recoveryCopy picks the wording; this only renders it.
+function renderRecoveryPage({ token, message, done, mode, restaurant }) {
+  const copy = recoveryCopy({ mode, restaurant });
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Find your DiagnostiX report</title>
@@ -4805,14 +4828,12 @@ function renderRecoveryPage({ token, message, done }) {
   .ok{background:#eaf6f1;border-left-color:#0b6b57}
   p.sub{color:#5b656e;font-size:.93rem}
 </style></head><body><div class="card">
-<h1>Find your DiagnostiX report</h1>
-${done ? '' : `<p class="sub">Your payment went through and we could not match it to a finished
-HealthCheck. That happens when the email on your Wix account is not the one you typed into the
-survey. Tell us the survey email and we will send the report straight away.</p>`}
+<h1>${recoveryEsc(copy.heading)}</h1>
+${done ? '' : `<p class="sub">${recoveryEsc(copy.intro)}</p>`}
 ${message ? `<div class="msg${done ? ' ok' : ''}">${recoveryEsc(message)}</div>` : ''}
 ${done ? '' : `<form method="POST" action="/recover">
 <input type="hidden" name="t" value="${recoveryEsc(token)}">
-<label for="email">The email you used in the survey</label>
+<label for="email">${recoveryEsc(copy.label)}</label>
 <input id="email" name="email" type="email" required autocomplete="email" placeholder="you@yourrestaurant.com">
 <button type="submit">Send my report</button>
 </form>`}
@@ -5230,21 +5251,24 @@ async function alertWebhookProblem({ kind, detail }) {
     const esc = (v) => String(v == null ? '' : v)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     console.log('WEBHOOK_ALERT [webhook] sent kind=' + kind + ' covering=' + n + ' call(s)');
+    // v8.11.42: THE OPENING AND CLOSING BELONG TO THE KIND, NOT TO THE MAILER.
+    // Every kind used to get the /payment-webhook paragraph and the 2026-09-19
+    // missing-slash paragraph. For subscribers-update-noop both are false: the
+    // sale was delivered and emailed, and no URL is broken. alertCopyFor
+    // defaults to exactly today's text, so every webhook alert is unchanged.
+    const copy = alertCopyFor(kind);
     await sendEmailViaResend({
       to: 'hello@4xiconsulting.com',
       subject: kind,
       fromName: 'DiagnostiX Alerts',
       html: '<p><strong>' + esc(kind) + '</strong></p>'
-        + '<p>A call reached /payment-webhook and was not processed. If this is the '
-        + 'Wix automation, no sale is being delivered until the URL is fixed.</p>'
+        + '<p>' + esc(copy.opening) + '</p>'
         + '<ul>'
         + '<li>' + esc(detail) + '</li>'
         + '<li>calls covered by this alert: ' + n + '</li>'
         + '<li>next alert possible in: ' + Math.round(ALERT_THROTTLE_MS / 60000) + ' minutes</li>'
         + '</ul>'
-        + '<p>The correct URL is the bare path plus a slash plus the secret. On '
-        + '2026-09-19 the secret was glued on with no slash, every sale 404ed, and '
-        + 'nothing was logged by the service at all.</p>'
+        + (copy.closing ? '<p>' + esc(copy.closing) + '</p>' : '')
         + '<p>Nothing from the request body appears in this alert, deliberately: a '
         + 'rejected call is not trusted enough to quote.</p>',
     });
@@ -5298,7 +5322,7 @@ async function alertInferredMatch({ payingEmail, surveyEmail, restaurantName, pr
 // The buyer email is no longer a dead end. Both routes fail closed: a bad,
 // expired or absent token renders the same refusal, and neither reveals
 // whether any particular address exists.
-app.get('/recover', (req, res) => {
+app.get('/recover', async (req, res) => {
   const token = String(req.query.t || '');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   if (!recoverySecret()) {
@@ -5314,7 +5338,23 @@ app.get('/recover', (req, res) => {
         ? 'This link has expired. Reply to your receipt and we will send your report.'
         : 'This link is not valid. Reply to your receipt and we will send your report.' }));
   }
-  res.status(200).send(renderRecoveryPage({ token }));
+  // v8.11.42: THE MODE IS RESOLVED HERE, at the cost of one query per view.
+  //
+  // Before this the GET verified the token and rendered immediately, so the
+  // page could not know whether the order had delivered. An unreadable order
+  // row simply falls back to recovery copy, which is what the page said
+  // before, so a failed lookup costs wording and never the page.
+  let mode = 'recovery', restaurant = '';
+  try {
+    const orderRow = await findOrderRow({ payingEmail: v.payingEmail });
+    const elig = swapEligibility({ orderRow });
+    mode = elig.mode;
+    restaurant = (orderRow && orderRow.restaurant_name) || '';
+  } catch (e) {
+    console.log('RECOVERY [recover] GET mode lookup failed, showing recovery copy: ' + (e && e.message));
+  }
+  console.log('RECOVERY [recover] GET mode=' + mode + ' named=' + (restaurant ? 'yes' : 'no'));
+  res.status(200).send(renderRecoveryPage({ token, mode, restaurant }));
 });
 
 app.post('/recover', express.urlencoded({ extended: false }), async (req, res) => {
@@ -5327,21 +5367,52 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   const v = verifyRecoveryToken({ token, secret, now });
   if (!secret || !v.ok) {
     console.log('RECOVERY [recover] POST rejected reason=' + (secret ? v.reason : 'no-secret'));
+    // v8.11.42: EVERY EXIT FROM THIS HANDLER WRITES AN OUTCOME ROW.
+    //
+    // Until now only the four exits that got as far as a claim did. The three
+    // failed attempts on 2026-09-21 left NOTHING in rvp_outcomes, and their
+    // typed addresses had to be read out of a log buffer, which is the exact
+    // dependency this table exists to remove. There is no paying address to
+    // record here: the token did not verify, so nothing in it is trusted.
+    await writeOutcome(outcomeRecord({
+      kind: 'recover', decision: 'refused',
+      reason: secret ? 'invalid-token-' + v.reason : 'no-secret',
+      surveyEmail: typed, delivered: false,
+    }));
     return res.status(400).send(renderRecoveryPage({ token, done: true,
       message: 'This link is not valid or has expired. Reply to your receipt and we will send your report.' }));
   }
 
   const payingEmail = v.payingEmail;
+
+  // The mode is resolved once and used for every exit below, so a buyer who
+  // mistypes an address three times is not shown recovery wording on the
+  // second try and swap wording on the third.
+  const orderRowForMode = await findOrderRow({ payingEmail });
+  const eligForMode = swapEligibility({ orderRow: orderRowForMode });
+  const pageMode = eligForMode.mode;
+  const pageRestaurant = (orderRowForMode && orderRowForMode.restaurant_name) || '';
+
   const used = RECOVERY_ATTEMPTS.get(payingEmail) || 0;
   if (used >= RECOVERY_MAX_ATTEMPTS) {
     console.log('RECOVERY [recover] locked attempts=' + used + ' domain=' + addrLabel(payingEmail));
+    await writeOutcome(outcomeRecord({
+      kind: 'recover', decision: 'refused', reason: 'locked-attempts=' + used,
+      payingEmail, surveyEmail: typed, delivered: false,
+    }));
     return res.status(429).send(renderRecoveryPage({ token, done: true,
+      mode: pageMode, restaurant: pageRestaurant,
       message: 'Too many attempts on this link. We have been alerted and will email you directly.' }));
   }
 
   if (!typed || typed.indexOf('@') < 1) {
     RECOVERY_ATTEMPTS.set(payingEmail, used + 1);
+    await writeOutcome(outcomeRecord({
+      kind: 'recover', decision: 'refused', reason: 'not-an-email-address',
+      payingEmail, surveyEmail: typed, delivered: false,
+    }));
     return res.status(400).send(renderRecoveryPage({ token,
+      mode: pageMode, restaurant: pageRestaurant,
       message: 'That does not look like an email address. '
         + Math.max(0, RECOVERY_MAX_ATTEMPTS - used - 1) + ' attempts left.' }));
   }
@@ -5364,12 +5435,20 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   // DATA AND NOT OF THIS LINE. See findOrderRow for why no timestamp cutoff
   // repairs it. It decides the MODE and writes a note; it is no longer what
   // makes a swap single use. That is recordSwapUse and the unique index.
-  const orderRow = await findOrderRow({ payingEmail });
-  const elig = swapEligibility({ orderRow });
+  // v8.11.42: resolved ONCE, above, and reused. Two lookups of the same row in
+  // one request could disagree if a delivery landed between them, and then the
+  // page and the decision would be about different rows.
+  const orderRow = orderRowForMode;
+  const elig = eligForMode;
   console.log('SWAP [swap] mode=' + elig.mode + ' allowed=' + elig.allowed
     + ' reason=' + elig.reason + ' addr=' + addrLabel(payingEmail));
   if (!elig.allowed) {
+    await writeOutcome(outcomeRecord({
+      kind: 'recover', decision: elig.mode, reason: 'refused-' + elig.reason,
+      payingEmail, surveyEmail: typed, delivered: false,
+    }));
     return res.status(409).send(renderRecoveryPage({ token, done: true,
+      mode: pageMode, restaurant: pageRestaurant,
       message: 'This link has already been used once. Each order includes one swap. '
         + 'Reply to your receipt and we will sort out anything else.' }));
   }
@@ -5398,8 +5477,20 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
       console.log('RECOVERY [recover] LOCKED domain=' + addrLabel(payingEmail));
       await alertRecoveryLocked({ payingEmail, attempts: next });
     }
+    // THE FAILED ATTEMPT IS NOW READABLE FROM THE TABLE. The candidate count
+    // and the matcher's own reason ride in `reason`, which needs no new column
+    // and so no migration.
+    await writeOutcome(outcomeRecord({
+      kind: 'recover', decision: 'none',
+      reason: m.reason + ' candidates=' + candidates.length,
+      payingEmail, surveyEmail: typed, delivered: false,
+    }));
     return res.status(404).send(renderRecoveryPage({ token,
-      message: 'We have no unclaimed report for that address. '
+      mode: pageMode, restaurant: pageRestaurant,
+      // v8.11.42: two of the three failed attempts on 2026-09-21 typed the
+      // PAYING address. "We have no unclaimed report for that address" is true
+      // and tells them nothing. This names it.
+      message: recoveryNotFound({ mode: elig.mode, typed, payingEmail }) + ' '
         + Math.max(0, RECOVERY_MAX_ATTEMPTS - next) + ' attempts left.' }));
   }
 
@@ -5425,7 +5516,7 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
       payingEmail, surveyEmail: typed, pendingRowId: row.id,
       delivered: false, claimRows: claim.rows,
     }));
-    return res.status(409).send(renderRecoveryPage({ token, done: true,
+    return res.status(409).send(renderRecoveryPage({ token, done: true, mode: pageMode, restaurant: pageRestaurant,
       message: 'That report has just been sent. Check your inbox, and reply to your receipt '
         + 'if it has not arrived.' }));
   }
@@ -5459,7 +5550,7 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
           + 'Reply to your receipt and we will sort out anything else.'
         : 'We cannot complete a swap right now. Reply to your receipt and we will send '
           + 'the right report straight away.';
-      return res.status(409).send(renderRecoveryPage({ token, done: true, message: msg }));
+      return res.status(409).send(renderRecoveryPage({ token, done: true, mode: pageMode, restaurant: pageRestaurant, message: msg }));
     }
   }
 
@@ -5486,7 +5577,7 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
       payingEmail, surveyEmail: typed, pendingRowId: row.id,
       delivered: false, claimRows: claim.rows,
     }));
-    return res.status(500).send(renderRecoveryPage({ token, done: true,
+    return res.status(500).send(renderRecoveryPage({ token, done: true, mode: pageMode, restaurant: pageRestaurant,
       message: 'We found your report and could not send it. We have been alerted and will email you directly.' }));
   }
 
@@ -5522,7 +5613,7 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
     });
     await alertSwapUsed({ payingEmail, surveyEmail: typed, restaurantName: restaurant, product });
     RECOVERY_ATTEMPTS.delete(payingEmail);
-    return res.status(200).send(renderRecoveryPage({ token, done: true,
+    return res.status(200).send(renderRecoveryPage({ token, done: true, mode: pageMode, restaurant: pageRestaurant,
       message: 'Sent. Your report for ' + restaurant + ' is on its way to both addresses. '
         + 'You can close this page.' }));
   } else if (elig.mode === 'swap') {
@@ -5579,7 +5670,7 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   await alertRecoveryUsed({ payingEmail, surveyEmail: typed, restaurantName: restaurant, product });
   RECOVERY_ATTEMPTS.delete(payingEmail);
 
-  return res.status(200).send(renderRecoveryPage({ token, done: true,
+  return res.status(200).send(renderRecoveryPage({ token, done: true, mode: pageMode, restaurant: pageRestaurant,
     message: 'Sent. Your report is on its way to both addresses. You can close this page.' }));
 });
 

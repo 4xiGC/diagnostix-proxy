@@ -771,3 +771,107 @@ export function misroutedHint(path) {
   out.tailLength = raw.length;
   return out;
 }
+
+// ── Alert copy, per kind (v8.11.42) ────────────────────────────────────────
+//
+// alertWebhookProblem wrapped EVERY kind in the same two paragraphs, which
+// were written for one failure and are false for others. On 2026-09-21 the
+// subscribers-update-noop alert told the reader that a call had not been
+// processed and that no sale was being delivered, while the sale had in fact
+// been delivered and emailed. Defaulting to today's text keeps every webhook
+// alert byte for byte as it was.
+export const ALERT_DEFAULT_OPENING = 'A call reached /payment-webhook and was not '
+  + 'processed. If this is the Wix automation, no sale is being delivered until the URL is fixed.';
+export const ALERT_DEFAULT_CLOSING = 'The correct URL is the bare path plus a slash plus '
+  + 'the secret. On 2026-09-19 the secret was glued on with no slash, every sale 404ed, and '
+  + 'nothing was logged by the service at all.';
+
+export function alertCopyFor(kind) {
+  if (String(kind == null ? '' : kind) === 'subscribers-update-noop') {
+    return {
+      opening: 'A write to the sale record changed nothing. The report was delivered and '
+        + 'the customer is unaffected. The order row still shows the original report.',
+      closing: '',
+    };
+  }
+  return { opening: ALERT_DEFAULT_OPENING, closing: ALERT_DEFAULT_CLOSING };
+}
+
+// ── A PostgREST failure, named but not quoted (v8.11.42) ───────────────────
+//
+// The 409 that explained the 2026-09-20 incident was logged as a bare status
+// for a day. `code` and the constraint name were in the response body the
+// whole time.
+//
+// POSTGREST DOES NOT RETURN A `constraint` FIELD. The name is only inside
+// `message`, which is why this reads it out rather than picking a key.
+function constraintFromMessage(msg) {
+  const m = /constraint "([^"]+)"/.exec(String(msg == null ? '' : msg));
+  return m ? m[1] : null;
+}
+
+// `details` ON A UNIQUE VIOLATION CONTAINS THE COLLIDING VALUE, and on this
+// table that value is a report token, which is the credential that opens the
+// paid report. The column names are the diagnostic. The values are not, and
+// they never reach a log.
+export function redactPgDetails(details) {
+  const s = String(details == null ? '' : details);
+  if (!s) return null;
+  return s.replace(/=\([^)]*\)/g, '=(value withheld)');
+}
+
+export function pgErrorFields(body) {
+  const b = (body && typeof body === 'object' && !Array.isArray(body)) ? body : {};
+  const pick = (v) => (v == null || v === '') ? null : String(v);
+  return {
+    code: pick(b.code),
+    constraint: pick(b.constraint) || constraintFromMessage(b.message),
+    details: redactPgDetails(b.details),
+  };
+}
+
+// ── The recovery page, per mode (v8.11.42) ─────────────────────────────────
+//
+// The same page served a buyer whose order delivered nothing and a buyer whose
+// order delivered the wrong survey, with the first one's words. "We could not
+// match it to a finished HealthCheck" is simply untrue in swap mode.
+export function recoveryCopy(args) {
+  const a = (args && typeof args === 'object') ? args : {};
+  const restaurant = String(a.restaurant == null ? '' : a.restaurant).trim();
+  // NO RESTAURANT NAME MEANS NO SWAP COPY. The swap sentence asserts "your
+  // order delivered the report for X"; with no X there is no honest way to say
+  // it, so this falls back rather than inventing a noun.
+  if (a.mode === 'swap' && restaurant) {
+    return {
+      heading: 'Send me a different report',
+      intro: 'Your order delivered the report for ' + restaurant + '. If you completed '
+        + 'another survey under a different email address, enter that address and we will '
+        + 'send that report instead. Each order includes one swap.',
+      label: 'The email you typed into the other survey (not the one you paid with)',
+    };
+  }
+  return {
+    heading: 'Find your DiagnostiX report',
+    intro: 'Your payment went through and we could not match it to a finished HealthCheck. '
+      + 'That happens when the email on your Wix account is not the one you typed into the '
+      + 'survey. Tell us the survey email and we will send the report straight away.',
+    label: 'The email you typed into the survey (not the one you paid with)',
+  };
+}
+
+// TWO OF THE THREE FAILED ATTEMPTS ON 2026-09-21 TYPED THE PAYING ADDRESS.
+// The page answered "we have no unclaimed report for that address", which is
+// true and useless. Naming it is the whole fix.
+export function recoveryNotFound(args) {
+  const a = (args && typeof args === 'object') ? args : {};
+  const typed = normalizeEmail(a.typed);
+  const paying = normalizeEmail(a.payingEmail);
+  if (typed && paying && typed === paying) {
+    return 'That is the address you paid with. Enter the address you typed into the other survey.';
+  }
+  if (a.mode === 'swap') {
+    return 'We have no unfinished survey waiting under that address. Check the spelling, '
+      + 'or reply to your receipt and we will help.';
+  }
+  return 'We have no unclaimed report for that address.';
+}
