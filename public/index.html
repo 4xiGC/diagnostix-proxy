@@ -1381,9 +1381,9 @@ function checkPaymentReturn() {
 }
 
 function showPaymentConfirmation(product) {
-  // v8.11.44: the annual branch is gone with the plan. dx_product can only be
-  // 'full' now, because unlockAnnual() was the only thing that ever set
-  // 'annual' and it no longer exists.
+  // v8.11.44: the recurring-plan branch is gone with the plan. dx_product can
+  // only be 'full' now, because the handler that set the other value was the
+  // only writer of it and no longer exists.
   var msg = 'Payment confirmed! Your full report is now unlocked below. A copy will be emailed to you shortly.';
   var banner = document.createElement('div');
   banner.style.cssText = 'background:#2E7D52;color:#fff;padding:14px 20px;text-align:center;font-size:13px;font-weight:700;position:fixed;top:0;left:0;right:0;z-index:9999';

@@ -12,10 +12,17 @@
 // the operator's business partner testing the product. The sentence asks a
 // customer to want something nobody can sell them.
 //
-// The Annual branches of this builder are unreachable for the same reason:
-// they need plan_type other than one_off, which needs product === 'annual',
-// which only unlockAnnual() sets, and nothing live calls it. They are left
-// alone here. This commit removes the sentence a real customer reads.
+// v8.11.46 CORRECTS A CLAIM MADE HERE AT v8.11.43. This file said the Annual
+// branches were unreachable because nothing live sets product === 'annual'.
+// THAT WAS WRONG, and the ship gate caught it by rendering all 99 stored
+// reports: ONE SUBSCRIBER ROW ALREADY HAS plan_type = 'annual', written on
+// 2026-05-20. Nothing new can reach those branches, but that row can, and any
+// redelivery or swap for it would send "Welcome to DiagnostiX Annual".
+//
+// Reachability is a property of the DATA as well as the code, and the code
+// alone was read. The branches are now collapsed: every delivery uses the
+// one-off copy, because the progress-report product they described was
+// retired in v8.10.0 and cannot produce report 2 or report 3 either.
 //
 // Run with: npm test
 // ════════════════════════════════════════════════════════════════════════════
@@ -44,11 +51,21 @@ const REPORT = {
 };
 const SURVEY = { savedAt: '2026-09-20T10:00:00Z' };
 
-const build = (over = {}) => buildCustomerReportEmail({
-  subscriber: { ...SUBSCRIBER, ...(over.subscriber || {}) },
-  report: REPORT, reportNumber: over.reportNumber || 1, survey: SURVEY,
-  baseUrl: BASE, ...over,
-});
+// The first version of this helper spread `over` AFTER the merged subscriber,
+// so an override of { subscriber: { plan_type: 'annual' } } replaced the whole
+// subscriber and dropped the restaurant name. The test then failed on a
+// difference the helper had created. Overrides are applied per field.
+const build = (over = {}) => {
+  const { subscriber: subOver, ...rest } = over;
+  return buildCustomerReportEmail({
+    subscriber: { ...SUBSCRIBER, ...(subOver || {}) },
+    report: REPORT,
+    reportNumber: 1,
+    survey: SURVEY,
+    baseUrl: BASE,
+    ...rest,
+  });
+};
 
 const FORBIDDEN = [/\bAnnual\b/, /\bannual\b/, /99\.99/];
 
@@ -111,4 +128,36 @@ test('CONTROL: the assertion reads the real builder output, not an empty string'
 test('CONTROL: a subscriber with no plan_type still builds an email', () => {
   const e = build({ subscriber: { plan_type: undefined } });
   assert.ok(String(e.html).length > 500);
+});
+
+// ── The stored annual row, which the gate found ───────────────────────────
+
+test('A STORED plan_type=annual ROW ALSO GETS AN EMAIL NAMING NO ANNUAL', () => {
+  const e = build({ subscriber: { plan_type: 'annual' } });
+  for (const field of ['subject', 'html', 'text']) {
+    const v = String(e[field] == null ? '' : e[field]);
+    for (const re of FORBIDDEN) {
+      assert.doesNotMatch(v, re, field + ' still carries ' + re + ' for an annual row: '
+        + JSON.stringify((v.match(new RegExp('.{0,70}' + re.source + '.{0,70}')) || [''])[0]));
+    }
+  }
+});
+
+test('the annual row gets the SAME copy as everyone else', () => {
+  const a = build({ subscriber: { plan_type: 'annual' } });
+  const o = build();
+  assert.equal(a.subject, o.subject, 'two customers get two different subjects for one product');
+  assert.match(String(a.html), /Thank you for purchasing the DiagnostiX Full Report/);
+});
+
+test('report 2 and report 3 numbers cannot resurrect the retired copy', () => {
+  // generateProgressReport went with the plan in v8.10.0, so nothing produces
+  // these any more. If anything ever calls with reportNumber 2 or 3, it must
+  // not promise a progress product that does not exist.
+  for (const n of [2, 3]) {
+    const e = build({ subscriber: { plan_type: 'annual' }, reportNumber: n });
+    for (const re of [...FORBIDDEN, /progress report/i, /8-month mark/, /Month 4/, /Month 8/]) {
+      assert.doesNotMatch(String(e.html), re, 'reportNumber ' + n + ' still carries ' + re);
+    }
+  }
 });

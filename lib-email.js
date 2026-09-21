@@ -40,29 +40,22 @@ export function buildCustomerReportEmail(argsIn) {
   const firstName = firstNameSafe;
   const isOneOff = planTypeSafe === 'one_off';
 
-  let subject, headline, intro;
-  if (isOneOff) {
-    subject = `Your DiagnostiX Full Report is ready: ${restaurant}`;
-    headline = 'Your DiagnostiX Full Report is ready';
-    // v8.11.43: the Annual upsell sentence is gone. DiagnostiX Annual was
-    // retired in v8.10.0 and is hidden in Wix, so the sentence asked a paying
-    // customer to want something nobody can sell them. One subscriber ever
-    // bought it, on 2026-05-20, and that was the operator's business partner
-    // testing the product.
-    intro = 'Thank you for purchasing the DiagnostiX Full Report. Your full HealthCheck is now permanently available at the link below. Bookmark it for future reference.';
-  } else if (reportNumber === 1) {
-    subject = `Welcome to DiagnostiX Annual: your baseline report for ${restaurant}`;
-    headline = 'Your DiagnostiX baseline is ready';
-    intro = 'Thank you for subscribing to DiagnostiX Annual. Your baseline report is now stored and ready to view anytime over the next 12 months. Your Annual plan includes two further progress reports. Report 2 arrives automatically 4 months from today, and Report 3 arrives at the 8-month mark. At the 12-month anniversary you will receive a reminder with the option to renew for another year.';
-  } else if (reportNumber === 2) {
-    subject = `Your DiagnostiX Report 2 is ready: ${restaurant}`;
-    headline = 'Your Month 4 progress report is ready';
-    intro = 'Four months on from your baseline, your second DiagnostiX report is ready. The link below shows your latest scores side-by-side with your baseline so you can see exactly what is moving. Your final report of the year will arrive at the 8-month mark.';
-  } else {
-    subject = `Your DiagnostiX Report 3 is ready: ${restaurant}`;
-    headline = 'Your Month 8 progress report is ready';
-    intro = 'Eight months on from your baseline, your third DiagnostiX report is ready. Inside you will find a year-to-date comparison across all three reports for every pillar. At the 12-month anniversary of your subscription, you will receive a reminder with the option to renew DiagnostiX Annual for another year of progress tracking.';
-  }
+  // v8.11.46: ONE SET OF COPY, FOR EVERY DELIVERY.
+  //
+  // This used to branch four ways: a one-off intro, an Annual welcome, and a
+  // Month 4 and a Month 8 progress report. The plan and generateProgressReport
+  // were both retired in v8.10.0, so nothing can produce report 2 or report 3
+  // and nothing new can be an annual subscriber.
+  //
+  // THE BRANCHES WERE NOT UNREACHABLE, WHICH IS WHY THEY ARE GONE RATHER THAN
+  // LEFT. v8.11.43 claimed they were, reasoning only about the code. One
+  // subscriber row written on 2026-05-20 already carries plan_type 'annual',
+  // so any redelivery or swap for that row would have sent "Welcome to
+  // DiagnostiX Annual" and promised two reports that will never arrive.
+  // Reachability is a property of the data as much as the code.
+  const subject = `Your DiagnostiX Full Report is ready: ${restaurant}`;
+  const headline = 'Your DiagnostiX Full Report is ready';
+  const intro = 'Thank you for purchasing the DiagnostiX Full Report. Your full HealthCheck is now permanently available at the link below. Bookmark it for future reference.';
 
   // v8.11.30: WHICH SURVEY THIS REPORT ANSWERS, stated before anything else
   // the buyer has to read. The sentences are built by deliveryProvenanceLines
