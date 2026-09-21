@@ -356,6 +356,111 @@ export function isDuplicateSubmission(args) {
   }
 }
 
+// ── Single use, and a claim that cannot double (v8.11.37) ──────────────
+//
+// On 2026-09-20 a swap link was used twice and delivered the same report
+// twice. Two independent defects, each sufficient on its own:
+//
+//   1. Single use depended on writing a SWAPPED marker with an UPDATE to
+//      subscribers and reading it back on the next click. The read looked at
+//      the wrong row: delivering INSERTS a subscriber row, which is then the
+//      newest for that address, so the second click read a fresh row with null
+//      notes and answered "not yet swapped". The marker could have been
+//      written perfectly and the link would still have been spent twice.
+//   2. The pending row was claimed AFTER delivery, so two requests could both
+//      pass the check and both deliver before either claimed.
+//
+// A NOTE ON A CLAIM THAT WAS MADE HERE AND IS NOT TRUE. An earlier version of
+// this comment said no UPDATE to subscribers from this service had ever landed,
+// on the evidence that 0 of 98 rows carried the marker. 98 is the wrong
+// denominator: the swap shipped that same day and the placeholder supersede
+// has never had a placeholder to act on. The real attempt count is at most two.
+// The schema was later cleared by hand. The defect above does not need a failed
+// UPDATE to explain it, and none is assumed here.
+//
+// Both are now operations that fail closed. Single use is an INSERT against a
+// UNIQUE index, so the database refuses the second use. The claim is an atomic
+// PATCH filtered on claimed_at IS NULL, and only the request that gets exactly
+// one row back may deliver.
+
+// THE IDENTITY OF AN ORDER, not of a link. A reissued link for the same order
+// is the same entitlement, so the key is derived from the order, and it is
+// hashed so the table can never hold an address.
+//
+// IT KEYS ON THE SIGNED LINK, and two earlier attempts were both wrong in the
+// same way, both caught by the harness rather than by reading the code.
+//
+//   keyed on the order row's report token: a swap delivers, which inserts a
+//   new subscriber row, so the second click read a different token.
+//   keyed on the order row's id, with a cutoff at the request start: the
+//   second click's handler does not begin until the first click's delivery
+//   has already inserted its row, so the cutoff excludes nothing.
+//
+// The link IS the entitlement. One paid delivery builds one recovery URL, so
+// one link means one order, and every click on that link produces the same
+// key. A later purchase sends a new link and is entitled to its own swap,
+// which is the behaviour wanted, not a loophole.
+export function swapOrderKey(args) {
+  const a = (args && typeof args === 'object') ? args : {};
+  const email = normalizeEmail(a.payingEmail);
+  const token = String(a.token == null ? '' : a.token).trim();
+  return crypto.createHash('sha256').update('rvp-order:' + email + ':' + token).digest('hex').slice(0, 40);
+}
+
+// HOW MANY ROWS A PATCH ACTUALLY CHANGED.
+//
+// The 2026-09-20 failure in one function. PostgREST answers 200 with an empty
+// array when the filter matched nothing, and every caller here used to read
+// that as success. An empty body, a null body, a non-array body and a body
+// that is not JSON at all are all ZERO, never "probably fine".
+export function patchRowsAffected(body) {
+  return Array.isArray(body) ? body.length : 0;
+}
+
+// MAY THIS REQUEST DELIVER?
+//
+// Only on exactly one row. Zero rows means another request holds the claim.
+// A transport failure means we do not know, and not knowing is not permission:
+// delivering twice is worse than delivering late, because the second delivery
+// cannot be taken back.
+export function claimVerdict(res) {
+  const r = (res && typeof res === 'object') ? res : {};
+  if (r.ok !== true) {
+    return { claimed: false, mayDeliver: false, rows: 0, reason: 'claim-failed' };
+  }
+  const n = patchRowsAffected(r.rows);
+  if (n === 1) return { claimed: true, mayDeliver: true, rows: 1, reason: 'claimed' };
+  if (n === 0) return { claimed: false, mayDeliver: false, rows: 0, reason: 'already-claimed' };
+  return { claimed: false, mayDeliver: false, rows: n, reason: 'unexpected-row-count-' + n };
+}
+
+// The append-only decision record. Domain and local part length, never an
+// address, so the table can be read by anybody who can read the logs.
+export function outcomeRecord(args) {
+  const a = (args && typeof args === 'object') ? args : {};
+  const part = (e) => {
+    const s = normalizeEmail(e);
+    const i = s.lastIndexOf('@');
+    return i > 0 ? { d: '@' + s.slice(i + 1), l: i } : { d: null, l: null };
+  };
+  const p = part(a.payingEmail), q = part(a.surveyEmail);
+  return {
+    kind: String(a.kind || 'unknown'),
+    secret_status: a.secretStatus == null ? null : String(a.secretStatus),
+    decision: a.decision == null ? null : String(a.decision),
+    reason: a.reason == null ? null : String(a.reason),
+    addr_domain: p.d, addr_local_len: p.l,
+    survey_addr_domain: q.d, survey_addr_local_len: q.l,
+    pending_row_id: a.pendingRowId || null,
+    delivered_restaurant: a.deliveredRestaurant == null ? null : String(a.deliveredRestaurant),
+    delivered: a.delivered === true,
+    claim_rows: Number.isFinite(Number(a.claimRows)) ? Number(a.claimRows) : null,
+    swap_used: a.swapUsed === true,
+    stranded_count: Number.isFinite(Number(a.strandedCount)) ? Number(a.strandedCount) : null,
+    stale_exact: a.staleExact === true,
+  };
+}
+
 export const RECOVERY_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 export const RECOVERY_MAX_ATTEMPTS = 5;
 
