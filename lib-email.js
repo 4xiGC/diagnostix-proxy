@@ -44,7 +44,12 @@ export function buildCustomerReportEmail(argsIn) {
   if (isOneOff) {
     subject = `Your DiagnostiX Full Report is ready: ${restaurant}`;
     headline = 'Your DiagnostiX Full Report is ready';
-    intro = 'Thank you for purchasing the DiagnostiX Full Report. Your full HealthCheck is now permanently available at the link below. Bookmark it for future reference. If you would like ongoing progress tracking, DiagnostiX Annual gives you two additional reports, at the 4-month and 8-month marks, to measure what is changing year over year.';
+    // v8.11.43: the Annual upsell sentence is gone. DiagnostiX Annual was
+    // retired in v8.10.0 and is hidden in Wix, so the sentence asked a paying
+    // customer to want something nobody can sell them. One subscriber ever
+    // bought it, on 2026-05-20, and that was the operator's business partner
+    // testing the product.
+    intro = 'Thank you for purchasing the DiagnostiX Full Report. Your full HealthCheck is now permanently available at the link below. Bookmark it for future reference.';
   } else if (reportNumber === 1) {
     subject = `Welcome to DiagnostiX Annual: your baseline report for ${restaurant}`;
     headline = 'Your DiagnostiX baseline is ready';
