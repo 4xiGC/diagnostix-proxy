@@ -7,7 +7,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
          deliveryProvenanceLines, swapLinkSentence, swapEligibility, SWAP_NOTE_PREFIX,
          isDuplicateSubmission, DUPLICATE_WINDOW_MS, DUPLICATE_CLAIM_LABEL,
-         patchRowsAffected, claimVerdict,
+         swapOrderKey, patchRowsAffected, claimVerdict,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
@@ -4965,6 +4965,57 @@ async function releasePendingClaim({ id, claimedBy, reason }) {
   }
 }
 
+// ────────── Single use by INSERT (v8.11.37) ──────────
+//
+// The database refuses the second use. Nothing in this process has to
+// remember, check or update anything, which matters because the UPDATE the old
+// guarantee depended on has never once landed on this database.
+//
+// FAILS CLOSED. A missing table, an unreachable database, or any unexpected
+// status all answer "not allowed". The swap is refused and the buyer is told
+// to reply to their receipt. Allowing a swap whose single use cannot be
+// recorded is exactly how the 2026-09-20 double delivery happened.
+async function recordSwapUse(fields) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey) return { allowed: false, reason: 'no-database' };
+  try {
+    const r = await fetch(url + '/rest/v1/rvp_swap_uses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: dbKey,
+                 Authorization: 'Bearer ' + dbKey, Prefer: 'return=representation' },
+      body: JSON.stringify(fields),
+    });
+    if (r.status === 409) {
+      console.log('SWAP_USE [swap] refused: this order has already swapped (unique key)');
+      return { allowed: false, reason: 'already-swapped' };
+    }
+    if (r.status === 404) {
+      console.log('SWAP_USE [swap] refused: rvp_swap_uses is missing, migration 002 not applied');
+      await alertWebhookProblem({ kind: 'swap-table-missing',
+        detail: 'rvp_swap_uses does not exist, so single use cannot be guaranteed and the '
+          + 'swap was REFUSED. Apply migrations/002_rvp_swap_uses.sql.' });
+      return { allowed: false, reason: 'table-missing' };
+    }
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      console.log('SWAP_USE [swap] refused: insert failed ' + r.status + ' ' + t.slice(0, 120));
+      return { allowed: false, reason: 'insert-failed-' + r.status };
+    }
+    const rows = await r.json();
+    const n = patchRowsAffected(rows);
+    if (n !== 1) {
+      console.log('SWAP_USE [swap] refused: insert returned ' + n + ' row(s)');
+      return { allowed: false, reason: 'insert-returned-' + n };
+    }
+    console.log('SWAP_USE [swap] recorded, this order has now used its one swap');
+    return { allowed: true, reason: 'recorded', id: rows[0] && rows[0].id };
+  } catch (e) {
+    console.log('SWAP_USE [swap] refused: ' + (e && e.message));
+    return { allowed: false, reason: 'error' };
+  }
+}
+
 // v8.11.21 [C1]: is the row behind a memory entry still unclaimed?
 //
 // A primary key lookup, deliberately separate from fetchPendingCandidates.
@@ -5248,6 +5299,34 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
     return res.status(409).send(renderRecoveryPage({ token, done: true,
       message: 'That report has just been sent. Check your inbox, and reply to your receipt '
         + 'if it has not arrived.' }));
+  }
+
+  // SINGLE USE, ENFORCED BY THE DATABASE. The insert carries a unique key on
+  // the order, so a second attempt is refused by the index rather than by a
+  // marker this service has to write and read back. It fails closed: if the
+  // table is missing or unreachable the swap is refused, not allowed.
+  if (elig.mode === 'swap') {
+    const orderKey = swapOrderKey({ payingEmail, token });
+    // The key prefix is logged so two attempts on one order can be seen to
+    // agree. It is a hash and carries no address.
+    console.log('SWAP_USE [swap] key=' + orderKey.slice(0, 12));
+    const use = await recordSwapUse({
+      order_key: orderKey,
+      addr_domain: emailDomain(payingEmail),
+      addr_local_len: normalizeEmail(payingEmail).lastIndexOf('@'),
+      survey_addr_domain: emailDomain(typed),
+      survey_addr_local_len: normalizeEmail(typed).lastIndexOf('@'),
+      restaurant, pending_row_id: row.id,
+    });
+    if (!use.allowed) {
+      await releasePendingClaim({ id: row.id, claimedBy, reason: 'swap-refused-' + use.reason });
+      const msg = use.reason === 'already-swapped'
+        ? 'This link has already been used once. Each order includes one swap. '
+          + 'Reply to your receipt and we will sort out anything else.'
+        : 'We cannot complete a swap right now. Reply to your receipt and we will send '
+          + 'the right report straight away.';
+      return res.status(409).send(renderRecoveryPage({ token, done: true, message: msg }));
+    }
   }
 
   const delivered = await deliverPaidReport({
