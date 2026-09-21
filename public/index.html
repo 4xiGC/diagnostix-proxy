@@ -460,15 +460,6 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
         <div class="plan-feat">Printable PDF &mdash; share with your team</div>
       </div>
 
-      <!-- ANNUAL OPTION — DORMANT (commented out to remove from purchase flow)
-           To restore: uncomment the block below. The unlockAnnual() JS handler
-           and all backend annual handling remain intact.
-      <div style="text-align:center">
-        <button class="plan-btn outline" style="padding:10px 24px;border-radius:6px;font-size:11px" onclick="unlockAnnual()">
-          Or subscribe annually &mdash; $99.99/yr (3 reports + progress tracking) &rarr;
-        </button>
-      </div>
-      -->
 
       <div class="pw-note" style="margin-top:1rem">&#128274; Payments processed securely by Wix Payments &middot; Full report unlocks instantly after payment</div>
     </div>
@@ -514,36 +505,6 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
     </div>
   </div>
 
-  <!-- Step 5: Annual subscription upsell — DORMANT (force-hidden, plan removed from purchase flow)
-       Panel markup preserved for future restoration. To re-enable:
-       1. Remove "!important" from display:none below (or change to display:block)
-       2. Uncomment the annual option button on the paywall above (search "ANNUAL OPTION — DORMANT")
-       3. Re-enable the upsell display in unlockFullReport() JS (search "ANNUAL UPSELL — DORMANT") -->
-  <div id="annual-upsell" style="display:none !important;background:var(--navy);border-top:3px solid var(--gold);padding:2rem 2.2rem;margin-top:0">
-    <div style="max-width:640px;margin:0 auto;text-align:center">
-      <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.14em;color:rgba(201,168,76,0.7);margin-bottom:8px;font-weight:700">Want to track your progress over time?</div>
-      <div style="font-family:'League Spartan',sans-serif;font-size:1.5rem;color:#fff;margin-bottom:8px">Upgrade to Annual &mdash; $99.99/year</div>
-      <div style="font-size:13px;color:rgba(255,255,255,0.55);line-height:1.65;margin-bottom:1.4rem;max-width:480px;margin-left:auto;margin-right:auto">Get 3 automated HealthCheck reports per year &mdash; one now, one in 4 months, one in 8 months. Each report compares your scores against this baseline so you can see exactly what's improving and what still needs attention.</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:1.4rem;max-width:480px;margin-left:auto;margin-right:auto">
-        <div style="background:rgba(255,255,255,0.06);border-radius:7px;padding:12px 8px;text-align:center">
-          <div style="font-family:'League Spartan',sans-serif;font-size:1.6rem;color:var(--gold)">3</div>
-          <div style="font-size:10px;color:rgba(255,255,255,0.45);text-transform:uppercase;letter-spacing:0.08em">Reports/year</div>
-        </div>
-        <div style="background:rgba(255,255,255,0.06);border-radius:7px;padding:12px 8px;text-align:center">
-          <div style="font-family:'League Spartan',sans-serif;font-size:1.6rem;color:var(--gold)">Auto</div>
-          <div style="font-size:10px;color:rgba(255,255,255,0.45);text-transform:uppercase;letter-spacing:0.08em">Generated</div>
-        </div>
-        <div style="background:rgba(255,255,255,0.06);border-radius:7px;padding:12px 8px;text-align:center">
-          <div style="font-family:'League Spartan',sans-serif;font-size:1.6rem;color:var(--gold)">&#8593;&#8595;</div>
-          <div style="font-size:10px;color:rgba(255,255,255,0.45);text-transform:uppercase;letter-spacing:0.08em">Progress tracking</div>
-        </div>
-      </div>
-      <button onclick="unlockAnnual()" style="background:var(--gold);color:var(--navy);font-family:'League Spartan',sans-serif;font-size:13px;font-weight:900;letter-spacing:0.08em;text-transform:uppercase;border:none;border-radius:7px;padding:14px 32px;cursor:pointer;margin-bottom:8px;width:100%;max-width:320px">
-        Subscribe now &mdash; $99.99/year &#8594;
-      </button>
-      <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-top:6px">Auto-renews annually &middot; Cancel anytime &middot; Secure via Wix</div>
-    </div>
-  </div>
 </div><!-- end p3 -->
 
 </div><!-- end .shell -->
@@ -1348,7 +1309,7 @@ function renderReport(r, d) {
     // ── Financial Reality vs Operational Reality ──
     +financialBlock
 
-    // ── Progress Report Section (annual subscribers only) ──
+    // ── Progress Report Section (retired plan only, never rendered) ──
     +(r.isProgressReport && r.progress ? buildProgressSection(r, d) : '')
 
     // ── Commercial Recommendations (financial-driven, distinct from operational) ──
@@ -1367,16 +1328,17 @@ function renderReport(r, d) {
 //
 // SETUP REQUIRED:
 // 1. Create product in Wix Store: "DiagnostiX Full Report" $49.99
-// 2. [DORMANT] Annual plan ("DiagnostiX Annual" $99.99/year) — removed from
-//    purchase flow per simplification. Wix Pricing Plan is dormant. Backend
-//    annual handling (webhook, cron, generateProgressReport, annualSubscribers)
-//    remains intact. Reactivate by uncommenting UI surfaces (search "DORMANT").
+// 2. v8.11.44: the recurring plan was retired in v8.10.0 and every surface
+//    offering it has been removed from this page: the paywall button, the
+//    hidden upsell panel, its handler and its checkout URL. Nothing here
+//    offers it and nothing here can set the product to anything but full.
+//    This comment is SERVED to every visitor, like the rest of this script,
+//    so it no longer names a price nobody can pay.
 // 3. Replace the URL below with your actual Wix checkout URL
 // 4. In Wix: set the post-payment redirect URL to:
 //    https://diagnostix-proxy-production.up.railway.app?payment=success&product=full
 
 var WIX_FULL_URL    = 'https://www.4xi360.com/diagnostixpay';
-var WIX_ANNUAL_URL  = 'https://www.4xi360.com/diagnostixpay';
 
 function unlockFull() {
   // Save report data to sessionStorage so we can restore after Wix redirect
@@ -1389,16 +1351,6 @@ function unlockFull() {
   window.location.href = WIX_FULL_URL;
 }
 
-function unlockAnnual() {
-  // Save report data to sessionStorage so we can restore after Wix redirect
-  try {
-    if (reportData) sessionStorage.setItem('dx_report', JSON.stringify(reportData));
-    if (surveyData) sessionStorage.setItem('dx_survey', JSON.stringify(surveyData));
-    sessionStorage.setItem('dx_product', 'annual');
-  } catch(e) {}
-  // Redirect to Wix checkout
-  window.location.href = WIX_ANNUAL_URL;
-}
 
 // ── CHECK FOR PAYMENT RETURN ──────────────────────────────────
 // Called on page load — if Wix redirects back with ?payment=success,
@@ -1429,9 +1381,10 @@ function checkPaymentReturn() {
 }
 
 function showPaymentConfirmation(product) {
-  var msg = product === 'annual'
-    ? 'Welcome to DiagnostiX Annual! Your first report is below. You will receive 2 more automatically over the next 8 months.'
-    : 'Payment confirmed! Your full report is now unlocked below. A copy will be emailed to you shortly.';
+  // v8.11.44: the annual branch is gone with the plan. dx_product can only be
+  // 'full' now, because unlockAnnual() was the only thing that ever set
+  // 'annual' and it no longer exists.
+  var msg = 'Payment confirmed! Your full report is now unlocked below. A copy will be emailed to you shortly.';
   var banner = document.createElement('div');
   banner.style.cssText = 'background:#2E7D52;color:#fff;padding:14px 20px;text-align:center;font-size:13px;font-weight:700;position:fixed;top:0;left:0;right:0;z-index:9999';
   banner.textContent = '✓  ' + msg;
@@ -1449,13 +1402,6 @@ function unlockFullReport() {
   document.getElementById('full-blur').style.opacity = '1';
   document.getElementById('full-blur').style.pointerEvents = 'auto';
   document.getElementById('print-bar').style.display = 'flex';
-  // ANNUAL UPSELL — DORMANT (Annual plan removed from purchase flow)
-  // To re-enable: uncomment the block below and remove !important from #annual-upsell display:none
-  // var product = localStorage.getItem('dx_product') || sessionStorage.getItem('dx_product') || 'full';
-  // if (product === 'full') {
-  //   var upsell = document.getElementById('annual-upsell');
-  //   if (upsell) upsell.style.display = 'block';
-  // }
   window.scrollTo(0, 0);
 }
 
