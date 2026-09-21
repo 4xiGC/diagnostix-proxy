@@ -3,6 +3,7 @@ import fetch from 'node-fetch';
 import crypto from 'crypto';
 import { describeShape, emailDomainOnly, addrLabel } from './lib-webhook-log.js';
 import { buildCustomerReportEmail, buildCacheMissEmail } from './lib-email.js';
+import { LIST_PRICE_USD, listPriceLabel, amountPaidToWrite, hubspotAmountFields } from './lib-price.js';
 import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
          deliveryProvenanceLines, swapLinkSentence, swapEligibility, SWAP_NOTE_PREFIX,
@@ -1432,7 +1433,7 @@ async function sendInternalSummaryEmail({ subscriber, report, reportNumber, surv
   // Subject: [DiagnostiX] New {full|annual} report: {restaurant} ({location}) — Score {score}
   const planLabel = isOneOff ? 'full' : 'annual';
   const reportTag = isOneOff
-    ? 'Full Report ($49.99)'
+    ? `Full Report (${listPriceLabel()})`
     : `Annual Subscription ($99.99), Report ${reportNumber || 1} of 3`;
   const subject = `[DiagnostiX] New ${planLabel} report: ${restaurant}${location ? ' (' + location + ')' : ''}, Score ${score}`;
 
@@ -3202,7 +3203,11 @@ async function pushReportContextToHubSpot({ subscriber, report, reportNumber, re
   const subField = (snake, camel) => subscriber[snake] !== undefined ? subscriber[snake] : subscriber[camel];
   const planTypeSafe = subField('plan_type', 'planType') || 'annual';
   const reportTokenSafe = subField('report_token', 'reportToken') || '';
-  const amountPaidSafe = subField('amount_paid', 'amountPaid') || 0;
+  // v8.11.45: an absent amount now sends NO PROPERTY. It used to coerce to 0,
+  // which would have stamped every contact with "paid 0 US dollars" the moment
+  // amount_paid became null. That is a worse claim than the wrong hard-coded
+  // amount it replaces: zero reads as "this customer paid nothing".
+  const amountFields = hubspotAmountFields(subscriber);
   const subscribedAtRaw = subField('subscribed_at', 'subscribedAt');
   // subscribedAt in-memory is a ms timestamp; subscribed_at in Supabase is ISO string.
   const subscribedAtIso = typeof subscribedAtRaw === 'number'
@@ -3243,7 +3248,7 @@ async function pushReportContextToHubSpot({ subscriber, report, reportNumber, re
     email: subscriber.email,
     diagnostix_plan_type:           planTypeSafe,
     diagnostix_subscription_status: subscriber.active === false && isAnnual ? 'expired' : isAnnual ? 'active' : 'completed',
-    diagnostix_amount_paid_usd:     amountPaidSafe,
+    ...amountFields,
     diagnostix_report_url:          reportUrl,
     diagnostix_report_token:        reportTokenSafe,
     diagnostix_reports_delivered:   reportNumber,
@@ -4349,7 +4354,8 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
     website: website || '',
     subscribedAt: now,
     planType,
-    amountPaid: amountPaid || 0,
+    // NULL IS NOT ZERO. `|| 0` turned an unobserved amount into "paid nothing".
+    amountPaid: amountPaid === undefined ? null : amountPaid,
     reportToken,
     reports: [{ generatedAt: now, report, survey, reportNumber: 1 }],
     nextReportAt: isAnnual ? now + (4 * 30 * 24 * 60 * 60 * 1000) : null,
@@ -4387,7 +4393,7 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
           reports_sent:       1,
           active:             isAnnual,
           plan_type:          planType,
-          amount_paid:        amountPaid || 0,
+          amount_paid:        amountPaid === undefined ? null : amountPaid,
           baseline_score:     report?.healthCheckScore || 0,
           baseline_report:    report || null,
           report_token:         reportToken,
@@ -4728,7 +4734,10 @@ async function recordUnmatchedSale({ payingEmail, firstName, restaurantName, pro
   const dbKey = process.env.SUPABASE_KEY;
   if (!url || !dbKey) { console.log('UNMATCHED_SALE [sale] skipped: supabase not configured'); return false; }
   const planType = product === 'annual' ? 'annual' : 'one_off';
-  const amountPaid = planType === 'annual' ? 99.99 : 24.99;
+  // v8.11.45: NULL, not a literal. Wix charges 49.99 and this service never
+  // saw what was actually charged, so it writes no amount rather than one it
+  // invented. 99 stored rows carry a hard-coded amount and not one is true.
+  const amountPaid = amountPaidToWrite();
   try {
     const r = await fetch(url + '/rest/v1/subscribers', {
       method: 'POST',
@@ -5500,7 +5509,10 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   const restaurant = survey.name || '';
   const product = row.product || 'full';
   const planType = product === 'annual' ? 'annual' : 'one_off';
-  const amountPaid = planType === 'annual' ? 99.99 : 24.99;
+  // v8.11.45: NULL, not a literal. Wix charges 49.99 and this service never
+  // saw what was actually charged, so it writes no amount rather than one it
+  // invented. 99 stored rows carry a hard-coded amount and not one is true.
+  const amountPaid = amountPaidToWrite();
 
   // v8.11.37: CLAIM, THEN ENTITLEMENT, THEN DELIVER. In that order.
   //
@@ -6123,7 +6135,11 @@ async function handlePaymentWebhook(req, res) {
 
   // Unified flow: both Annual and one-off go through createCustomer.
   const planType = product === 'annual' ? 'annual' : 'one_off';
-  const amountPaid = planType === 'annual' ? 99.99 : Number(payload.amountPaid || payload.amount || 24.99);
+  // v8.11.45: NULL. The hard-coded payload fallback is gone with it. The
+  // payload has never carried an amount: if it had, the 99 stored rows would
+  // not all be identical. Reconciling history from the Wix orders export is
+  // package item 6 and is the source of truth for what was charged.
+  const amountPaid = amountPaidToWrite();
 
   // v8.11.30: WHICH ROW IS ABOUT TO BE RETIRED, computed BEFORE delivery.
   //
