@@ -7,6 +7,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
          deliveryProvenanceLines, swapLinkSentence, swapEligibility, SWAP_NOTE_PREFIX,
          isDuplicateSubmission, DUPLICATE_WINDOW_MS, DUPLICATE_CLAIM_LABEL,
+         patchRowsAffected, claimVerdict,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
@@ -2683,7 +2684,7 @@ async function supersedeDuplicateRows({ key, newRowId, survey, savedAt }) {
       const existing = { id: row.id, survey: row.survey, saved_at: Date.parse(row.saved_at),
                          claimed_at: row.claimed_at };
       if (!isDuplicateSubmission({ existing, incoming })) continue;
-      const ok = await claimPendingReport({ id: row.id, claimedBy: DUPLICATE_CLAIM_LABEL });
+      const ok = (await claimPendingReport({ id: row.id, claimedBy: DUPLICATE_CLAIM_LABEL })).claimed;
       if (ok) {
         n++;
         console.log('DUPLICATE [pending] superseded row=' + row.id
@@ -4894,10 +4895,21 @@ async function fetchPendingCandidates({ payingEmail, now }) {
 // Claims a row. The WHERE clause requires claimed_at to still be null, so two
 // concurrent webhooks cannot both claim the same report: the second patches
 // zero rows and says so.
+// v8.11.37: RETURNS A VERDICT, NOT A BOOLEAN, AND IS CALLED BEFORE DELIVERY.
+//
+// The filter has always been right: claimed_at=is.null means two concurrent
+// callers cannot both patch the row, and the second gets an empty array back.
+// What was wrong was WHEN it ran. On 2026-09-20 the claim happened AFTER
+// delivery, so two requests both passed their checks, both delivered, and only
+// the second claimed. The race was never inside this function.
+//
+// Only the caller that gets exactly one row back may deliver. Zero rows means
+// somebody else holds it. A transport failure means we do not know, and not
+// knowing is not permission: a second delivery cannot be taken back.
 async function claimPendingReport({ id, claimedBy }) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
-  if (!url || !dbKey || !id) return false;
+  if (!url || !dbKey || !id) return claimVerdict({ ok: false });
   try {
     const r = await fetch(url + '/rest/v1/pending_reports?id=eq.' + encodeURIComponent(id)
       + '&claimed_at=is.null', {
@@ -4906,14 +4918,49 @@ async function claimPendingReport({ id, claimedBy }) {
                  Authorization: 'Bearer ' + dbKey, Prefer: 'return=representation' },
       body: JSON.stringify({ claimed_at: new Date().toISOString(), claimed_by: String(claimedBy || 'unknown') }),
     });
-    if (!r.ok) { console.log('PENDING_CLAIM [pending] failed ' + r.status); return false; }
+    if (!r.ok) {
+      console.log('PENDING_CLAIM [pending] failed ' + r.status);
+      return claimVerdict({ ok: false, status: r.status });
+    }
     const rows = await r.json();
-    const ok = Array.isArray(rows) && rows.length === 1;
-    console.log('PENDING_CLAIM [pending] ' + (ok ? 'ok' : 'already-claimed-by-another-call')
-      + ' by=' + claimedBy);
-    return ok;
+    const v = claimVerdict({ ok: true, rows });
+    console.log('PENDING_CLAIM [pending] ' + v.reason + ' rows=' + v.rows + ' by=' + claimedBy);
+    return v;
   } catch (e) {
     console.log('PENDING_CLAIM [pending] error ' + (e && e.message));
+    return claimVerdict({ ok: false });
+  }
+}
+
+// RELEASING A CLAIM WE TOOK AND COULD NOT HONOR.
+//
+// Claiming before delivering means a failed send would otherwise burn the
+// survey: the row would read as sold and nothing would ever deliver it. The
+// release is filtered on claimed_by so it can only undo OUR claim, never one
+// taken by another request in between.
+async function releasePendingClaim({ id, claimedBy, reason }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey || !id) return false;
+  try {
+    const r = await fetch(url + '/rest/v1/pending_reports?id=eq.' + encodeURIComponent(id)
+      + '&claimed_by=eq.' + encodeURIComponent(String(claimedBy || '')), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', apikey: dbKey,
+                 Authorization: 'Bearer ' + dbKey, Prefer: 'return=representation' },
+      body: JSON.stringify({ claimed_at: null, claimed_by: null }),
+    });
+    const n = r.ok ? patchRowsAffected(await r.json()) : 0;
+    console.log('PENDING_RELEASE [pending] rows=' + n + ' reason=' + reason);
+    if (n !== 1) {
+      await alertWebhookProblem({ kind: 'claim-release-failed',
+        detail: 'A claim was taken, delivery failed, and releasing it changed ' + n
+          + ' row(s). The survey may now read as sold without having been delivered. '
+          + 'row=' + id + ' reason=' + reason });
+    }
+    return n === 1;
+  } catch (e) {
+    console.log('PENDING_RELEASE [pending] error ' + (e && e.message));
     return false;
   }
 }
@@ -5189,6 +5236,20 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   const planType = product === 'annual' ? 'annual' : 'one_off';
   const amountPaid = planType === 'annual' ? 99.99 : 24.99;
 
+  // v8.11.37: CLAIM, THEN ENTITLEMENT, THEN DELIVER. In that order.
+  //
+  // Claim first because a lost claim race is recoverable: the claim is
+  // released and nothing was consumed. Recording the swap use first would
+  // burn the order's one swap on a race it lost, and that is not recoverable.
+  const claimedBy = elig.mode === 'swap' ? 'swap' : 'recovery';
+  const claim = await claimPendingReport({ id: row.id, claimedBy });
+  if (!claim.mayDeliver) {
+    console.log('RECOVERY [recover] lost the claim race reason=' + claim.reason);
+    return res.status(409).send(renderRecoveryPage({ token, done: true,
+      message: 'That report has just been sent. Check your inbox, and reply to your receipt '
+        + 'if it has not arrived.' }));
+  }
+
   const delivered = await deliverPaidReport({
     destEmail: payingEmail,
     firstName: survey.contactName || survey.firstName || '',
@@ -5205,12 +5266,11 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   });
 
   if (!delivered) {
-    console.log('RECOVERY [recover] delivery failed, row left unclaimed');
+    console.log('RECOVERY [recover] delivery failed, releasing the claim');
+    await releasePendingClaim({ id: row.id, claimedBy, reason: 'delivery-failed' });
     return res.status(500).send(renderRecoveryPage({ token, done: true,
       message: 'We found your report and could not send it. We have been alerted and will email you directly.' }));
   }
-
-  await claimPendingReport({ id: row.id, claimedBy: elig.mode === 'swap' ? 'swap' : 'recovery' });
 
   // v8.11.21 [C1]: both addresses are retired in memory too. The typed address
   // is the survey's, and the paying address may well hold a stale entry of its
@@ -5794,6 +5854,26 @@ async function handlePaymentWebhook(req, res) {
     }
   }
 
+  // v8.11.37: CLAIM BEFORE DELIVER.
+  //
+  // The claim used to happen after delivery, which is what let two requests
+  // both pass their checks and both deliver on 2026-09-20. Now the row is
+  // taken atomically first, and only the request that gets exactly one row
+  // back proceeds. A lost race stops here and delivers nothing.
+  //
+  // WHEN THERE IS NO ROW TO CLAIM, delivery still goes ahead: that is the
+  // table-unreachable case, where the spent flag in memory is the only
+  // surviving guard and has to be enough. Harness scenario A7g covers it.
+  let claim = { claimed: false, mayDeliver: true, rows: null, reason: 'no-row-to-claim' };
+  if (toClaim && toClaim.id) {
+    claim = await claimPendingReport({ id: toClaim.id, claimedBy: matchDecision });
+    if (!claim.mayDeliver) {
+      console.log('WEBHOOK_LOST_RACE [webhook] the pending row was claimed by another call, '
+        + 'delivering nothing reason=' + claim.reason + ' addr=' + addrLabel(email));
+      return;
+    }
+  }
+
   const delivered = await deliverPaidReport({
     destEmail, firstName: resolvedFirstName, restaurant,
     location, report, survey, product, planType, amountPaid,
@@ -5813,9 +5893,14 @@ async function handlePaymentWebhook(req, res) {
   // v8.11.17 [A1]: selectRowToClaim names the row for EVERY path, including
   // the memory hit that has no row object in hand. Best effort: a failure here
   // logs and never blocks a sale that has already been delivered.
+  // The claim already happened. What is left is undoing it if the send failed,
+  // so a survey is never burned by a delivery that did not occur.
+  if (!delivered && claim.claimed && toClaim && toClaim.id) {
+    await releasePendingClaim({ id: toClaim.id, claimedBy: matchDecision, reason: 'delivery-failed' });
+  }
   if (delivered) {
     if (toClaim && toClaim.id) {
-      await claimPendingReport({ id: toClaim.id, claimedBy: matchDecision });
+      // claimed above, before delivery
     } else {
       console.log('PENDING_CLAIM [pending] nothing to claim for this delivery path='
         + matchReason + ' candidates=' + candidatePool.length);
