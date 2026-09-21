@@ -7,7 +7,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
          deliveryProvenanceLines, swapLinkSentence, swapEligibility, SWAP_NOTE_PREFIX,
          isDuplicateSubmission, DUPLICATE_WINDOW_MS, DUPLICATE_CLAIM_LABEL,
-         swapOrderKey, patchRowsAffected, claimVerdict,
+         swapOrderKey, patchRowsAffected, claimVerdict, outcomeRecord,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
@@ -5016,6 +5016,34 @@ async function recordSwapUse(fields) {
   }
 }
 
+// ────────── The durable decision record (v8.11.37) ──────────
+//
+// INSERT only, which is the one operation this service is demonstrably able to
+// perform on this database. Best effort: a failure here must never fail a
+// delivery, but it is logged, because the point of the table is that
+// verification stops depending on a log buffer that resets on every deploy.
+async function writeOutcome(fields) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey) return false;
+  try {
+    const r = await fetch(url + '/rest/v1/rvp_outcomes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: dbKey,
+                 Authorization: 'Bearer ' + dbKey, Prefer: 'return=minimal' },
+      body: JSON.stringify(fields),
+    });
+    if (r.status === 404) { console.log('OUTCOME [outcome] table missing, migration 003 not applied'); return false; }
+    if (!r.ok) { console.log('OUTCOME [outcome] write failed ' + r.status); return false; }
+    console.log('OUTCOME [outcome] ok kind=' + fields.kind + ' decision=' + fields.decision
+      + ' delivered=' + fields.delivered + ' claimRows=' + fields.claim_rows);
+    return true;
+  } catch (e) {
+    console.log('OUTCOME [outcome] error ' + (e && e.message));
+    return false;
+  }
+}
+
 // v8.11.21 [C1]: is the row behind a memory entry still unclaimed?
 //
 // A primary key lookup, deliberately separate from fetchPendingCandidates.
@@ -5296,6 +5324,11 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   const claim = await claimPendingReport({ id: row.id, claimedBy });
   if (!claim.mayDeliver) {
     console.log('RECOVERY [recover] lost the claim race reason=' + claim.reason);
+    await writeOutcome(outcomeRecord({
+      kind: 'recover', decision: claimedBy, reason: 'lost-claim-race',
+      payingEmail, surveyEmail: typed, pendingRowId: row.id,
+      delivered: false, claimRows: claim.rows,
+    }));
     return res.status(409).send(renderRecoveryPage({ token, done: true,
       message: 'That report has just been sent. Check your inbox, and reply to your receipt '
         + 'if it has not arrived.' }));
@@ -5320,6 +5353,11 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
     });
     if (!use.allowed) {
       await releasePendingClaim({ id: row.id, claimedBy, reason: 'swap-refused-' + use.reason });
+      await writeOutcome(outcomeRecord({
+        kind: 'recover', decision: 'swap', reason: 'refused-' + use.reason,
+        payingEmail, surveyEmail: typed, pendingRowId: row.id,
+        delivered: false, claimRows: claim.rows, swapUsed: false,
+      }));
       const msg = use.reason === 'already-swapped'
         ? 'This link has already been used once. Each order includes one swap. '
           + 'Reply to your receipt and we will sort out anything else.'
@@ -5347,9 +5385,21 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   if (!delivered) {
     console.log('RECOVERY [recover] delivery failed, releasing the claim');
     await releasePendingClaim({ id: row.id, claimedBy, reason: 'delivery-failed' });
+    await writeOutcome(outcomeRecord({
+      kind: 'recover', decision: claimedBy, reason: 'delivery-failed',
+      payingEmail, surveyEmail: typed, pendingRowId: row.id,
+      delivered: false, claimRows: claim.rows,
+    }));
     return res.status(500).send(renderRecoveryPage({ token, done: true,
       message: 'We found your report and could not send it. We have been alerted and will email you directly.' }));
   }
+
+  await writeOutcome(outcomeRecord({
+    kind: 'recover', decision: claimedBy, reason: elig.reason,
+    payingEmail, surveyEmail: typed, pendingRowId: row.id,
+    deliveredRestaurant: restaurant, delivered: true, claimRows: claim.rows,
+    swapUsed: elig.mode === 'swap',
+  }));
 
   // v8.11.21 [C1]: both addresses are retired in memory too. The typed address
   // is the survey's, and the paying address may well hold a stale entry of its
@@ -5949,6 +5999,11 @@ async function handlePaymentWebhook(req, res) {
     if (!claim.mayDeliver) {
       console.log('WEBHOOK_LOST_RACE [webhook] the pending row was claimed by another call, '
         + 'delivering nothing reason=' + claim.reason + ' addr=' + addrLabel(email));
+      await writeOutcome(outcomeRecord({
+        kind: 'webhook', secretStatus, decision: matchDecision, reason: 'lost-claim-race',
+        payingEmail: email, surveyEmail: surveyEmailForAlert,
+        pendingRowId: toClaim.id, delivered: false, claimRows: claim.rows,
+      }));
       return;
     }
   }
@@ -5977,6 +6032,13 @@ async function handlePaymentWebhook(req, res) {
   if (!delivered && claim.claimed && toClaim && toClaim.id) {
     await releasePendingClaim({ id: toClaim.id, claimedBy: matchDecision, reason: 'delivery-failed' });
   }
+  await writeOutcome(outcomeRecord({
+    kind: 'webhook', secretStatus, decision: matchDecision, reason: matchReason,
+    payingEmail: email, surveyEmail: surveyEmailForAlert,
+    pendingRowId: toClaim && toClaim.id, deliveredRestaurant: restaurant,
+    delivered: !!delivered, claimRows: claim.rows, strandedCount: strandedRows.length,
+  }));
+
   if (delivered) {
     if (toClaim && toClaim.id) {
       // claimed above, before delivery
