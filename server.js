@@ -4460,6 +4460,106 @@ async function findPlaceholderRow({ payingEmail }) {
 // delivered or placeholder. findPlaceholderRow cannot answer this: it filters
 // on report_token IS NULL, so a delivered order comes back as "absent", which
 // is the same answer as "no such order" and means the opposite thing.
+// v8.11.41: AN UPDATE TO subscribers THAT CHANGES NOTHING IS AN INCIDENT.
+//
+// THE EARLIER CLAIM HERE WAS WRONG AND IS CORRECTED. It read "across 98 rows,
+// no UPDATE to this table from this service has ever landed". 98 is the wrong
+// denominator. recordSwapOnOrderRow shipped on 2026-09-20 and has had one
+// opportunity. supersedePlaceholderRow needs a placeholder row, and exactly
+// one has ever existed, written at 15:29:04 that same day and still not
+// superseded because no recovery has run since: 0 of 10 pending rows are
+// claimed_by='recovery'. The true count of attempts is at most two, not 98.
+//
+// The database has since been cleared by hand: service_role holds UPDATE on
+// every column, RLS is enabled but service_role carries BYPASSRLS, and there
+// is no trigger and no rule on the table. Updates from the SQL editor land.
+//
+// So this is no longer a known defect. It is an unexplained single occurrence,
+// and the response is to make the next one name itself rather than to assert a
+// cause. Every write to this table now reports its own status and row count.
+async function alertSubscribersUpdateFailed({ what, orderId, status, rows }) {
+  try {
+    console.log('SUBSCRIBERS_UPDATE_NOOP [sale] ' + what + ' changed ' + rows + ' row(s), status ' + status);
+    await alertWebhookProblem({
+      kind: 'subscribers-update-noop',
+      detail: 'An UPDATE to public.subscribers changed nothing. what=' + what
+        + ' row=' + orderId + ' status=' + status + ' rowsAffected=' + rows + '.\n'
+        + 'The table itself accepts updates: service_role holds UPDATE on every column, '
+        + 'it carries BYPASSRLS, and there is no trigger and no rule on the table. '
+        + 'So look at this request, not at the schema: which row id was in the filter, '
+        + 'and did that row still match it at the moment of the write.\n'
+        + 'Nothing depends on this write: single use is enforced by the unique index '
+        + 'on rvp_swap_uses, and the decision is recorded in rvp_outcomes.',
+    });
+  } catch (e) { console.log('[alert] subscribers-update-noop failed: ' + (e && e.message)); }
+}
+
+// v8.11.41: ONE DOOR FOR EVERY WRITE TO public.subscribers.
+//
+// On 2026-09-20 there was no way to tell a PATCH that changed nothing from a
+// PATCH that never ran: both leave a row without the note. The three writers
+// to this table were three separate inline fetches, each logging something
+// different, and none logging the status and the row count together.
+//
+// They now share this one function, which logs both every time, on success and
+// on failure alike. That is the difference between the next incident naming
+// itself and having to be reconstructed a day later.
+//
+// NEVER A TOKEN AND NEVER AN ADDRESS. The filter is NOT logged, because the
+// duplicate delete filters on a report token. Only the row id is, and that is
+// a uuid.
+async function writeSubscribers({ what, filter, method, body, rowId }) {
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+  if (!url || !dbKey) return { ok: false, status: 0, rows: 0 };
+  const label = 'SUBSCRIBERS_WRITE [sale] what=' + what + ' method=' + method
+    + ' row=' + (rowId || 'n/a');
+  try {
+    const r = await fetch(url + '/rest/v1/subscribers?' + filter, {
+      method,
+      headers: { 'Content-Type': 'application/json', apikey: dbKey,
+                 Authorization: 'Bearer ' + dbKey, Prefer: 'return=representation' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    // return=representation means a 2xx always carries the changed rows, so a
+    // zero here is a real zero and not a missing Prefer header.
+    const rows = r.ok ? patchRowsAffected(await r.json().catch(() => null)) : 0;
+    console.log(label + ' http=' + r.status + ' rows=' + rows);
+    return { ok: r.ok, status: r.status, rows };
+  } catch (e) {
+    console.log(label + ' http=ERROR rows=0 ' + (e && e.message));
+    return { ok: false, status: 0, rows: 0 };
+  }
+}
+
+// v8.11.41: THIS LOOKUP IS WRONG ON THE SECOND CLICK, AND NOTHING LOAD-BEARING
+// DEPENDS ON IT ANY MORE.
+//
+// "The newest subscriber row for this address" is not the order. A delivery
+// INSERTS a subscriber row, so once click 1 has delivered, the newest row for
+// the address is the one click 1 just created. Click 2 reads that row, finds
+// null notes and a report token, and concludes the link is unused. That is the
+// 2026-09-20 double delivery, and it happens whether or not the SWAPPED note
+// was ever written.
+//
+// NO TIMESTAMP CUTOFF CAN FIX IT, and both obvious ones were tried and
+// rejected with a test:
+//   the REQUEST START time excludes nothing, because click 2 starts after the
+//     row click 1 inserted;
+//   the LINK'S ISSUED-AT time excludes the order row ITSELF, because the swap
+//     link is minted before deliverPaidReport runs and createCustomer inserts
+//     that row a moment later. issuedAt is EARLIER than the row it must keep.
+//
+// The real fix is to stop looking rows up by address at click time and carry
+// the order's identity inside the signed link, bound when the link is minted.
+// That is written up in PROGRAM_PROGRESS.md and is not in this release.
+//
+// WHY THIS IS SAFE MEANWHILE. Single use no longer rests on this row. It is
+// the unique index on rvp_swap_uses(order_key), and order_key is derived from
+// the signed link, which every click of one link shares. Click 2 still picks
+// the wrong row here, still reaches recordSwapUse, and is refused there by the
+// database. What is left on this row is the bookkeeping note, which is best
+// effort and now says so when it changes nothing.
 async function findOrderRow({ payingEmail }) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
@@ -4494,69 +4594,64 @@ async function recordSwapOnOrderRow({ orderId, subscriber, report, restaurantNam
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
   if (!url || !dbKey || !orderId) return false;
-  try {
-    const r = await fetch(url + '/rest/v1/subscribers?id=eq.' + encodeURIComponent(orderId), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', apikey: dbKey,
-                 Authorization: 'Bearer ' + dbKey, Prefer: 'return=representation' },
-      body: JSON.stringify({
-        restaurant_name: subscriber.restaurantName || null,
-        location:        subscriber.location || null,
-        website:         subscriber.website || null,
-        report_token:    subscriber.reportToken,
-        baseline_report: report || null,
-        baseline_score:  (report && report.healthCheckScore) || 0,
-        reports_sent:    1,
-        notes: SWAP_NOTE_PREFIX + ' delivered ' + String(restaurantName || 'a different survey')
-          + ' in place of the original, by the swap link, on ' + new Date().toISOString() + '.',
-      }),
-    });
-    if (!r.ok) { console.log('SWAP [swap] record failed ' + r.status); return false; }
-    const rows = await r.json();
-    const ok = Array.isArray(rows) && rows.length === 1;
-    console.log('SWAP [swap] ' + (ok ? 'recorded on the order row, the link is now spent'
-                                     : 'nothing recorded'));
-    return ok;
-  } catch (e) {
-    console.log('SWAP [swap] record error ' + (e && e.message));
+  const w = await writeSubscribers({
+    what: 'swap-note', method: 'PATCH', rowId: orderId,
+    filter: 'id=eq.' + encodeURIComponent(orderId),
+    body: {
+      restaurant_name: subscriber.restaurantName || null,
+      location:        subscriber.location || null,
+      website:         subscriber.website || null,
+      report_token:    subscriber.reportToken,
+      baseline_report: report || null,
+      baseline_score:  (report && report.healthCheckScore) || 0,
+      reports_sent:    1,
+      notes: SWAP_NOTE_PREFIX + ' delivered ' + String(restaurantName || 'a different survey')
+        + ' in place of the original, by the swap link, on ' + new Date().toISOString() + '.',
+    },
+  });
+  // v8.11.37: THIS IS NO LONGER THE GUARANTEE, and it is no longer silent.
+  // Single use is enforced by the unique index on rvp_swap_uses. This note is
+  // bookkeeping, and when it changes nothing we say so, because on 2026-09-20
+  // it changed nothing and nobody found out for a day.
+  if (w.rows !== 1) {
+    await alertSubscribersUpdateFailed({ what: 'the swap note', orderId, status: w.status, rows: w.rows });
     return false;
   }
+  return true;
 }
 
 async function supersedePlaceholderRow({ placeholderId, subscriber, report }) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
   if (!url || !dbKey || !placeholderId) return false;
-  try {
-    const r = await fetch(url + '/rest/v1/subscribers?id=eq.' + encodeURIComponent(placeholderId)
-      + '&report_token=is.null', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', apikey: dbKey,
-                 Authorization: 'Bearer ' + dbKey, Prefer: 'return=representation' },
-      body: JSON.stringify({
-        // Filled in now. Deliberately NOT amount_paid, plan_type or
-        // subscribed_at: the order already recorded those and restating them
-        // would be inventing a second sale.
-        first_name:      subscriber.firstName || null,
-        restaurant_name: subscriber.restaurantName || null,
-        location:        subscriber.location || null,
-        website:         subscriber.website || null,
-        report_token:    subscriber.reportToken,
-        baseline_report: report || null,
-        baseline_score:  (report && report.healthCheckScore) || 0,
-        reports_sent:    1,
-        notes:           'RECOVERED: delivered by the recovery link after an unmatched purchase.',
-      }),
-    });
-    if (!r.ok) { console.log('PLACEHOLDER [sale] supersede failed ' + r.status); return false; }
-    const rows = await r.json();
-    const ok = Array.isArray(rows) && rows.length === 1;
-    console.log('PLACEHOLDER [sale] ' + (ok ? 'superseded in place' : 'nothing to supersede'));
-    return ok;
-  } catch (e) {
-    console.log('PLACEHOLDER [sale] supersede error ' + (e && e.message));
+  // THE report_token=is.null FILTER IS PART OF THE ANSWER when this changes
+  // nothing. The row is found by findPlaceholderRow, which selects on the same
+  // condition, so a zero here means the row stopped being a placeholder
+  // between the two calls. The log line says rows=0 and the row id, which is
+  // enough to check that without a rerun.
+  const w = await writeSubscribers({
+    what: 'placeholder-supersede', method: 'PATCH', rowId: placeholderId,
+    filter: 'id=eq.' + encodeURIComponent(placeholderId) + '&report_token=is.null',
+    body: {
+      // Filled in now. Deliberately NOT amount_paid, plan_type or
+      // subscribed_at: the order already recorded those and restating them
+      // would be inventing a second sale.
+      first_name:      subscriber.firstName || null,
+      restaurant_name: subscriber.restaurantName || null,
+      location:        subscriber.location || null,
+      website:         subscriber.website || null,
+      report_token:    subscriber.reportToken,
+      baseline_report: report || null,
+      baseline_score:  (report && report.healthCheckScore) || 0,
+      reports_sent:    1,
+      notes:           'RECOVERED: delivered by the recovery link after an unmatched purchase.',
+    },
+  });
+  if (w.rows !== 1) {
+    await alertSubscribersUpdateFailed({ what: 'the placeholder supersede', orderId: placeholderId, status: w.status, rows: w.rows });
     return false;
   }
+  return true;
 }
 
 // Remove the row createCustomer inserted during recovery, once its contents
@@ -4571,19 +4666,16 @@ async function deleteDuplicateSubscriberRow({ reportToken, keepId }) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
   if (!url || !dbKey || !reportToken) return false;
-  try {
-    const r = await fetch(url + '/rest/v1/subscribers?report_token=eq.' + encodeURIComponent(reportToken)
-      + (keepId ? '&id=neq.' + encodeURIComponent(keepId) : ''), {
-      method: 'DELETE',
-      headers: { apikey: dbKey, Authorization: 'Bearer ' + dbKey, Prefer: 'return=minimal' },
-    });
-    if (!r.ok) { console.log('PLACEHOLDER [sale] duplicate delete failed ' + r.status); return false; }
-    console.log('PLACEHOLDER [sale] duplicate row removed, one sale one row');
-    return true;
-  } catch (e) {
-    console.log('PLACEHOLDER [sale] duplicate delete error ' + (e && e.message));
-    return false;
-  }
+  // v8.11.41: THIS USED TO SEND Prefer: return=minimal AND THEN CLAIM SUCCESS.
+  // "duplicate row removed, one sale one row" was logged whenever the request
+  // returned 2xx, including when it deleted nothing, which is the same silence
+  // the swap note had. It now counts the rows it actually removed.
+  const w = await writeSubscribers({
+    what: 'duplicate-delete', method: 'DELETE', rowId: keepId ? 'keep:' + keepId : null,
+    filter: 'report_token=eq.' + encodeURIComponent(reportToken)
+      + (keepId ? '&id=neq.' + encodeURIComponent(keepId) : ''),
+  });
+  return w.ok && w.rows >= 1;
 }
 
 // ── recordUnmatchedSale (v8.11.14) [B4] ─────────────────────────────────────
@@ -5268,6 +5360,10 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   //
   // Checked BEFORE the candidate lookup so a spent link cannot even learn
   // whether a given address has an unclaimed survey.
+  // v8.11.41: THIS ANSWER IS UNRELIABLE ON A SECOND CLICK, BY DESIGN OF THE
+  // DATA AND NOT OF THIS LINE. See findOrderRow for why no timestamp cutoff
+  // repairs it. It decides the MODE and writes a note; it is no longer what
+  // makes a swap single use. That is recordSwapUse and the unique index.
   const orderRow = await findOrderRow({ payingEmail });
   const elig = swapEligibility({ orderRow });
   console.log('SWAP [swap] mode=' + elig.mode + ' allowed=' + elig.allowed
@@ -5429,6 +5525,27 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
     return res.status(200).send(renderRecoveryPage({ token, done: true,
       message: 'Sent. Your report for ' + restaurant + ' is on its way to both addresses. '
         + 'You can close this page.' }));
+  } else if (elig.mode === 'swap') {
+    // v8.11.41: A SWAP THAT SKIPS THE WRITE SAYS WHICH GUARD STOPPED IT.
+    //
+    // When this guard is false the request falls through to the placeholder
+    // branch and logs "none found for this order", which is a sentence about a
+    // different code path. Afterwards the row looks exactly as it would if the
+    // PATCH had run and changed nothing. These are the two cases the retest has
+    // to tell apart, so the skip names itself.
+    //
+    // THIS IS THE OPEN QUESTION FROM 2026-09-20, NARROWED TO TWO ANSWERS. The
+    // cleanup that day appended to notes rather than replacing them, and the
+    // three swap-test rows read as the test label with nothing before it, so
+    // their notes were NULL beforehand. No SWAPPED marker existed on any of
+    // them after click 1. The write was therefore either SKIPPED or it CHANGED
+    // NOTHING, and until 2026-09-20 nothing in the log could tell those apart.
+    // SWAP_SKIPPED means skipped. SUBSCRIBERS_WRITE with rows=0 means it ran
+    // and changed nothing. Exactly one of them should appear at the retest.
+    console.log('SWAP_SKIPPED [swap] the swap note was NOT attempted'
+      + ' orderRow=' + (orderRow ? 'yes' : 'no')
+      + ' orderRowId=' + (orderRow && orderRow.id ? 'yes' : 'no')
+      + ' deliveredSubscriber=' + (delivered && delivered.subscriber ? 'yes' : 'no'));
   }
 
   // A4: one sale, one row. The placeholder this order already wrote is filled
