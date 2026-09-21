@@ -8,7 +8,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
          deliveryProvenanceLines, swapLinkSentence, swapEligibility, SWAP_NOTE_PREFIX,
          isDuplicateSubmission, DUPLICATE_WINDOW_MS, DUPLICATE_CLAIM_LABEL,
-         swapOrderKey, patchRowsAffected, claimVerdict, outcomeRecord,
+         swapOrderKey, patchRowsAffected, claimVerdict, outcomeRecord, recoveryReason,
          alertCopyFor, pgErrorFields, recoveryCopy, recoveryNotFound,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
@@ -5594,7 +5594,11 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   }
 
   await writeOutcome(outcomeRecord({
-    kind: 'recover', decision: claimedBy, reason: elig.reason,
+    // v8.11.48: when the buyer typed the address that PAID, say so. The
+    // eligibility reason is kept and prefixed, never replaced, and the marker
+    // carries no address.
+    kind: 'recover', decision: claimedBy,
+    reason: recoveryReason({ eligibilityReason: elig.reason, typedEmail: typed, payingEmail }),
     payingEmail, surveyEmail: typed, pendingRowId: row.id,
     deliveredRestaurant: restaurant, delivered: true, claimRows: claim.rows,
     swapUsed: elig.mode === 'swap',

@@ -875,3 +875,38 @@ export function recoveryNotFound(args) {
   }
   return 'We have no unclaimed report for that address.';
 }
+
+// ── v8.11.48: WHEN THE BUYER TYPED THE ADDRESS THAT PAID ───────────────────
+//
+// On /recover the buyer types the address their survey was saved under, and
+// the order row carries the address that PAID. Those are usually different:
+// that difference is the whole reason recovery exists.
+//
+// When they are the SAME, the case means something else. The buyer did not
+// mistype and did not use a second address; the match failed for some other
+// reason, or they are recovering a report they already had. rvp_outcomes could
+// not tell those apart, because its reason column records the ELIGIBILITY
+// reason and nothing about which address was typed. addr_domain and
+// survey_addr_domain do not answer it either: two people at one company share
+// a domain and would read as the same person.
+//
+// NO MIGRATION. reason is plain text, no enum, no check constraint, confirmed
+// from the PostgREST schema: rvp_outcomes declares only id, created_at and
+// kind as required and no property carries an enum.
+//
+// THE MARKER NEVER CARRIES AN ADDRESS, and a test asserts that.
+export const TYPED_THE_PAYING_ADDRESS = 'typed-the-paying-address';
+
+export function recoveryReason(args) {
+  const a = (args && typeof args === 'object') ? args : {};
+  const er = typeof a.eligibilityReason === 'string' ? a.eligibilityReason : '';
+  const typed = typeof a.typedEmail === 'string' ? a.typedEmail : '';
+  const paying = typeof a.payingEmail === 'string' ? a.payingEmail : '';
+  if (!typed.trim() || !paying.trim()) return er;
+  // The SAME normalization the matcher uses, and no more. Plus-addressing and
+  // dots are different addresses to this system, so treating them as equal
+  // here would claim a sameness the matcher itself does not act on.
+  const same = normalizeEmail(typed) === normalizeEmail(paying);
+  if (!same) return er;
+  return er ? TYPED_THE_PAYING_ADDRESS + ' ' + er : TYPED_THE_PAYING_ADDRESS;
+}
