@@ -6531,6 +6531,10 @@ function toBenchmarkScore(value) {
 }
 
 function buildBenchmarkRow({ report, name, location, country, region, focalContext, focalGeo, focalPlaceId }) {
+  // Computed from the same six pillars the report prints, by the same function
+  // the renderer uses. Two code paths that disagreed about a subject's score
+  // would be worse than either being wrong.
+  const rvpOverall = computeOverall(report && report.pillars);
   // report.pillars is { cs, pa, es, sm, cp, bg }, each { score, label, status }.
   const pillarScores = {};
   for (const [key, p] of Object.entries((report && report.pillars) || {})) {
@@ -6618,7 +6622,27 @@ function buildBenchmarkRow({ report, name, location, country, region, focalConte
       score_verdict:   (report && report.scoreVerdict) || null
     },
 
-    overall_score:    toBenchmarkScore(report && report.healthCheckScore),
+    // v8.11.50: THE COMPUTED SCORE, AND THE ROW SAYS SO.
+    //
+    // This was toBenchmarkScore(report.healthCheckScore), the model's own
+    // number, which runs about 6 points above the mean of the six pillars in
+    // the same payload (102 of 103 stored reports, median +7).
+    //
+    // `benchmarks` is shared by EVP, SVP and RVP, and method_version exists to
+    // keep the two measurements apart. Its column comment says it plainly:
+    // NULL means model-typed, a non-null value names the code path, and any
+    // median or ranking over this table should filter to one value of it. The
+    // 308 RVP rows already in the table are model-typed and are correctly
+    // NULL. From here they are computed and must say THAT, or the cohort
+    // average drifts downward for a reason no query can see.
+    //
+    // NO SCORE MEANS NO ROW. overall_score is NOT NULL on this table, so the
+    // choice is between skipping and inventing; benchmarkSkipReason already
+    // skips on null. Writing the typed value here instead would put the number
+    // this release exists to replace back into the cohort, for a report that
+    // itself refuses to show a score.
+    overall_score:    toBenchmarkScore(rvpOverall.score),
+    method_version:   rvpOverall.ok ? OVERALL_METHOD_VERSION : null,
     pillar_scores:    pillarScores,
     attribute_scores: null,
 
@@ -7419,6 +7443,8 @@ export const __test__ = {
   // Exposed so the ship gate can render a real report page in a real browser
   // rather than asserting on a string this file also builds.
   renderReportHtml,
+  buildBenchmarkRow,
+  benchmarkSkipReason,
   createCustomer,
   findOrderRow,
   recordSwapOnOrderRow,
