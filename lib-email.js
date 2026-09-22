@@ -15,6 +15,7 @@
 // of being read from process.env, which is what makes these pure.
 // ═════════════════════════════════════════════════════════════════════════════
 
+import { computeOverall, verdictFor } from './lib-score.js';
 import {
   deliveryProvenanceLines, swapLinkSentence, renderEmailButton, buttonPlainText,
   SWAP_BUTTON_LABEL, RECOVERY_BUTTON_LABEL, BUTTON_FALLBACK_LINE,
@@ -34,8 +35,22 @@ export function buildCustomerReportEmail(argsIn) {
   const planTypeSafe = subField('plan_type', 'planType') || '';
 
   const link = baseUrl + '/report?token=' + reportTokenSafe;
-  const score = report?.healthCheckScore ?? 0;
-  const verdict = report?.scoreVerdict || '';
+  // v8.11.50: THE SAME NUMBER THE REPORT SHOWS.
+  //
+  // These were report.healthCheckScore and report.scoreVerdict, the model's
+  // own fields, which differ from the mean of the six pillars by a median of
+  // 7 points across the 103 stored reports. renderReportHtml now computes.
+  // Shipping that alone would send a customer an email saying 68 and a report
+  // saying 59, with nothing on either to explain it. The email is the first
+  // thing they see and the report is what they paid for.
+  //
+  // NO FALLBACK. The old line was `?? 0`. When the six pillars are not all
+  // present the score block is left out rather than showing a hard zero or
+  // the typed value.
+  const overall = computeOverall(report?.pillars);
+  const hasScore = overall.ok;
+  const score = overall.score;
+  const verdict = verdictFor(score) || '';
   const restaurant = restaurantNameSafe;
   const firstName = firstNameSafe;
   const isOneOff = planTypeSafe === 'one_off';
@@ -73,7 +88,8 @@ export function buildCustomerReportEmail(argsIn) {
   const swapLine = swapLinkSentence(swapUrl);
 
   // Score color matches the survey banding (green ≥65, amber ≥45, red <45)
-  const scoreColor = score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24';
+  const scoreColor = !hasScore ? '#6b7280'
+    : score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24';
   const escE = (s) => String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -114,14 +130,14 @@ export function buildCustomerReportEmail(argsIn) {
       <p style="font-family:'League Spartan',Arial,sans-serif;font-size:14px;line-height:1.65;color:#444;margin:0 0 14px;font-weight:400">Hi ${escE(firstName)}, ${escE(intro)}</p>
       <div style="font-family:'League Spartan',Arial,sans-serif;font-size:14px;line-height:1.65;color:#1B1464;margin:0 0 24px;padding:14px 16px;background:#F5F4FC;border-left:4px solid #0072BC;border-radius:6px;font-weight:500">${provLines.map(l => '<div style="margin:0 0 6px">' + escE(l) + '</div>').join('')}${swapLine ? '<div style="margin:12px 0 0;font-weight:400;color:#444;font-size:13px">' + escE(swapLine) + '</div>' + renderEmailButton({ url: swapUrl, label: SWAP_BUTTON_LABEL }) : ''}</div>
 
-      <!-- Score block -->
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#F5F4FC;border-radius:10px;margin:0 0 28px">
+      <!-- Score block. Omitted entirely when there is no computed score. -->
+      ${hasScore ? `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#F5F4FC;border-radius:10px;margin:0 0 28px">
         <tr><td align="center" style="padding:22px 18px">
           <div style="font-family:'League Spartan',Arial,sans-serif;font-size:10px;letter-spacing:2px;color:#1B1464;text-transform:uppercase;font-weight:700;opacity:.7">Overall HealthCheck Score</div>
           <div style="font-family:'League Spartan',Arial,sans-serif;font-size:54px;font-weight:900;color:${scoreColor};line-height:1;margin:10px 0 4px">${score}<span style="font-size:20px;color:#999;font-weight:500">/100</span></div>
           <div style="font-family:'League Spartan',Arial,sans-serif;font-size:13px;color:#1B1464;font-weight:700;letter-spacing:1px;text-transform:uppercase">${escE(verdict)}</div>
         </td></tr>
-      </table>
+      </table>` : ''}
 
       <!-- CTA button -->
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">

@@ -41,12 +41,24 @@ const SUBSCRIBER = {
   plan_type: 'one_off',
   email: 'buyer@example.invalid',
 };
+// v8.11.50: THE SIX REAL PILLARS, because the email now computes the score
+// from them. This fixture carried two pillars under invented keys (food,
+// service), which no RVP payload has ever had, and the email took its number
+// from healthCheckScore so nothing noticed. Once the score was computed,
+// computeOverall correctly refused this payload and the score block vanished,
+// and the test below failed on a fixture that did not model a real report.
+// 74 + 68 + 70 + 72 + 71 + 71 = 426, over 6 is exactly 71, so the number this
+// file has always asserted is still the right one and is now the computed one.
 const REPORT = {
   healthCheckScore: 71,
   scoreVerdict: 'Solid foundation, uneven execution',
   pillars: {
-    food: { score: 74, name: 'Food' },
-    service: { score: 68, name: 'Service' },
+    cs: { score: 74, label: 'Customer Sentiment', status: 'good' },
+    pa: { score: 68, label: 'Pricing & Accessibility', status: 'good' },
+    es: { score: 70, label: 'Employee Sentiment', status: 'good' },
+    sm: { score: 72, label: 'Social Media Impact', status: 'good' },
+    cp: { score: 71, label: 'Competitive Positioning', status: 'good' },
+    bg: { score: 71, label: 'Brand Experience & Growth', status: 'good' },
   },
 };
 const SURVEY = { savedAt: '2026-09-20T10:00:00Z' };
@@ -105,6 +117,18 @@ test('the score and the restaurant still render', () => {
   const e = build();
   assert.match(String(e.html), /71/);
   assert.match(String(e.html), /The Example Grill/);
+});
+
+test('CONTROL: the 71 above is the COMPUTED score, not the typed one', () => {
+  // They are deliberately equal in this fixture so the assertion above did not
+  // have to change. That makes it useless as evidence about WHICH number is
+  // rendered, so the point is made here instead: move one pillar and the
+  // rendered number moves with it.
+  const moved = { ...REPORT, pillars: { ...REPORT.pillars,
+    cs: { score: 44, label: 'Customer Sentiment', status: 'bad' } } };
+  const e = build({ report: moved });
+  assert.match(String(e.html), /66/, 'the email did not follow the pillars');
+  assert.doesNotMatch(String(e.html), />71</, 'the email is still showing the typed 71');
 });
 
 // ── Controls ──────────────────────────────────────────────────────────────
