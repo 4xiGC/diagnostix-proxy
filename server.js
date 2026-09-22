@@ -9,6 +9,8 @@ import express from 'express';
 // one a test can point somewhere else through __test__.setFetch.
 import nodeFetch from 'node-fetch';
 let fetch = nodeFetch;
+import { computeOverall, overallFormula, verdictFor, NO_SCORE_SENTENCE,
+         OVERALL_METHOD_VERSION } from './lib-score.js';
 import crypto from 'crypto';
 import { describeShape, emailDomainOnly, addrLabel } from './lib-webhook-log.js';
 import { buildCustomerReportEmail, buildCacheMissEmail } from './lib-email.js';
@@ -3470,8 +3472,21 @@ h1{font-size:24px;margin:0 0 16px}p{font-size:16px;line-height:1.5;color:#6b7280
 
 function renderReportHtml({ subscriber, report, reportLabel }) {
   const restaurant = subscriber.restaurant_name || 'Your restaurant';
-  const score      = report?.healthCheckScore ?? 0;
-  const verdict    = report?.scoreVerdict || '';
+
+  // v8.11.50: THE SCORE IS COMPUTED HERE, FROM THE SIX PILLARS PRINTED BELOW.
+  //
+  // It used to be report.healthCheckScore, which the model produced in the
+  // same JSON object as the pillars and which is HIGHER than their mean on 102
+  // of the 103 stored reports, median by 7. The report showed its working and
+  // the working did not add up.
+  //
+  // NO FALLBACK. When the six pillars are not all there the score is null and
+  // this page says so. `?? 0` would print a hard zero, and `?? healthCheckScore`
+  // would put the inflated number back on exactly the payloads nobody checks.
+  const overall    = computeOverall(report?.pillars);
+  const score      = overall.score;
+  const hasScore   = overall.ok;
+  const verdict    = verdictFor(score) || '';
   const summary    = report?.executiveSummary || '';
   const cuisine    = report?.cuisineDetected || '';
   const price      = report?.priceDetected || '';
@@ -3481,14 +3496,17 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-  // Survey banding: green ≥65, amber ≥45, red <45
-  const scoreColor = score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24';
+  // The same cutoffs the pillar tiles use, which is now also the band table:
+  // green 65 and up, amber 45 to 64, red below 45. They agree because the
+  // overall is the mean of those tiles and lives on their scale.
+  const scoreColor = !hasScore ? '#6b7280'
+    : score >= 65 ? '#00A651' : score >= 45 ? '#F7941D' : '#ED1C24';
 
   // Circular score gauge SVG (matches survey's dialSVG)
   const r = 48, cx = 56, cy = 56;
   const circumference = 2 * Math.PI * r;
-  const dashOffset = circumference * (1 - Math.max(0, Math.min(100, score)) / 100);
-  const gaugeSvg = `<svg viewBox="0 0 112 112" width="112" height="112" aria-hidden="true" style="display:block">
+  const dashOffset = circumference * (1 - Math.max(0, Math.min(100, hasScore ? score : 0)) / 100);
+  const gaugeSvg = !hasScore ? '' : `<svg viewBox="0 0 112 112" width="112" height="112" aria-hidden="true" style="display:block">
     <defs>
       <filter id="scoreShadow" x="-20%" y="-20%" width="140%" height="140%">
         <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.35"/>
@@ -3998,7 +4016,16 @@ body{
 /* Pillar score rows */
 .sc-row{
   display:flex;align-items:center;gap:14px;margin:10px 0;
-}
+}.cover-verdict{text-align:center;font-size:10px;letter-spacing:2.5px;
+  color:rgba(255,255,255,.85);text-transform:uppercase;font-weight:700;margin-top:8px}
+.cover-noscore{max-width:260px;font-size:12px;line-height:1.55;
+  color:rgba(255,255,255,.88)}
+/* The arithmetic, printed where the numbers it uses are printed. Small, but
+   never grey on white: a reader who wants to check the total has to be able
+   to read it. */
+.score-formula{margin:10px 0 4px;font-size:12px;line-height:1.6;color:#44506a;
+  background:#f4f7fa;border-left:3px solid #6b7280;padding:9px 12px;border-radius:4px}
+
 .sc-label{
   width:200px;flex-shrink:0;
   font-size:13px;font-weight:700;color:var(--navy);
@@ -4240,7 +4267,9 @@ ul.bullet-list li{margin:4px 0}
         <div class="cover-title">${esc(restaurant)}</div>
         ${metaRow ? '<div class="cover-meta">' + metaRow + '</div>' : ''}
       </div>
-      <div>${gaugeSvg}<div style="text-align:center;font-size:10px;letter-spacing:2.5px;color:rgba(255,255,255,.85);text-transform:uppercase;font-weight:700;margin-top:8px">${esc(verdict)}</div></div>
+      <div>${hasScore
+        ? gaugeSvg + '<div class="cover-verdict">' + esc(verdict) + '</div>'
+        : '<div class="cover-noscore">' + esc(NO_SCORE_SENTENCE) + '</div>'}</div>
     </div>
   </div>
 
@@ -4259,6 +4288,9 @@ ul.bullet-list li{margin:4px 0}
     ${pillarRows ? `
       <h2 class="rpt-h">Pillar Scores</h2>
       ${pillarRows}
+      ${hasScore ? `<div class="score-formula">Overall score: `
+        + esc(overallFormula(overall)) + `. Verdict bands: 80 and above Excellent, `
+        + `65 to 79 Good, 45 to 64 Fair, below 45 Needs Attention.</div>` : ''}
     ` : ''}
 
     ${businessRealityBlock}
@@ -7384,6 +7416,9 @@ export const __test__ = {
   // Replaces the module's fetch and hands back a restore function, so a test
   // cannot leave the real one swapped out for the files that run after it.
   setFetch(fn) { const was = fetch; fetch = fn; return () => { fetch = was; }; },
+  // Exposed so the ship gate can render a real report page in a real browser
+  // rather than asserting on a string this file also builds.
+  renderReportHtml,
   createCustomer,
   findOrderRow,
   recordSwapOnOrderRow,
