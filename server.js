@@ -11,6 +11,7 @@ import nodeFetch from 'node-fetch';
 let fetch = nodeFetch;
 import { computeOverall, overallFormula, verdictFor, NO_SCORE_SENTENCE,
          OVERALL_METHOD_VERSION } from './lib-score.js';
+import { contradictsBand, retryInstruction } from './lib-narrative.js';
 import crypto from 'crypto';
 import { describeShape, emailDomainOnly, addrLabel } from './lib-webhook-log.js';
 import { buildCustomerReportEmail, buildCacheMissEmail } from './lib-email.js';
@@ -1231,7 +1232,10 @@ async function searchCompetitorsMultiple(opts) {
 // Callers may optionally pass { label, maxTokens, retryOnParseFail } to
 // customise logging and behaviour per call site, but defaults are right
 // for /diagnose. The annual caller went in v8.10.0.
-async function claude(prompt, opts) {
+// v8.11.52: BEHIND A REBINDABLE NAME, for the same reason node-fetch is.
+// A test that cannot replace the model call cannot test a gate that runs on
+// the model's output, and the alternative is spending on every test run.
+let claude = async function claudeImpl(prompt, opts) {
   opts = opts || {};
   const maxTokens         = opts.maxTokens         || 8000;
   const retryOnParseFail  = opts.retryOnParseFail  !== false; // default true
@@ -1334,7 +1338,7 @@ async function claude(prompt, opts) {
 
   console.log(`[${label}] retry also failed — stop_reason=${result.stopReason}, length=${result.length}ch, preview="${result.preview}"`);
   throw new Error('JSON parse failed after retry: ' + result.preview);
-}
+};
 
 // ── EMAIL VIA RESEND ─────────────────────────────────────────
 async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
@@ -1603,6 +1607,110 @@ app.get('/health', (req, res) => {
 // this commit could not be reverted on its own.
 
 // ── /diagnose ────────────────────────────────────────────────
+
+// ── writeExecutiveSummary (v8.11.52) [B3.2] ─────────────────────────────────
+//
+// PASS 2. The score and the band are computed between the two passes, by
+// lib-score.js, with no model involved, and the summary is then written WITH
+// THE BAND IN ITS INPUT.
+//
+// WHY IT IS A SEPARATE CALL AND NOT A FIELD ON PASS 1. A model asked for a
+// score and a summary in one object writes the summary to agree with the score
+// it just wrote. That is exactly how 66 of the 105 stored summaries came to
+// name a band other than the computed one, skewed 4.2 to 1 toward the higher
+// one. The band has to exist before the sentence is written.
+//
+// IT IS NOT GIVEN THE CORPUS. Pass 1 read the corpus and produced the pillars;
+// this writes three sentences from structured input. Handing it the corpus
+// again would invite it to re-derive a view of the business and argue with the
+// numbers.
+//
+// THE GATE BLOCKS DELIVERY, WITH ONE RETRY, AND THEN GIVES UP RATHER THAN
+// LOOPING. Band words are ordinary English and 92 of 103 stored summaries
+// contain one; a gate that retried until clean would never deliver. On a
+// second failure the report ships WITHOUT a summary and an alert is raised.
+//
+// LOSING THREE SENTENCES IS BETTER THAN LOSING THE REPORT, and far better than
+// shipping a cover that says Fair above a paragraph that says strong.
+async function writeExecutiveSummary({ name, location, report, score, band }) {
+  if (!band || typeof score !== 'number') {
+    return { text: '', reason: 'no-band' };
+  }
+  const pillars = report && report.pillars ? report.pillars : {};
+  const line = (k) => {
+    const p = pillars[k];
+    return p ? '  ' + (p.label || k) + ': ' + p.score : null;
+  };
+  const pillarBlock = ['cs', 'pa', 'es', 'sm', 'cp', 'bg'].map(line).filter(Boolean).join('\n');
+  const strengths = (report && report.strengths || []).slice(0, 3).map(x => '  ' + x).join('\n');
+  const risks = (report && report.risks || []).slice(0, 3).map(x => '  ' + x).join('\n');
+
+  const basePrompt = [
+    'Write the executive summary for a restaurant health report.',
+    '',
+    'Restaurant: ' + name,
+    'Location: ' + location,
+    '',
+    'PILLAR SCORES, each out of 100:',
+    pillarBlock,
+    '',
+    'THE OVERALL SCORE IS ' + score + ' OUT OF 100, AND ITS BAND IS "' + band + '".',
+    'That score is the mean of the six pillar scores above. It is a given fact.',
+    'Do not restate it as a number and do not dispute it.',
+    '',
+    'Bands: 80 and above Excellent, 65 to 79 Good, 45 to 64 Fair, below 45 Needs Attention.',
+    '',
+    strengths ? 'STRENGTHS FOUND:\n' + strengths : '',
+    risks ? 'RISKS FOUND:\n' + risks : '',
+    '',
+    'Write 2 to 3 sentences. Name specific strengths and weaknesses. Do NOT',
+    'characterise the business overall in a word that names a band other than',
+    '"' + band + '". Words such as excellent, strong, solid, fair, mixed, weak and',
+    'poor name bands; use the one that matches, or describe the specific thing',
+    'rather than the business as a whole.',
+    '',
+    'PUNCTUATION, HARD RULE: never use an em-dash or an en-dash, and never',
+    'their HTML entity forms. Use a comma, a colon, parentheses, or a full stop',
+    'and a second sentence. For a numeric range use a plain hyphen.',
+    '',
+    'Return ONLY JSON: {"executiveSummary":"..."}',
+  ].filter(x => x !== '').join('\n');
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let out;
+    try {
+      const extra = attempt === 1 ? '' : ('\n\n' + writeExecutiveSummary._lastRetry);
+      out = await claude(basePrompt + extra, {
+        label: 'diagnose-summary', maxTokens: 700,
+        model: 'claude-haiku-4-5-20251001',
+      });
+    } catch (e) {
+      console.log('[summary] attempt ' + attempt + ' threw: ' + (e && e.message));
+      break;
+    }
+    const text = String((out && out.executiveSummary) || '').trim();
+    if (!text) { console.log('[summary] attempt ' + attempt + ' returned nothing'); continue; }
+
+    const verdict = contradictsBand(text, band);
+    if (!verdict.contradicts) {
+      console.log('[summary] accepted on attempt ' + attempt + ' band=' + band);
+      return { text, reason: 'accepted-attempt-' + attempt };
+    }
+    console.log('[summary] attempt ' + attempt + ' CONTRADICTS band=' + band
+      + ' words=' + JSON.stringify(verdict.hits.map(h => h.word)));
+    writeExecutiveSummary._lastRetry = retryInstruction(verdict);
+  }
+
+  // THE REPORT SHIPS WITHOUT A SUMMARY RATHER THAN WITH A CONTRADICTION.
+  await alertWebhookProblem({
+    kind: 'summary-gate-failed',
+    detail: 'The executive summary contradicted the computed band twice for '
+      + name + ' at ' + score + ' (' + band + '). The report was delivered '
+      + 'without a summary. Every other section is unaffected.',
+  }).catch(() => {});
+  return { text: '', reason: 'gate-failed-twice' };
+}
+
 app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => {
   // ALL-1: everything this handler awaits runs inside one ledger, including the
   // searches launched in parallel below, because AsyncLocalStorage follows the
@@ -1813,6 +1921,19 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     // healthCheckScore is no longer requested, so requiring it would fail
     // every assessment.
     if (!report.pillars) throw new Error('missing fields: '+Object.keys(report).join(','));
+
+    // v8.11.52 [B3.2]: THE SCORE IS COMPUTED HERE, BETWEEN THE PASSES, and the
+    // summary is written against it rather than alongside it.
+    const computed = computeOverall(report.pillars);
+    const computedBand = verdictFor(computed.score);
+    console.log('[diagnose] computed score=' + computed.score + ' band=' + computedBand
+      + (computed.ok ? '' : ' reason=' + computed.reason));
+
+    const summary = await writeExecutiveSummary({
+      name, location, report, score: computed.score, band: computedBand,
+    });
+    report.executiveSummary = summary.text;
+    report.summaryGate = summary.reason;
 
     // ── User-named competitor safety net ─────────────────────────────────
     // Even with explicit imperative prompts, Haiku occasionally drops
@@ -7655,6 +7776,8 @@ export const __test__ = {
   // Replaces the module's fetch and hands back a restore function, so a test
   // cannot leave the real one swapped out for the files that run after it.
   setFetch(fn) { const was = fetch; fetch = fn; return () => { fetch = was; }; },
+  setClaude(fn) { const was = claude; claude = fn; return () => { claude = was; }; },
+  writeExecutiveSummary,
   // Exposed so the ship gate can render a real report page in a real browser
   // rather than asserting on a string this file also builds.
   renderReportHtml,
