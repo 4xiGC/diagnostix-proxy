@@ -407,6 +407,45 @@ export function swapOrderKey(args) {
   return crypto.createHash('sha256').update('rvp-order:' + email + ':' + token).digest('hex').slice(0, 40);
 }
 
+// ── v8.11.49: THE ORDER IDENTITY, DERIVED AT MINT TIME ─────────────────────
+//
+// findOrderRow returns THE NEWEST SUBSCRIBER ROW FOR THE PAYING ADDRESS. That
+// is the lookup behind the 2026-09-20 double delivery, and it is only needed
+// because one sale can hold several rows: deliverPaidReport calls
+// createCustomer on every path and createCustomer INSERTS.
+//
+// subscribers.order_key exists as of migration 004. This derives the value.
+//
+// THE SAME DERIVATION rvp_swap_uses ALREADY USES, so the two tables carry the
+// same value for the same order and join without translation. The delivery
+// mints the recovery token for the swap link it emails, so the key is
+// available at mint time from something the delivery already has.
+//
+// NULL WHEN IT CANNOT BE DERIVED, NEVER A GUESS. recoveryAllowed can be false,
+// and then no token is minted. A row with no derivable key stores null and
+// keeps today's behaviour exactly, which is the safe direction: the fix
+// applies to orders minted from this release onward and changes nothing about
+// the 103 rows that already exist.
+//
+// AND NULL MUST NEVER MATCH NULL. A lookup that treated one missing key as
+// equal to another would tie every old row to every other old row, which is
+// worse than the defect being fixed.
+export function orderKeyForDelivery(args) {
+  const a = (args && typeof args === 'object') ? args : {};
+  const email = typeof a.payingEmail === 'string' ? a.payingEmail.trim() : '';
+  const url = typeof a.swapUrl === 'string' ? a.swapUrl.trim() : '';
+  if (!email || !url) return null;
+  let token = '';
+  try {
+    token = new URL(url).searchParams.get('t') || '';
+  } catch (_) {
+    return null;
+  }
+  if (!token.trim()) return null;
+  return swapOrderKey({ payingEmail: email, token });
+}
+
+
 // HOW MANY ROWS A PATCH ACTUALLY CHANGED.
 //
 // The 2026-09-20 failure in one function. PostgREST answers 200 with an empty
