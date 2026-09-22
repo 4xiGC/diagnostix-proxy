@@ -20,6 +20,16 @@
 // there was no seam at all: RVP had no injectable fetch anywhere, so no test
 // had ever observed a write.
 //
+// ── 2026-09-22, v8.11.49: THAT IS NO LONGER WHERE THINGS STAND ────────────
+//
+// Migration 004 landed, server.js can be imported without serving, and
+// test/swap-row-accounting.test.js counts the REAL createCustomer,
+// findOrderRow, recordSwapOnOrderRow and deleteDuplicateSubscriberRow.
+// Go there for the rule. What is left below is the contract written out
+// against a fake this file drives itself, which is worth keeping as a
+// statement of intent and is worth nothing as evidence, so nothing below
+// should be quoted as proof that the code does anything.
+//
 // Run with: npm test
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -95,9 +105,14 @@ test('A SWAP OR RECOVERY FOR THE SAME SALE MUST NOT WRITE A SECOND ROW', async (
 
 test('THE SHAPE THE CURRENT CODE PRODUCES, pinned so the fix has a red', async () => {
   // deliverPaidReport calls createCustomer on EVERY path, so a swap inserts.
-  // This is what the code does today, written down. When the migration lands
-  // and the swap path reuses the row, this expectation changes to 1 and the
-  // test above becomes the live one.
+  //
+  // v8.11.49: STILL 2, AND DELIBERATELY SO. The swap path was not changed to
+  // stop inserting. deliverPaidReport mints the report token the delivery
+  // email links to, and the row has to exist before that email goes out;
+  // patching the order row in place instead would let the email be sent while
+  // the patch had failed, leaving a live link to a report with no row. The
+  // rule is a NET count of 1, and swap-row-accounting.test.js asserts it
+  // against the real functions.
   const db = countingSupabase();
   const deliverLikeToday = () => db.fetch('https://x.invalid/rest/v1/subscribers', {
     method: 'POST', headers: {}, body: JSON.stringify({ email: 'buyer@example.invalid' }),
