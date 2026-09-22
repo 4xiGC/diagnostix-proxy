@@ -2,18 +2,16 @@
 // THE NARRATIVE MUST NOT CONTRADICT THE COMPUTED BAND.
 //
 // The score is computed from the six pillars. The prose was written by a model
-// that had been told the score was about seven points higher. Measured in real
-// Chrome across all 103 stored reports on 2026-09-22:
+// that had been told the score was about seven points higher.
 //
-//     summaries containing a band word   92 of 103
-//     band words found                  181
-//     CONTRADICTIONS                    109
-//     PAGES CARRYING AT LEAST ONE        47 of 103
-//     naming a HIGHER band               91
-//     naming a LOWER band                18
+// THE FIGURES LIVE IN lib-narrative.js's HEADER, reconciled against the
+// harness that first measured them, and are NOT repeated here. Two copies of
+// a measurement drift, and this file would be the copy nobody reruns.
 //
-// THE 5-TO-1 SKEW IS WHAT SAYS IT IS REAL. A word list catching positive
-// adjectives at random would miss both ways.
+// The short version: 114 blocking contradictions over 105 stored reports, on
+// 66 rows which are 49 distinct subject-and-score pairs, skewed 5 to 1 toward
+// the higher band. That skew is what says it is real; a word list catching
+// positive adjectives at random would miss both ways.
 //
 // SCOPED TO THE EXECUTIVE SUMMARY, and that scoping is the whole difference
 // between a useful gate and a word counter. The first version of the harness
@@ -33,7 +31,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bandWordsIn, contradictsBand, BAND_WORDS, NOT_A_VERDICT } from '../lib-narrative.js';
+import { bandWordsIn, contradictsBand, retryInstruction, BAND_WORDS, NOT_A_VERDICT } from '../lib-narrative.js';
 
 // ── It finds band words ───────────────────────────────────────────────────
 
@@ -165,4 +163,94 @@ test('CONTROL: an exclusion phrase actually appears in the exclusion list', () =
   // Guards against the list being reordered into uselessness.
   assert.ok(NOT_A_VERDICT.includes('good value'));
   assert.ok(NOT_A_VERDICT.includes('average check'));
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// v8.11.52: TWO LISTS, AND ONLY ONE OF THEM BLOCKS.
+//
+// Simon's decision: the delivery gate blocks on the four band names and their
+// direct synonyms. Five words carried over from the SVP version of this gate
+// (world class, robust, uneven, inconsistent, lagging) are REPORTED and never
+// block, because they were never checked against the aspect-claim problem the
+// way the blocking words were.
+//
+// A WORD THAT HAS NOT BEEN SHOWN TO DISCRIMINATE MUST NOT REFUSE A DELIVERY.
+// ════════════════════════════════════════════════════════════════════════════
+
+import { WARN_WORDS } from '../lib-narrative.js';
+
+test('A WARNING WORD DOES NOT BLOCK', () => {
+  const r = contradictsBand('The service is uneven across the week.', 'Excellent');
+  assert.equal(r.contradicts, false, 'a warning word refused a delivery');
+  assert.equal(r.hits.length, 0);
+});
+
+test('but it IS reported', () => {
+  const r = contradictsBand('The service is uneven across the week.', 'Excellent');
+  assert.equal(r.warnings.length, 1);
+  assert.equal(r.warnings[0].word, 'uneven');
+  assert.equal(r.warnings[0].band, 'Fair');
+});
+
+test('all five demoted words warn and none of them blocks', () => {
+  // EACH IS TESTED AGAINST A BAND IT DOES NOT NAME. The first version of this
+  // used 'Fair' for all five, and 'uneven' and 'inconsistent' ARE Fair words,
+  // so they correctly produced neither a block nor a warning and the test
+  // failed on its own fixture. A word naming its own band is not a warning
+  // either.
+  const cases = [
+    ['world class', 'Fair'], ['robust', 'Fair'],
+    ['uneven', 'Excellent'], ['inconsistent', 'Excellent'],
+    ['lagging', 'Excellent'],
+  ];
+  for (const [w, band] of cases) {
+    const r = contradictsBand('The operation is ' + w + ' in every respect.', band);
+    assert.equal(r.contradicts, false, w + ' blocked a delivery at ' + band);
+    assert.ok(r.warnings.length >= 1, w + ' was not reported at ' + band);
+  }
+});
+
+test('and a demoted word naming its OWN band is neither blocked nor warned', () => {
+  const r = contradictsBand('The service is uneven.', 'Fair');
+  assert.equal(r.contradicts, false);
+  assert.equal(r.warnings.length, 0, 'it warned about a word naming its own band');
+});
+
+test('and a BLOCKING word still blocks, beside a warning word', () => {
+  // Band Good, so 'poor' blocks (Needs Attention) and 'uneven' warns (Fair).
+  // Neither names Good, so both are off-band and both are counted, each in
+  // its own list.
+  const r = contradictsBand('Poor consistency and uneven service.', 'Good');
+  assert.equal(r.contradicts, true, 'the blocking word stopped blocking');
+  assert.equal(r.hits.length, 1);
+  assert.equal(r.hits[0].word, 'poor');
+  assert.equal(r.warnings.length, 1);
+  assert.equal(r.warnings[0].word, 'uneven');
+});
+
+test('the retry instruction quotes only the BLOCKING words', () => {
+  const r = contradictsBand('An excellent kitchen with uneven service.', 'Good');
+  const msg = retryInstruction(r);
+  assert.match(msg, /"excellent"/);
+  assert.doesNotMatch(msg, /uneven/, 'the retry asked the model to fix a warning');
+});
+
+test('CONTROL: the two lists do not overlap', () => {
+  // A word in both would block and warn at once, and the counts would double
+  // count it.
+  const blocking = new Set(Object.values(BAND_WORDS).flat());
+  for (const w of Object.values(WARN_WORDS).flat()) {
+    assert.ok(!blocking.has(w), w + ' is in both lists');
+  }
+});
+
+test('CONTROL: the warning list is the five words and no others', () => {
+  assert.deepEqual(Object.values(WARN_WORDS).flat().sort(),
+    ['inconsistent', 'lagging', 'robust', 'uneven', 'world class', 'world-class'].sort());
+});
+
+test('CONTROL: the blocking list is the one the measurement used', () => {
+  // If this drifts, the figures in the header stop describing this code.
+  assert.deepEqual(BAND_WORDS['Excellent'], ['excellent', 'exceptional', 'outstanding', 'superb']);
+  assert.deepEqual(BAND_WORDS['Good'], ['good', 'strong', 'solid', 'healthy']);
 });

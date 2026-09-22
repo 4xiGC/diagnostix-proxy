@@ -7,42 +7,47 @@
 // a summary saying the restaurant "delivers a strong farm to table California
 // dining experience".
 //
-// MEASURED TWICE, BY TWO DETECTORS, AND BOTH NUMBERS ARE GIVEN BECAUSE THEY
-// ARE NOT THE SAME MEASUREMENT.
+// MEASURED, AND RECONCILED WITH THE HARNESS THAT FIRST MEASURED IT.
 //
-// 2026-09-22, overnight/rvp-narrative-gate.js in real Chrome, reading the
-// rendered page, with a NARROWER vocabulary than this file ships:
+// 2026-09-22, overnight/rvp-narrative-gate.js in real Chrome:
 //
-//     summaries containing a band word    92 of 103
 //     CONTRADICTIONS                     109
 //     PAGES CARRYING AT LEAST ONE         47 of 103
 //     higher 91, lower 18
 //
-// THIS MODULE, over the stored executiveSummary field, 105 reports checked:
+// THIS MODULE, over the stored executiveSummary field, 105 reports:
 //
-//     CONTRADICTIONS                     119
-//     PAGES CARRYING AT LEAST ONE         66 of 105
-//     higher 96, lower 23
-//     clean                               39
+//     CONTRADICTIONS, blocking words     114
+//     rows carrying at least one          66 of 105
+//     DISTINCT (name, score) pairs        49   <- the comparable number
+//     higher 95, lower 19
+//     warning-only word instances          5   (never block)
 //
-// THE DIFFERENCE IS THE VOCABULARY, NOT DRIFT AND NOT THE CORPUS. This file
-// carries five words the harness did not: world class, robust, uneven,
-// inconsistent and lagging, brought over from the SVP version of the same
-// gate. They find nineteen more pages. Whether that is a better detector or a
-// noisier one is NOT SETTLED: the wider words were never checked against the
-// aspect-claim problem the way the narrow ones were.
+// I EXPLAINED THE GAP WRONG TWICE BEFORE GETTING IT RIGHT, and the wrong
+// explanations are worth more than the right one.
 //
-// THE FIRST FIGURES WERE WRITTEN INTO THIS HEADER AS THOUGH THEY DESCRIBED
-// THIS CODE. They described the harness. overnight/narrative-module-check.js
-// re-derives the second set with the shipped module and is the one to rerun
-// after any change to the lists below.
+//   FIRST I SAID the difference was the vocabulary, because this module had
+//   carried five extra words over from the SVP gate. Removing them moved the
+//   count by FIVE WORD INSTANCES and by ZERO PAGES. The attribution was
+//   confident and unmeasured.
 //
-// THE SKEW SURVIVES BOTH: 5 to 1 on the harness, 4.2 to 1 here. A word list
-// catching positive adjectives at random would miss both ways. The same
+//   THEN, measuring, THE REAL CAUSE: the harness deduplicated by name and
+//   score, and this corpus repeats restaurants heavily. 66 rows collapse to
+//   49 subjects. 47 against 49 is the corpus having grown by two reports
+//   since, which is the whole remaining difference.
+//
+// SO 66 AND 47 WERE NEVER THE SAME QUANTITY. One counts delivered reports,
+// the other counts distinct subject-and-score pairs. Both are right about
+// what they count, and quoting either without saying which is the error.
+//
+// THE SKEW SURVIVES EVERY CUT: 5.1 to 1 on the harness, 5.0 to 1 here. A word
+// list catching positive adjectives at random would miss both ways. The same
 // detector over SVP's 49 stored payloads split 27 to 27, dead even, and every
-// one of its twelve worst cases turned out to be an aspect claim rather than a
-// verdict. Two corpora, opposite answers, which is what says the RVP finding
-// is real.
+// one of its twelve worst cases was an aspect claim rather than a verdict.
+// Two corpora, opposite answers, which is what says the RVP finding is real.
+//
+// overnight/narrative-module-check.js re-derives all of this and is the script
+// to rerun after any change to the lists below.
 //
 // ── WHAT THIS IS SCOPED TO, AND WHY IT MATTERS MORE THAN THE WORD LIST ─────
 //
@@ -72,11 +77,32 @@
 // The four bands and the words that name them. Same four names as
 // lib-score.js VERDICT_BANDS, deliberately: a gate whose vocabulary drifted
 // from the band table would pass sentences the cover contradicts.
+// ── TWO LISTS, AND ONLY ONE OF THEM BLOCKS ─────────────────────────────────
+//
+// BLOCKING. The four band names and their direct synonyms. This is exactly the
+// list the 2026-09-22 measurement used, so the figures quoted above are the
+// figures this list produces, not a different list's.
 export const BAND_WORDS = {
-  'Excellent':       ['excellent', 'exceptional', 'outstanding', 'superb', 'world class', 'world-class'],
-  'Good':            ['good', 'strong', 'solid', 'healthy', 'robust'],
-  'Fair':            ['fair', 'mixed', 'middling', 'average', 'adequate', 'uneven', 'inconsistent'],
-  'Needs Attention': ['poor', 'weak', 'critical', 'failing', 'struggling', 'lagging'],
+  'Excellent':       ['excellent', 'exceptional', 'outstanding', 'superb'],
+  'Good':            ['good', 'strong', 'solid', 'healthy'],
+  'Fair':            ['fair', 'mixed', 'middling', 'average', 'adequate'],
+  'Needs Attention': ['poor', 'weak', 'critical', 'failing', 'struggling'],
+};
+
+// WARNING ONLY, NEVER BLOCKING. Five words carried over from the SVP version
+// of this gate. They find nineteen more pages, and whether that is a better
+// detector or a noisier one was never settled: they were not checked against
+// the aspect-claim problem the way the blocking words were, and that problem
+// is what made SVP's corpus read 27 to 27 while RVP's read 91 to 18.
+//
+// A WORD THAT HAS NOT BEEN SHOWN TO DISCRIMINATE MUST NOT REFUSE A DELIVERY.
+// They are reported so the question stays visible and can be settled from
+// production rather than from argument.
+export const WARN_WORDS = {
+  'Excellent':       ['world class', 'world-class'],
+  'Good':            ['robust'],
+  'Fair':            ['uneven', 'inconsistent'],
+  'Needs Attention': ['lagging'],
 };
 
 const RANK = { 'Needs Attention': 0, 'Fair': 1, 'Good': 2, 'Excellent': 3 };
@@ -104,13 +130,14 @@ export const NOT_A_VERDICT = [
 
 // Every band word used as a verdict, with the band it names and enough
 // context to quote back to the model on a retry.
-export function bandWordsIn(text) {
+export function bandWordsIn(text, vocabulary) {
+  const vocab = vocabulary || BAND_WORDS;
   const s = String(text == null ? '' : text);
   if (!s.trim()) return [];
   const lower = s.toLowerCase();
   const found = [];
-  for (const band of Object.keys(BAND_WORDS)) {
-    for (const w of BAND_WORDS[band]) {
+  for (const band of Object.keys(vocab)) {
+    for (const w of vocab[band]) {
       const pattern = w.replace(/[-\s]/g, '[- ]');
       const re = new RegExp('\\b' + pattern + '\\b', 'g');
       let m;
@@ -134,11 +161,15 @@ export function bandWordsIn(text) {
 // out of an absence.
 export function contradictsBand(text, band) {
   const target = RANK[band] === undefined ? null : band;
-  if (!target) return { contradicts: false, hits: [], band: null };
-  const hits = bandWordsIn(text)
+  if (!target) return { contradicts: false, hits: [], warnings: [], band: null };
+  const off = (vocab) => bandWordsIn(text, vocab)
     .filter((h) => h.band !== target)
     .map((h) => ({ ...h, direction: RANK[h.band] > RANK[target] ? 'higher' : 'lower' }));
-  return { contradicts: hits.length > 0, hits, band: target };
+  const hits = off(BAND_WORDS);
+  // WARNINGS ARE RETURNED AND NEVER GATE. contradicts is computed from hits
+  // alone, so adding a warning word can never refuse a delivery.
+  const warnings = off(WARN_WORDS);
+  return { contradicts: hits.length > 0, hits, warnings, band: target };
 }
 
 // The sentence handed back to the model on a retry. It quotes the offending
