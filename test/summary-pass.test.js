@@ -177,3 +177,105 @@ test('CONTROL: the gate can return BOTH answers on the same band', async () => {
   assert.ok(a.text);
   assert.equal(b.text, '');
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// v8.11.52: ONE MODEL FOR THE CORPUS, AND THE BILLED TOKENS WITHOUT A BYPASS.
+// ════════════════════════════════════════════════════════════════════════════
+
+test('THE SUMMARY PASS DOES NOT OVERRIDE THE MODEL', async () => {
+  // The existing summaries were written by diagnose-p1, which passes no model
+  // and takes the Sonnet default. An override here would give the corpus two
+  // authors: Sonnet before this release, something else after.
+  let sawOpts = null;
+  const restore = setClaude(async (prompt, opts) => {
+    sawOpts = opts || {};
+    return { executiveSummary: 'The kitchen is consistent; staffing is thin.' };
+  });
+  try {
+    await writeExecutiveSummary({ name: 'X', location: 'Y', report: REPORT, score: 59, band: 'Fair' });
+  } finally { restore(); }
+  assert.ok(sawOpts, 'the model was never called');
+  assert.equal(sawOpts.model, undefined,
+    'it pinned a model (' + sawOpts.model + ') instead of taking the default');
+});
+
+test('and it still labels the call, so the log can name it', async () => {
+  let sawOpts = null;
+  const restore = setClaude(async (p, o) => { sawOpts = o; return { executiveSummary: 'Clean.' }; });
+  try {
+    await writeExecutiveSummary({ name: 'X', location: 'Y', report: REPORT, score: 59, band: 'Fair' });
+  } finally { restore(); }
+  assert.equal(sawOpts.label, 'diagnose-summary');
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE LENGTH GATE: ASK FOR 70, ENFORCE 80.
+//
+// THE GAP IS DELIBERATE AND IT IS MEASURED. Asking for 70 produced 62, 64, 64,
+// 67, 71, 72, 74, 75, 76 and 79 across ten subjects on 2026-09-23. The model
+// clusters just above whatever ceiling it is given, so a gate set AT the asked
+// number would have retried six times in ten for between one and nine words.
+//
+// 80 IS AN EDITORIAL NUMBER, NOT A LAYOUT ONE. The box was measured in real
+// Chrome under print media and holds 338 words on Letter and 366 on A4 before
+// it crosses a page boundary, and it has no max-height so it never clips. The
+// layout imposes no useful limit.
+// ════════════════════════════════════════════════════════════════════════════
+
+const WORDS = (n) => Array.from({ length: n }, (_, i) => 'word' + i).join(' ');
+
+test('a summary at the LIMIT is accepted', async () => {
+  const m = model([WORDS(80)]);
+  const out = await withModel(m, () => writeExecutiveSummary(ARGS()));
+  assert.equal(m.calls(), 1, 'it retried a summary that was exactly at the limit');
+  assert.match(out.reason, /accepted-attempt-1/);
+  assert.equal(out.words, 80);
+});
+
+test('ONE WORD OVER TRIGGERS A RETRY', async () => {
+  const m = model([WORDS(81), WORDS(60)]);
+  const out = await withModel(m, () => writeExecutiveSummary(ARGS()));
+  assert.equal(m.calls(), 2);
+  assert.match(out.reason, /accepted-attempt-2/);
+});
+
+test('and the retry QUOTES THE ACTUAL COUNT', async () => {
+  const m = model([WORDS(95), WORDS(60)]);
+  await withModel(m, () => writeExecutiveSummary(ARGS()));
+  assert.match(m.prompts[1], /95 words/, 'the retry did not name the count');
+  assert.match(m.prompts[1], /80/, 'the retry did not name the limit');
+  assert.match(m.prompts[1], /70/, 'the retry did not name the target');
+});
+
+test('TOO LONG TWICE IS SKIPPED, not shipped', async () => {
+  const m = model([WORDS(120), WORDS(110)]);
+  const out = await withModel(m, () => writeExecutiveSummary(ARGS()));
+  assert.equal(out.text, '', 'it shipped a summary over the limit');
+  assert.equal(out.reason, 'gate-failed-twice');
+});
+
+test('the two rules compose: a band contradiction AND a length failure', async () => {
+  const m = model(['An excellent operation. ' + WORDS(100), WORDS(60)]);
+  await withModel(m, () => writeExecutiveSummary(ARGS()));
+  assert.match(m.prompts[1], /"excellent"/, 'the retry lost the band words');
+  assert.match(m.prompts[1], /words/, 'the retry lost the length');
+});
+
+test('the PROMPT asks for the target, not the limit', async () => {
+  const m = model([WORDS(60)]);
+  await withModel(m, () => writeExecutiveSummary(ARGS()));
+  assert.match(m.prompts[0], /AT MOST 70 WORDS/);
+  assert.doesNotMatch(m.prompts[0], /AT MOST 80 WORDS/);
+});
+
+test('CONTROL: a short summary passes with no retry, so the limit is not always firing', async () => {
+  const m = model([WORDS(40)]);
+  const out = await withModel(m, () => writeExecutiveSummary(ARGS()));
+  assert.equal(m.calls(), 1);
+  assert.ok(out.text);
+});
+
+test('CONTROL: the word counter counts words, not characters', () => {
+  assert.equal(WORDS(80).split(/\s+/).filter(Boolean).length, 80);
+});

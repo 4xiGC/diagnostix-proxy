@@ -254,3 +254,71 @@ test('CONTROL: the blocking list is the one the measurement used', () => {
   assert.deepEqual(BAND_WORDS['Excellent'], ['excellent', 'exceptional', 'outstanding', 'superb']);
   assert.deepEqual(BAND_WORDS['Good'], ['good', 'strong', 'solid', 'healthy']);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// "critical" AS A VERDICT VERSUS "critical" AS AN ADJECTIVE ON A NAMED THING.
+//
+// Found on Casa las Cuja, 2026-09-23. The gate blocked its summary and the
+// block was WRONG:
+//
+//   "Despite premium positioning and critical acclaim, operational consistency
+//    and team dynamics appear to be lagging behind the customer-facing
+//    experience."
+//
+// "critical acclaim" is praise from critics. It means the OPPOSITE of the band
+// word. The detector has no syntax and cannot tell them apart, so the
+// distinction is carried by the phrase list, and these tests pin both sides of
+// it: the ordinary uses must NOT block, and the verdict use still must.
+// ════════════════════════════════════════════════════════════════════════════
+
+test('"critical" AS AN ADJECTIVE ON A NAMED THING DOES NOT BLOCK', () => {
+  for (const s of [
+    'Despite premium positioning and critical acclaim, consistency is slipping.',
+    'The restaurant has won critical praise for its tasting menu.',
+    'Critical reception has been warm since the refurbishment.',
+    'Critical gaps are listed in the section below.',
+    'Service speed is critical to the lunch trade.',
+    'Reviews are critically important to discovery.',
+  ]) {
+    assert.equal(contradictsBand(s, 'Good').contradicts, false, 'blocked: ' + s);
+  }
+});
+
+test('but "critical" AS A VERDICT ON THE BUSINESS STILL BLOCKS', () => {
+  for (const s of [
+    'The restaurant is in a critical position.',
+    'Performance is critical and needs immediate attention.',
+    'This is a critical operation by any measure.',
+  ]) {
+    assert.equal(contradictsBand(s, 'Good').contradicts, true, 'did not block: ' + s);
+  }
+});
+
+test('THE CASA LAS CUJA SUMMARY PASSES, and it is the live text', () => {
+  // The exact stored summary, 67 words, band Good. It was skipped by the real
+  // run on a block that should not have fired.
+  const stored = 'Casa Las Cujas is a well-regarded seafood restaurant in Vitacura '
+    + 'with a strong 4.7/5 rating on TripAdvisor from 528 reviews, praised for fresh '
+    + 'fish and inviting atmosphere. The brand has achieved recognition as 14th on '
+    + "Latin America's 50 Best list, with dual locations in Santiago and seasonal "
+    + 'Cachagua. Despite premium positioning and critical acclaim, operational '
+    + 'consistency and team dynamics appear to be lagging behind the customer-facing '
+    + 'experience.';
+  const r = contradictsBand(stored, 'Good');
+  assert.equal(r.contradicts, false,
+    'still blocked on ' + JSON.stringify(r.hits.map(h => h.word)));
+});
+
+test('CONTROL: "strong" in that summary names its OWN band, which is why it passes', () => {
+  // Not because "strong" was excluded. On a Fair report the same sentence
+  // would block, and that is the behaviour being relied on.
+  const s = 'A strong 4.7/5 rating on TripAdvisor from 528 reviews.';
+  assert.equal(contradictsBand(s, 'Good').contradicts, false);
+  assert.equal(contradictsBand(s, 'Fair').contradicts, true,
+    'the band comparison has stopped working');
+});
+
+test('CONTROL: the new exclusions did not disable the word entirely', () => {
+  assert.equal(bandWordsIn('The situation is critical.').length, 1,
+    '"critical" no longer registers at all');
+});

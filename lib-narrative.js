@@ -121,6 +121,11 @@ export const NOT_A_VERDICT = [
   'fair trade', 'fair price', 'fairly', 'county fair', 'fair share',
   'average check', 'average spend', 'on average', 'average rating', 'average of',
   'critical gaps', 'critical to', 'critically', 'critical path', 'critical mass',
+  // 'critical acclaim' MEANS THE OPPOSITE OF THE BAND WORD. It is praise from
+  // critics. Found on Casa las Cuja, 2026-09-23: "Despite premium positioning
+  // and critical acclaim, operational consistency ... appear to be lagging."
+  // The gate blocked that summary and the block was wrong.
+  'critical acclaim', 'critical praise', 'critical reception', 'critical darling',
   'poorly', 'poor weather',
   'weakness', 'weaknesses', 'weakly',
   'mixed use', 'mixed-use', 'mixed methods',
