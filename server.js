@@ -4902,105 +4902,19 @@ async function findOrderRowByAddress({ payingEmail }) {
   }
 }
 
-// ONE SALE STAYS ONE SUBSCRIBER ROW.
+// v8.11.51 [B1.3]: recordSwapOnOrderRow, supersedePlaceholderRow and
+// deleteDuplicateSubscriberRow WERE DELETED HERE, and the reason is worth
+// keeping where they were.
 //
-// The swap replaces what the order delivered, in place. createCustomer has
-// already inserted a fresh row by the time this runs, so that one is removed
-// afterwards, exactly as the placeholder path does. amount_paid, plan_type and
-// subscribed_at are deliberately NOT restated: the order recorded those once,
-// and rewriting them would be inventing a second sale.
+// All three existed to repair a duplicate row that createCustomer had just
+// inserted. Two of them wrote the new report token onto a second row and were
+// refused by the unique guard on every swap and every recovery, which then
+// cancelled the third. writeOrderRow removes the duplicate rather than
+// repairing it, so none of the three has anything left to do.
 //
-// The SWAPPED note is what makes the link single use. A token cannot know it
-// has been spent, and the attempt counter only counts FAILURES, so without a
-// marker on the row one signed link would hand out one more report for every
-// address the holder could name.
-async function recordSwapOnOrderRow({ orderId, subscriber, report, restaurantName }) {
-  const url = process.env.SUPABASE_URL;
-  const dbKey = process.env.SUPABASE_KEY;
-  if (!url || !dbKey || !orderId) return false;
-  const w = await writeSubscribers({
-    what: 'swap-note', method: 'PATCH', rowId: orderId,
-    filter: 'id=eq.' + encodeURIComponent(orderId),
-    body: {
-      restaurant_name: subscriber.restaurantName || null,
-      location:        subscriber.location || null,
-      website:         subscriber.website || null,
-      report_token:    subscriber.reportToken,
-      baseline_report: report || null,
-      baseline_score:  (report && report.healthCheckScore) || 0,
-      reports_sent:    1,
-      notes: SWAP_NOTE_PREFIX + ' delivered ' + String(restaurantName || 'a different survey')
-        + ' in place of the original, by the swap link, on ' + new Date().toISOString() + '.',
-    },
-  });
-  // v8.11.37: THIS IS NO LONGER THE GUARANTEE, and it is no longer silent.
-  // Single use is enforced by the unique index on rvp_swap_uses. This note is
-  // bookkeeping, and when it changes nothing we say so, because on 2026-09-20
-  // it changed nothing and nobody found out for a day.
-  if (w.rows !== 1) {
-    await alertSubscribersUpdateFailed({ what: 'the swap note', orderId, status: w.status, rows: w.rows });
-    return false;
-  }
-  return true;
-}
-
-async function supersedePlaceholderRow({ placeholderId, subscriber, report }) {
-  const url = process.env.SUPABASE_URL;
-  const dbKey = process.env.SUPABASE_KEY;
-  if (!url || !dbKey || !placeholderId) return false;
-  // THE report_token=is.null FILTER IS PART OF THE ANSWER when this changes
-  // nothing. The row is found by findPlaceholderRow, which selects on the same
-  // condition, so a zero here means the row stopped being a placeholder
-  // between the two calls. The log line says rows=0 and the row id, which is
-  // enough to check that without a rerun.
-  const w = await writeSubscribers({
-    what: 'placeholder-supersede', method: 'PATCH', rowId: placeholderId,
-    filter: 'id=eq.' + encodeURIComponent(placeholderId) + '&report_token=is.null',
-    body: {
-      // Filled in now. Deliberately NOT amount_paid, plan_type or
-      // subscribed_at: the order already recorded those and restating them
-      // would be inventing a second sale.
-      first_name:      subscriber.firstName || null,
-      restaurant_name: subscriber.restaurantName || null,
-      location:        subscriber.location || null,
-      website:         subscriber.website || null,
-      report_token:    subscriber.reportToken,
-      baseline_report: report || null,
-      baseline_score:  (report && report.healthCheckScore) || 0,
-      reports_sent:    1,
-      notes:           'RECOVERED: delivered by the recovery link after an unmatched purchase.',
-    },
-  });
-  if (w.rows !== 1) {
-    await alertSubscribersUpdateFailed({ what: 'the placeholder supersede', orderId: placeholderId, status: w.status, rows: w.rows });
-    return false;
-  }
-  return true;
-}
-
-// Remove the row createCustomer inserted during recovery, once its contents
-// have been folded into the placeholder.
-//
-// EXCLUDING THE PLACEHOLDER BY ID IS LOAD-BEARING. supersedePlaceholderRow has
-// just written this same token onto the placeholder, so a delete matching only
-// on the token matches BOTH rows and removes the one we just built. The A7d
-// run found exactly that: the flow ended with zero subscriber rows for a paid,
-// delivered order. id=neq is what makes this delete hit one row.
-async function deleteDuplicateSubscriberRow({ reportToken, keepId }) {
-  const url = process.env.SUPABASE_URL;
-  const dbKey = process.env.SUPABASE_KEY;
-  if (!url || !dbKey || !reportToken) return false;
-  // v8.11.41: THIS USED TO SEND Prefer: return=minimal AND THEN CLAIM SUCCESS.
-  // "duplicate row removed, one sale one row" was logged whenever the request
-  // returned 2xx, including when it deleted nothing, which is the same silence
-  // the swap note had. It now counts the rows it actually removed.
-  const w = await writeSubscribers({
-    what: 'duplicate-delete', method: 'DELETE', rowId: keepId ? 'keep:' + keepId : null,
-    filter: 'report_token=eq.' + encodeURIComponent(reportToken)
-      + (keepId ? '&id=neq.' + encodeURIComponent(keepId) : ''),
-  });
-  return w.ok && w.rows >= 1;
-}
+// They are gone rather than left unused. A write that cannot run reads as
+// coverage, which is the same argument that deleted SVP's dead
+// refused-identity branch.
 
 // ── recordUnmatchedSale (v8.11.14) [B4] ─────────────────────────────────────
 //
@@ -5161,7 +5075,8 @@ ${done ? '' : `<form method="POST" action="/recover">
 // Callers: the payment webhook, and POST /recover.
 async function deliverPaidReport({ destEmail, firstName, restaurant, location,
                                    report, survey, product, planType, amountPaid,
-                                   source, alsoTo, surveySavedAt, otherWaitingCount, swapUrl }) {
+                                   source, alsoTo, surveySavedAt, otherWaitingCount, swapUrl,
+                                   targetRowId, noteText }) {
 
   // v8.11.49: THE ORDER IDENTITY IS BOUND HERE, AT MINT TIME.
   //
@@ -5170,7 +5085,20 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
   // the row and the use agree without translation. Null when there is no link.
   const orderKey = orderKeyForDelivery({ swapUrl, payingEmail: destEmail });
 
-  const subscriber = await createCustomer({
+  // v8.11.51 [B1.2]: THE ROW IS WRITTEN ONCE, AND THE EMAIL WAITS FOR IT.
+  //
+  // This was createCustomer, which INSERTED on every path. On a swap or a
+  // recovery that second row held the new report token, and the bookkeeping
+  // that followed tried to write the same token onto the order row and was
+  // refused by the unique guard. Both rows survived, every time.
+  //
+  // writeOrderRow PATCHES when a target row is known and inserts only for a
+  // genuine first sale, so no second row ever holds the token.
+  //
+  // AND NOTHING BELOW RUNS UNLESS IT LANDED. The email is the irreversible
+  // step: once it is sent the customer has a link, and a link to a report
+  // whose row did not save is worse than a failure they can retry.
+  const written = await writeOrderRow({
     email: destEmail,
     firstName: firstName,
     restaurantName: restaurant,
@@ -5180,8 +5108,16 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
     survey,
     planType,
     amountPaid,
-    orderKey
+    orderKey,
+    targetRowId,
+    noteText,
   });
+  if (!written.ok) {
+    console.log('[deliver] REFUSED: the order row did not save, reason=' + written.reason
+      + ' source=' + source + ' addr=' + addrLabel(destEmail));
+    return { delivered: false, rowFailed: true, reason: written.reason };
+  }
+  const subscriber = written.subscriber;
 
   const supaShaped = {
     email:           subscriber.email,
@@ -5878,12 +5814,38 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
     }
   }
 
+  // v8.11.51 [B1.2]: THE ROW THIS DELIVERY WRITES INTO, chosen before the
+  // delivery rather than patched up afterwards.
+  //
+  //   a swap      the ORDER row, which already carries a report token
+  //   a recovery  the PLACEHOLDER row this order wrote at purchase
+  //   neither     no target, and deliverPaidReport inserts
+  //
+  // findPlaceholderRow filters on report_token IS NULL, so it cannot return a
+  // delivered order, which is why the swap branch is asked first.
+  let targetRowId = null;
+  let noteText = null;
+  if (elig.mode === 'swap' && orderRow && orderRow.id) {
+    targetRowId = orderRow.id;
+    noteText = SWAP_NOTE_PREFIX + ' delivered ' + String(restaurant || 'a different survey')
+      + ' in place of the original, by the swap link, on ' + new Date().toISOString() + '.';
+  } else {
+    const ph = await findPlaceholderRow({ payingEmail });
+    if (ph && ph.id) {
+      targetRowId = ph.id;
+      noteText = 'RECOVERED: delivered by the recovery link after an unmatched purchase.';
+    }
+  }
+  console.log('ORDER_ROW [sale] target=' + (targetRowId ? targetRowId : 'none, will insert')
+    + ' mode=' + elig.mode);
+
   const delivered = await deliverPaidReport({
     destEmail: payingEmail,
     firstName: survey.contactName || survey.firstName || '',
     restaurant, location: survey.location || '',
     report, survey, product, planType, amountPaid,
     source: 'recovery', alsoTo: typed,
+    targetRowId, noteText,
     // v8.11.30: recovery delivers a named survey too, and the buyer who has
     // just had to go and find it is the one who most needs to be told which
     // one arrived. otherWaitingCount is deliberately 0 here: the count is
@@ -5931,14 +5893,11 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   // is the survivor: recovery fills in the placeholder this order wrote, and a
   // swap overwrites the row that already carries the wrong report. Either way
   // the row createCustomer just inserted is removed.
+  // v8.11.51 [B1.3]: THE BOOKKEEPING IS GONE BECAUSE THERE IS NOTHING LEFT TO
+  // TIDY. writeOrderRow patched the order row with the new report, the token
+  // and the SWAPPED note BEFORE the email went out, and inserted nothing, so
+  // there is no duplicate to remove and no note to write afterwards.
   if (elig.mode === 'swap' && orderRow && orderRow.id && delivered.subscriber) {
-    const swapped = await recordSwapOnOrderRow({
-      orderId: orderRow.id, subscriber: delivered.subscriber, report,
-      restaurantName: restaurant,
-    });
-    if (swapped) await deleteDuplicateSubscriberRow({
-      reportToken: delivered.subscriber.reportToken, keepId: orderRow.id,
-    });
     await alertSwapUsed({ payingEmail, surveyEmail: typed, restaurantName: restaurant, product });
     RECOVERY_ATTEMPTS.delete(payingEmail);
     return res.status(200).send(renderRecoveryPage({ token, done: true, mode: pageMode, restaurant: pageRestaurant,
@@ -5967,20 +5926,11 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
       + ' deliveredSubscriber=' + (delivered && delivered.subscriber ? 'yes' : 'no'));
   }
 
-  // A4: one sale, one row. The placeholder this order already wrote is filled
-  // in, and the row createCustomer just inserted is removed, so the amount is
-  // recorded once at the moment it was taken.
-  const placeholder = await findPlaceholderRow({ payingEmail });
-  if (placeholder && delivered.subscriber) {
-    const ok = await supersedePlaceholderRow({
-      placeholderId: placeholder.id, subscriber: delivered.subscriber, report,
-    });
-    if (ok) await deleteDuplicateSubscriberRow({
-      reportToken: delivered.subscriber.reportToken, keepId: placeholder.id,
-    });
-  } else {
-    console.log('PLACEHOLDER [sale] none found for this order; the delivered row stands alone');
-  }
+  // v8.11.51 [B1.3]: A4 IS SATISFIED EARLIER NOW. The placeholder was chosen
+  // as the target BEFORE the delivery and patched by writeOrderRow, so the
+  // amount is still recorded once, at the moment it was taken, and nothing is
+  // inserted that then has to be removed. The lookup that used to happen here
+  // now happens above, where its answer can still change what is written.
 
   // A2: the measurement. The buyer has just told us which survey was theirs,
   // so this is the only moment at which inference can be marked right or
@@ -7666,9 +7616,6 @@ export const __test__ = {
   benchmarkSkipReason,
   createCustomer,
   findOrderRow,
-  recordSwapOnOrderRow,
-  supersedePlaceholderRow,
-  deleteDuplicateSubscriberRow,
   writeSubscribers,
   VERSION,
 };

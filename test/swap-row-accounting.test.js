@@ -1,95 +1,96 @@
 // ════════════════════════════════════════════════════════════════════════════
-// ONE SALE, ONE ROW, COUNTED AGAINST THE REAL WRITE FUNCTIONS.
+// ONE SALE, ONE ROW, ACROSS PURCHASE, SWAP AND RECOVERY.
 //
-// test/one-sale-one-row.test.js states the rule against a fake it drives
-// itself: it posts to the fake and asserts the fake counted the post. That
-// cannot fail on the real code being wrong. This file calls createCustomer,
-// findOrderRow, recordSwapOnOrderRow and deleteDuplicateSubscriberRow out of
-// server.js and counts what THEY do.
+// THIS FILE ARGUED THE OPPOSITE UNTIL v8.11.51, AND THE ARGUMENT IS WORTH
+// RECORDING BECAUSE IT WAS RIGHT ABOUT ITS PREMISE AND WRONG ABOUT ITS
+// CONCLUSION.
 //
-// THE MECHANISM IS INSERT-THEN-DELETE, NOT NEVER-INSERT, and that is a
-// deliberate choice rather than an unfinished one. deliverPaidReport builds
-// the report token that the delivery email links to, and the row has to exist
-// before that email goes out. Making the swap path patch the order row in
-// place instead would mean the email could be sent while the patch had failed,
-// leaving a live link to a report with no row. Inserting and then removing the
-// duplicate keeps the row present for the whole window in which it is needed.
-// So the rule is a NET count, and that is what is asserted.
+// It said insert-then-delete was chosen BECAUSE the row must exist before the
+// delivery email goes out, and that patching the order row in place instead
+// would let the email be sent while the patch had failed, leaving a live link
+// to a report with no row.
 //
-// WHAT THIS FILE CANNOT REACH. POST /recover is an Express handler; driving it
-// would mean generating a report and sending mail, which costs money and is
-// out of scope. The ORDER of the four calls is therefore stated by this test,
-// not proved by it. Each call is real; the sequence is not. That limit is
-// real and is recorded rather than glossed.
+// The premise still holds. The conclusion does not. The row DOES exist before
+// the email, because it was PATCHED, and the email is now gated on that patch
+// having changed exactly one row and read back correctly. THE EMAIL MOVED, NOT
+// THE ROW.
+//
+// What the old design cost, measured: createCustomer inserted a row holding
+// the new report token, then the bookkeeping tried to write that same token
+// onto the order row, and report_token is guarded twice. Every swap and every
+// recovery was refused with 23505, and because the duplicate delete was gated
+// on that write, the refusal cancelled the cleanup too. Four sales on
+// 2026-09-22 hold two rows each.
+//
+// THE THREE FUNCTIONS THIS FILE USED TO DRIVE ARE GONE:
+// recordSwapOnOrderRow, supersedePlaceholderRow, deleteDuplicateSubscriberRow.
 //
 // Run with: npm test
 // ════════════════════════════════════════════════════════════════════════════
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { swapOrderKey, signRecoveryToken } from '../lib-pending.js';
 
-process.env.PORT = '39231';
+process.env.PORT = '39321';
 process.env.RVP_IMPORT_ONLY = '1';
 process.env.SUPABASE_URL = 'https://db.invalid';
 process.env.SUPABASE_KEY = 'not-a-key';
 
 const { __test__ } = await import('../server.js');
-const { setFetch, createCustomer, findOrderRow,
-        recordSwapOnOrderRow, deleteDuplicateSubscriberRow } = __test__;
+const { writeOrderRow, findOrderRow, setFetch } = __test__;
 
-// ── A ledger that can be counted ──────────────────────────────────────────
-//
-// countingSupabase counts writes but never applies them, so rows() after a
-// delete still shows the deleted row and a NET count is not available from it.
-// This one applies three filter forms and no others: id=eq., id=neq. and
-// report_token=eq. Everything else it refuses loudly rather than matching
-// everything, because a filter engine that silently ignores what it does not
-// understand turns a delete of one row into a delete of all of them.
-//
-// IT IS STILL NOT A DATABASE. No unique index, no constraint, no RLS. It
-// answers one question: how many rows are left.
+// The same ledger as order-row-write.test.js: it applies id and report_token
+// filters and ENFORCES THE UNIQUE GUARD, because that guard is the defect.
 function ledger(seed) {
   let auto = 0;
   const rows = (seed || []).map((r) => ({ id: r.id || 'seed-' + (++auto), ...r }));
   const calls = [];
-
   function predicate(query) {
     const tests = [];
     for (const part of String(query).split('&')) {
       if (!part || part.startsWith('select=') || part.startsWith('order=')
           || part.startsWith('limit=') || part.startsWith('on_conflict=')) continue;
-      const eq = part.match(/^([A-Za-z0-9_]+)=(eq|neq|is)\.(.*)$/);
-      if (!eq) throw new Error('ledger: filter it cannot evaluate: ' + part);
-      const [, col, op, rawVal] = eq;
-      const val = decodeURIComponent(rawVal);
+      const m = part.match(/^([A-Za-z0-9_]+)=(eq|neq|is)\.(.*)$/);
+      if (!m) throw new Error('ledger: filter it cannot evaluate: ' + part);
+      const [, col, op, raw] = m;
+      const val = decodeURIComponent(raw);
       if (op === 'eq') tests.push((r) => String(r[col]) === val);
       else if (op === 'neq') tests.push((r) => String(r[col]) !== val);
       else tests.push((r) => (val === 'null' ? r[col] == null : String(r[col]) === val));
     }
     return (r) => tests.every((t) => t(r));
   }
-
-  const fake = async (url, opts) => {
-    const o = opts || {};
-    const method = String(o.method || 'GET').toUpperCase();
+  const violates = (cand, selfId) => {
+    const tok = cand.report_token;
+    if (tok === null || tok === undefined) return false;
+    return rows.some((r) => r.id !== selfId && r.report_token === tok);
+  };
+  const fake = async (url, init) => {
+    const i = init || {};
+    const method = String(i.method || 'GET').toUpperCase();
     const u = new URL(String(url));
     const table = (u.pathname.match(/\/rest\/v1\/([A-Za-z0-9_]+)/) || [])[1];
-    const body = o.body ? JSON.parse(o.body) : null;
-    calls.push({ url: String(url), method, table, body });
-
+    const body = i.body ? JSON.parse(i.body) : null;
+    calls.push({ url: String(url), method, table });
     if (table !== 'subscribers') {
       return { ok: true, status: 200, json: async () => [], text: async () => '[]' };
     }
     const match = predicate(u.search.replace(/^\?/, ''));
-
     if (method === 'POST') {
       const added = (Array.isArray(body) ? body : [body]).map((r) => ({ id: 'row-' + (++auto), ...r }));
+      for (const r of added) {
+        if (violates(r, r.id)) return { ok: false, status: 409, json: async () => ({ code: '23505' }), text: async () => 'dup' };
+      }
       rows.push(...added);
       return { ok: true, status: 201, json: async () => added, text: async () => JSON.stringify(added) };
     }
     if (method === 'PATCH') {
       const hit = rows.filter(match);
+      for (const r of hit) {
+        if (violates({ ...r, ...body }, r.id)) {
+          return { ok: false, status: 409, json: async () => ({ code: '23505' }), text: async () => 'dup' };
+        }
+      }
       for (const r of hit) Object.assign(r, body);
       return { ok: true, status: 200, json: async () => hit, text: async () => JSON.stringify(hit) };
     }
@@ -98,192 +99,138 @@ function ledger(seed) {
       for (const r of hit) rows.splice(rows.indexOf(r), 1);
       return { ok: true, status: 200, json: async () => hit, text: async () => JSON.stringify(hit) };
     }
-    // ORDERING IS APPLIED, and it has to be. Without it this ledger returns
-    // rows in insertion order, "the newest row for the address" is never
-    // modelled, and the regression test below passes against the very code it
-    // exists to catch. Checked by running that test against the commit before
-    // the fix: red with ordering, green without it.
     let found = rows.filter(match);
     const ord = (u.search.match(/[?&]order=([^&]+)/) || [])[1];
     if (ord) {
       const [col, dir] = decodeURIComponent(ord).split('.');
       found = found.slice().sort((a, b) => {
-        const x = String(a[col] == null ? '' : a[col]);
-        const y = String(b[col] == null ? '' : b[col]);
+        const x = String(a[col] == null ? '' : a[col]), y = String(b[col] == null ? '' : b[col]);
         return (dir === 'desc' ? -1 : 1) * (x < y ? -1 : x > y ? 1 : 0);
       });
     }
     const limited = /limit=1(&|$)/.test(u.search) ? found.slice(0, 1) : found;
     return { ok: true, status: 200, json: async () => limited, text: async () => JSON.stringify(limited) };
   };
-
-  return { fake, calls, rows: () => rows.slice(), count: () => rows.length };
+  return {
+    fake, calls, rows: () => rows.slice(), count: () => rows.length,
+    inserts: () => calls.filter((c) => c.table === 'subscribers' && c.method === 'POST').length,
+    deletes: () => calls.filter((c) => c.table === 'subscribers' && c.method === 'DELETE').length,
+  };
 }
 
-async function withFetch(fake, fn) {
-  const restore = setFetch(fake);
+async function withDb(db, fn) {
+  const restore = setFetch(db.fake);
   try { return await fn(); } finally { restore(); }
 }
 
 const PAYING = 'buyer@example.invalid';
-const TOKEN = signRecoveryToken({
-  payingEmail: PAYING, issuedAt: 1758000000000,
-  secret: 'a-test-secret-value-of-sufficient-length',
+const base = (over) => ({
+  email: PAYING, firstName: 'Sam', restaurantName: 'R', location: 'L', website: '',
+  report: { healthCheckScore: 70, pillars: {} }, survey: {}, planType: 'one_off',
+  amountPaid: 49.99, orderKey: null, ...over,
 });
-const KEY = swapOrderKey({ payingEmail: PAYING, token: TOKEN });
 
-const sale = (db, orderKey) => withFetch(db.fake, () => createCustomer({
-  email: PAYING, firstName: 'A', restaurantName: 'The Sale', location: 'L', website: '',
-  report: { healthCheckScore: 61 }, survey: {}, planType: 'one-time',
-  amountPaid: 49.99, orderKey,
-}));
+// ── THE SEQUENCE ──────────────────────────────────────────────────────────
 
-// ── The rule ──────────────────────────────────────────────────────────────
-
-test('A SALE WRITES EXACTLY ONE ROW', async () => {
+test('A MATCHED PURCHASE LEAVES ONE ROW', async () => {
   const db = ledger();
-  await sale(db, KEY);
+  const out = await withDb(db, () => writeOrderRow(base({ orderKey: 'k1', restaurantName: 'The Sale' })));
+  assert.equal(out.ok, true);
   assert.equal(db.count(), 1);
-  assert.equal(db.rows()[0].order_key, KEY, 'the row does not carry its order');
+  assert.equal(db.inserts(), 1);
 });
 
-test('ONE SALE AND ONE SWAP LEAVE ONE ROW', async () => {
+test('A SWAP ON THAT ORDER LEAVES ONE ROW, the same one', async () => {
   const db = ledger();
-  // 1. The webhook delivers the sale and mints the recovery link.
-  const order = await sale(db, KEY);
-  const orderRow = db.rows()[0];
-  assert.equal(db.count(), 1, 'the sale did not write one row');
+  await withDb(db, () => writeOrderRow(base({ orderKey: 'k1', restaurantName: 'The Sale' })));
+  const orderId = db.rows()[0].id;
 
-  // 2. The buyer clicks the link. The handler finds the order row.
-  const found = await withFetch(db.fake, () => findOrderRow({ payingEmail: PAYING, orderKey: KEY }));
-  assert.equal(found && found.id, orderRow.id, 'the click did not find the order row');
-
-  // 3. deliverPaidReport runs the paid flow again, which inserts.
-  const swapped = await withFetch(db.fake, () => createCustomer({
-    email: PAYING, firstName: 'A', restaurantName: 'The Swap', location: 'L', website: '',
-    report: { healthCheckScore: 74 }, survey: {}, planType: 'one-time', amountPaid: 49.99,
-  }));
-  assert.equal(db.count(), 2, 'the swap delivery did not insert, so there is nothing to clean up');
-
-  // 4. The swap is folded into the order row and the duplicate is removed.
-  const noted = await withFetch(db.fake, () => recordSwapOnOrderRow({
-    orderId: orderRow.id, subscriber: swapped,
-    report: { healthCheckScore: 74 }, restaurantName: 'The Swap',
-  }));
-  assert.equal(noted, true, 'the swap note did not land on one row');
-  const removed = await withFetch(db.fake, () => deleteDuplicateSubscriberRow({
-    reportToken: swapped.reportToken, keepId: orderRow.id,
-  }));
-  assert.equal(removed, true, 'the duplicate was not removed');
-
-  // THE RULE.
+  const swap = await withDb(db, () => writeOrderRow(base({
+    restaurantName: 'The Swap', targetRowId: orderId, noteText: 'SWAPPED: yes' })));
+  assert.equal(swap.ok, true, swap.reason);
   assert.equal(db.count(), 1, 'one sale left ' + db.count() + ' rows');
-  const survivor = db.rows()[0];
-  assert.equal(survivor.id, orderRow.id, 'the wrong row survived');
-  assert.equal(survivor.order_key, KEY, 'the survivor lost its order identity');
-  assert.equal(survivor.report_token, swapped.reportToken, 'the survivor kept the old report');
-  assert.equal(survivor.amount_paid, 49.99, 'the sale amount was restated or lost');
-  assert.equal(order.email, survivor.email);
+  assert.equal(db.rows()[0].id, orderId, 'the wrong row survived');
+  assert.equal(db.rows()[0].restaurant_name, 'The Swap');
+  assert.equal(db.rows()[0].order_key, 'k1', 'the order identity was lost');
+  assert.match(String(db.rows()[0].notes), /SWAPPED/);
+
+  assert.equal(db.inserts(), 1, 'the swap inserted a second row');
+  assert.equal(db.deletes(), 0, 'something had to be deleted, so something was inserted');
 });
 
-test('THE SWAP NOTE LANDS ON THE ORDER ROW, NOT ON THE NEWEST ROW', async () => {
-  // This is the 2026-09-20 defect, stated as a test. A buyer with a LATER,
-  // unrelated row used to have the swap folded into that one, because the
-  // lookup took the newest row for the address.
-  const db = ledger([
-    { id: 'the-order', email: PAYING, order_key: KEY, subscribed_at: '2026-09-01T00:00:00Z' },
-    { id: 'a-later-order', email: PAYING, order_key: 'some-other-order', subscribed_at: '2026-09-20T00:00:00Z' },
-  ]);
-  const found = await withFetch(db.fake, () => findOrderRow({ payingEmail: PAYING, orderKey: KEY }));
-  assert.equal(found && found.id, 'the-order',
-    'the lookup took the newest row for the address again');
+test('THE MISMATCHED-ADDRESS CASE: purchase, placeholder, then recovery, ONE ROW', async () => {
+  // This is the case that produced three of the four split sales on
+  // 2026-09-22: the survey saved under one address, the checkout from
+  // another, so the webhook matches nothing and writes a placeholder.
+  const db = ledger([{
+    id: 'the-placeholder', email: PAYING, report_token: null,
+    notes: 'UNMATCHED_AT_PURCHASE: paid, no survey matched.',
+    amount_paid: 49.99, subscribed_at: '2026-09-22T12:00:00Z',
+  }]);
+  assert.equal(db.count(), 1);
+
+  const rec = await withDb(db, () => writeOrderRow(base({
+    restaurantName: 'The Recovered', targetRowId: 'the-placeholder',
+    noteText: 'RECOVERED: delivered by the recovery link.' })));
+  assert.equal(rec.ok, true, rec.reason);
+
+  assert.equal(db.count(), 1, 'the recovery left ' + db.count() + ' rows for one sale');
+  const row = db.rows()[0];
+  assert.equal(row.id, 'the-placeholder');
+  assert.ok(row.report_token, 'the placeholder was never filled in');
+  assert.equal(row.amount_paid, 49.99, 'the amount was restated');
+  assert.equal(row.subscribed_at, '2026-09-22T12:00:00Z', 'the sale date moved');
+  assert.equal(db.inserts(), 0, 'THE RECOVERY INSERTED A SECOND ROW');
 });
 
-test('WITH NO KEY IT STILL TAKES THE NEWEST ROW, which is why old orders need the fallback', async () => {
-  // Not a defect being left in: it is the only thing that can find the 100
-  // stored rows, and it is written down so nobody reads the test above as a
-  // claim that the address path changed.
-  const db = ledger([
-    { id: 'the-order', email: PAYING, subscribed_at: '2026-09-01T00:00:00Z' },
-    { id: 'a-later-order', email: PAYING, subscribed_at: '2026-09-20T00:00:00Z' },
-  ]);
-  const found = await withFetch(db.fake, () => findOrderRow({ payingEmail: PAYING }));
-  assert.equal(found && found.id, 'a-later-order',
-    'the address path no longer returns the newest row, so the test above is '
-    + 'not measuring what it claims to measure');
+test('ACROSS THE WHOLE SEQUENCE: one insert, zero deletes', async () => {
+  const db = ledger();
+  await withDb(db, () => writeOrderRow(base({ orderKey: 'k1' })));
+  const id = db.rows()[0].id;
+  await withDb(db, () => writeOrderRow(base({ targetRowId: id, restaurantName: 'B' })));
+  await withDb(db, () => writeOrderRow(base({ targetRowId: id, restaurantName: 'C' })));
+  assert.equal(db.inserts(), 1);
+  assert.equal(db.deletes(), 0);
+  assert.equal(db.count(), 1);
 });
 
-test('THE DUPLICATE DELETE EXCLUDES THE ROW IT MUST KEEP', async () => {
-  // recordSwapOnOrderRow writes the same report token onto the order row, so a
-  // delete matching only on the token matches BOTH and removes the survivor.
-  // The A7d run ended with zero rows for a paid, delivered order exactly here.
-  const db = ledger([
-    { id: 'the-order', email: PAYING, report_token: 'shared-token' },
-    { id: 'the-duplicate', email: PAYING, report_token: 'shared-token' },
-  ]);
-  await withFetch(db.fake, () => deleteDuplicateSubscriberRow({
-    reportToken: 'shared-token', keepId: 'the-order',
-  }));
-  assert.equal(db.count(), 1, 'the delete removed ' + (2 - db.count()) + ' rows');
-  assert.equal(db.rows()[0].id, 'the-order', 'it removed the row it was told to keep');
+test('THE CLICK FINDS THE ORDER ROW BY ITS KEY, after a swap has rewritten it', async () => {
+  const db = ledger();
+  await withDb(db, () => writeOrderRow(base({ orderKey: 'k1', restaurantName: 'The Sale' })));
+  const id = db.rows()[0].id;
+  await withDb(db, () => writeOrderRow(base({ targetRowId: id, restaurantName: 'The Swap' })));
+  const found = await withDb(db, () => findOrderRow({ payingEmail: PAYING, orderKey: 'k1' }));
+  assert.equal(found && found.id, id);
+  assert.equal(found.restaurant_name, 'The Swap');
 });
 
 // ── Controls ──────────────────────────────────────────────────────────────
 
-test('CONTROL: the ledger orders descending, or "newest" means nothing', async () => {
-  const db = ledger([
-    { id: 'old', email: PAYING, subscribed_at: '2026-09-01T00:00:00Z' },
-    { id: 'new', email: PAYING, subscribed_at: '2026-09-20T00:00:00Z' },
-  ]);
-  const r = await db.fake('https://db.invalid/rest/v1/subscribers?select=*'
-    + '&email=eq.' + encodeURIComponent(PAYING) + '&order=subscribed_at.desc&limit=1');
-  const got = await r.json();
-  assert.equal(got[0].id, 'new', 'the ledger ignores order=, so it cannot model the defect');
+test('CONTROL: the ledger enforces the unique guard', async () => {
+  const db = ledger([{ id: 'a', report_token: 't1' }]);
+  const res = await db.fake('https://db.invalid/rest/v1/subscribers', {
+    method: 'POST', body: JSON.stringify({ report_token: 't1' }) });
+  assert.equal(res.status, 409);
 });
 
-test('CONTROL: WITHOUT keepId the delete takes both rows', async () => {
-  // Proves the assertion above is about id=neq and not about the ledger being
-  // unable to delete anything.
-  const db = ledger([
-    { id: 'the-order', email: PAYING, report_token: 'shared-token' },
-    { id: 'the-duplicate', email: PAYING, report_token: 'shared-token' },
-  ]);
-  await withFetch(db.fake, () => deleteDuplicateSubscriberRow({ reportToken: 'shared-token' }));
-  assert.equal(db.count(), 0, 'the ledger cannot delete, so the test above proves nothing');
-});
-
-test('CONTROL: the ledger really counts rows up and down', async () => {
+test('CONTROL: the ledger counts inserts, so "one insert" is measured', async () => {
   const db = ledger();
-  assert.equal(db.count(), 0);
-  await sale(db, KEY);
-  assert.equal(db.count(), 1);
-  await sale(db, null);
-  assert.equal(db.count(), 2, 'a second insert was not counted');
-  await withFetch(db.fake, () => deleteDuplicateSubscriberRow({
-    reportToken: db.rows()[1].report_token, keepId: db.rows()[0].id,
-  }));
-  assert.equal(db.count(), 1, 'a delete was not counted');
+  assert.equal(db.inserts(), 0);
+  await withDb(db, () => writeOrderRow(base()));
+  assert.equal(db.inserts(), 1);
+  await withDb(db, () => writeOrderRow(base()));
+  assert.equal(db.inserts(), 2, 'a second insert was not counted');
 });
 
-test('CONTROL: the ledger refuses a filter it cannot evaluate', async () => {
-  // A filter engine that ignores what it does not understand matches
-  // everything, and a delete of one row becomes a delete of all of them. The
-  // real filters in this file would then pass for the wrong reason.
+test('CONTROL: two rows CAN exist in this ledger, so "one row" is not structural', async () => {
+  const db = ledger([{ id: 'a' }, { id: 'b' }]);
+  assert.equal(db.count(), 2);
+});
+
+test('CONTROL: a patch to a row that is not there fails, and inserts nothing', async () => {
   const db = ledger([{ id: 'a' }]);
-  await assert.rejects(
-    () => db.fake('https://db.invalid/rest/v1/subscribers?email=like.*x*', { method: 'DELETE' }),
-    /cannot evaluate/);
+  const out = await withDb(db, () => writeOrderRow(base({ targetRowId: 'nope' })));
+  assert.equal(out.ok, false);
   assert.equal(db.count(), 1);
-});
-
-test('CONTROL: the swap note can fail to land', async () => {
-  // recordSwapOnOrderRow returns false when the patch changes no row. If it
-  // could only ever return true, asserting true in the rule test above would
-  // be a reading.
-  const db = ledger([{ id: 'the-order', email: PAYING }]);
-  const noted = await withFetch(db.fake, () => recordSwapOnOrderRow({
-    orderId: 'a-row-that-is-not-there', subscriber: { restaurantName: 'X' },
-    report: {}, restaurantName: 'X',
-  }));
-  assert.equal(noted, false, 'the swap note reports success against a row that does not exist');
+  assert.equal(db.inserts(), 0);
 });

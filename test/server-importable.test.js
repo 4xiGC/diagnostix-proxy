@@ -82,8 +82,11 @@ test('the seam is exported', () => {
 });
 
 test('every function the subscriber rules need is on the seam', () => {
-  const needed = ['setFetch', 'createCustomer', 'findOrderRow', 'recordSwapOnOrderRow',
-    'supersedePlaceholderRow', 'deleteDuplicateSubscriberRow', 'writeSubscribers'];
+  // v8.11.51: recordSwapOnOrderRow, supersedePlaceholderRow and
+  // deleteDuplicateSubscriberRow were DELETED. All three existed to repair a
+  // duplicate row that createCustomer had just inserted, and writeOrderRow
+  // removes the duplicate rather than repairing it.
+  const needed = ['setFetch', 'writeOrderRow', 'findOrderRow', 'writeSubscribers'];
   for (const name of needed) {
     assert.equal(typeof mod.__test__[name], 'function', name + ' is not on the seam');
   }
