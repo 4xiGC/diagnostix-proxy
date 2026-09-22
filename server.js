@@ -7287,4 +7287,42 @@ table{width:100%;border-collapse:collapse}
 // END EVP ASSESSMENT MODULE
 // ═══════════════════════════════════════════════════════════════════
 
-app.listen(PORT, () => console.log(`DiagnostiX v${VERSION} + EVP v1.0 on port ${PORT}`));
+// ── v8.11.49: THE MODULE CAN BE IMPORTED WITHOUT BEING STARTED ─────────────
+//
+// WHY. Every subscriber write in this service lives in a function in this
+// file, and until now no test could reach any of them: importing server.js
+// bound port 3000, so the only tests that existed were written against a
+// re-implementation of the rule rather than against the rule. A test that
+// restates the code it is testing cannot fail on the code being wrong, and an
+// overnight run left a stray listener on port 3000 for eleven hours proving
+// exactly how this gets exercised by accident.
+//
+// THE GUARD IS OPT-OUT, NOT AUTO-DETECTED. An argv[1] check would be tidier
+// and would silently stop serving if Railway ever started this file by any
+// route other than `node server.js`. Production sets nothing and listens
+// exactly as before; only a test sets RVP_IMPORT_ONLY.
+if (process.env.RVP_IMPORT_ONLY === '1') {
+  console.log(`DiagnostiX v${VERSION} imported without listening (RVP_IMPORT_ONLY)`);
+} else {
+  app.listen(PORT, () => console.log(`DiagnostiX v${VERSION} + EVP v1.0 on port ${PORT}`));
+}
+
+// ── THE TEST SEAM ──────────────────────────────────────────────────────────
+//
+// Exported for tests only. Nothing in this service imports server.js, so
+// these exports add no production code path; they make the subscriber write
+// functions reachable so a test can count what they really do.
+//
+// They take no injected client: each one reads SUPABASE_URL and SUPABASE_KEY
+// from the environment and calls global fetch, so a test points the env at an
+// unroutable host and replaces globalThis.fetch. That keeps the seam at the
+// boundary the code already has instead of adding a parameter for the test.
+export const __test__ = {
+  createCustomer,
+  findOrderRow,
+  recordSwapOnOrderRow,
+  supersedePlaceholderRow,
+  deleteDuplicateSubscriberRow,
+  writeSubscribers,
+  VERSION,
+};
