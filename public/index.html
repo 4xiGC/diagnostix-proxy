@@ -256,6 +256,13 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   .owner-grid{grid-template-columns:repeat(2,1fr)}
 }
 </style>
+<script type="module">
+  // The one copy of the scoring rule, served by this app from lib-score.js.
+  // A module script is deferred, so this has run long before any render can
+  // be triggered by a click.
+  import * as S from '/lib-score.js';
+  window.RVPScore = S;
+</script>
 </head>
 <body>
 <div class="shell">
@@ -687,7 +694,8 @@ async function runHealthCheck() {
   try {
     reportData = await callProxy(data);
     // Validate the response has the fields we need
-    if (!reportData || !reportData.healthCheckScore) {
+    // The pillars are what the page needs now, not the typed total.
+    if (!reportData || !reportData.pillars) {
       throw new Error('Invalid response from server — missing healthCheckScore');
     }
   } catch(e) {
@@ -797,7 +805,7 @@ function buildProgressSection(r, d) {
     + '</div>'
     + '<div style="text-align:center;min-width:80px">'
     + '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:#999;margin-bottom:4px">Current</div>'
-    + '<div style="font-size:2rem;font-weight:700;color:' + overallCol + '">' + (r.healthCheckScore || 0) + '</div>'
+    + '<div style="font-size:2rem;font-weight:700;color:' + overallCol + '">' + scoreOf(r).text + '</div>'
     + '</div></div>'
     + (p.progressNarrative ? '<div style="font-size:13px;color:#555;line-height:1.6;font-style:italic">' + p.progressNarrative + '</div>' : '')
     + '</div>'
@@ -831,8 +839,12 @@ function trackSubmission(d, r) {
       location: d.location,
       email: d.email || '',
       contact_name: d.contactName || '',
-      health_check_score: r.healthCheckScore,
-      score_verdict: r.scoreVerdict,
+      // The computed values, and the method that produced them, so a row in
+      // the analytics store can be told apart from a model-typed one exactly
+      // as benchmarks.method_version does.
+      health_check_score: scoreOf(r).ok ? scoreOf(r).score : null,
+      score_verdict: scoreOf(r).verdict || null,
+      score_method: (window.RVPScore && window.RVPScore.OVERALL_METHOD_VERSION) || null,
       cuisine: r.cuisineDetected || '',
       price_tier: r.priceDetected || '',
       online_presence_overall: r.onlinePresence && r.onlinePresence.overall ? r.onlinePresence.overall : 0,
@@ -884,6 +896,29 @@ async function callProxy(d) {
 }
 
 // ── HELPERS ───────────────────────────────────────────────────
+// v8.11.50: THE COMPUTED SCORE, FROM THE SHARED LIBRARY.
+//
+// Everything below used r.healthCheckScore and r.scoreVerdict, the model's own
+// fields, which run about 7 points above the mean of the six pillars. The
+// report now computes; so does this page, with the same code.
+//
+// IT THROWS IF THE LIBRARY IS MISSING. A fallback to the typed score is
+// exactly the silent wrong answer this change removes, and a page that fails
+// loudly in the browser console is better than one that quietly disagrees
+// with the report it is selling.
+function scoreOf(r) {
+  if (!window.RVPScore || !window.RVPScore.computeOverall) {
+    throw new Error('lib-score.js did not load; refusing to show a score');
+  }
+  var res = window.RVPScore.computeOverall(r && r.pillars);
+  return {
+    ok: res.ok,
+    score: res.score,
+    text: res.ok ? String(res.score) : '',
+    verdict: res.ok ? (window.RVPScore.verdictFor(res.score) || '') : '',
+  };
+}
+
 function sc(v){ return v>=65?'g':v>=45?'w':'r'; }
 function stColor(s){ return s==='good'||s==='g' ? '#2E7D52' : s==='warn'||s==='w' ? '#C17D11' : '#C0392B'; }
 function sentColor(v){ return v>=7?'#2E7D52':v>=4?'#C17D11':'#C0392B'; }
@@ -906,7 +941,8 @@ function dialSVG(score, verdict) {
 // ── RENDER REPORT ─────────────────────────────────────────────
 function renderReport(r, d) {
   var date = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
-  var overallCol = r.healthCheckScore>=65?'#2E7D52':r.healthCheckScore>=45?'#C17D11':'#C0392B';
+  var SC = scoreOf(r);
+  var overallCol = !SC.ok ? '#6b7280' : SC.score>=65?'#2E7D52':SC.score>=45?'#C17D11':'#C0392B';
   var metaCuisine = (r.cuisineDetected&&r.cuisineDetected!=='Not yet determined') ? '<span class="rpt-m">Cuisine: <b>'+r.cuisineDetected+'</b></span>' : '';
   var metaPrice   = (r.priceDetected  &&r.priceDetected  !=='Not yet determined') ? '<span class="rpt-m">Price: <b>'  +r.priceDetected  +'</b></span>' : '';
 
@@ -923,7 +959,7 @@ function renderReport(r, d) {
           +'<span class="rpt-m">Date: <b>'+date+'</b></span>'
         +'</div>'
       +'</div>'
-      +'<div class="dial-wrap">'+dialSVG(r.healthCheckScore, r.scoreVerdict)
+      +'<div class="dial-wrap">'+dialSVG(SC.score, SC.verdict)
         +'<div class="dial-lbl">HealthCheck Score / 100</div>'
       +'</div></div>'
       +'<div class="gold-line"></div>'
@@ -933,10 +969,17 @@ function renderReport(r, d) {
   // Show enough to intrigue, withhold enough to compel purchase
 
   // Score band messaging
-  var scoreBand = r.healthCheckScore >= 75 ? {
-    headline: 'Your restaurant is performing well — but there are hidden gaps costing you.',
-    sub: 'Restaurants at your score level typically leave 15–30% revenue on the table from addressable issues.'
-  } : r.healthCheckScore >= 55 ? {
+  // v8.11.50: KEYED ON THE LIBRARY'S VERDICT, not on a third set of cutoffs.
+  //
+  // This carried its own 75 / 55 table, and buildFallback carried a 75/60/45
+  // one, so a visitor could be told "performing well" by this page and Fair by
+  // the report they bought ten seconds later. There is one table now and it
+  // lives in lib-score.js. The dashes went with it: house style is absolute
+  // and these two sentences had been breaking it in customer-facing copy.
+  var scoreBand = (SC.verdict === 'Excellent') ? {
+    headline: 'Your restaurant is performing well, and there are still hidden gaps costing you.',
+    sub: 'Restaurants at your score level typically leave 15 to 30% revenue on the table from addressable issues.'
+  } : (SC.verdict === 'Good') ? {
     headline: 'Your restaurant has real strengths — and significant risks that need urgent attention.',
     sub: 'Our analysis found specific issues that, if unaddressed, will compound over the next 12 months.'
   } : {
@@ -975,9 +1018,9 @@ function renderReport(r, d) {
     '<div style="background:var(--navy);color:#fff;padding:1.8rem;border-radius:10px;margin-bottom:1.2rem">'
       +'<div style="font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:rgba(201,168,76,0.7);margin-bottom:10px">DiagnostiX HealthCheck Score</div>'
       +'<div style="display:flex;align-items:flex-end;gap:16px;margin-bottom:12px">'
-        +'<div style="font-family:\'Playfair Display\',serif;font-size:5rem;line-height:1;color:'+overallCol+'">'+r.healthCheckScore+'</div>'
+        +'<div style="font-family:\'Playfair Display\',serif;font-size:5rem;line-height:1;color:'+overallCol+'">'+SC.text+'</div>'
         +'<div style="padding-bottom:8px">'
-          +'<div style="font-size:1rem;font-weight:700;color:#fff;margin-bottom:4px">'+r.scoreVerdict+'</div>'
+          +'<div style="font-size:1rem;font-weight:700;color:#fff;margin-bottom:4px">'+SC.verdict+'</div>'
           +'<div style="font-size:12px;color:rgba(255,255,255,0.45)">out of 100</div>'
         +'</div>'
       +'</div>'
@@ -1272,7 +1315,7 @@ function renderReport(r, d) {
   var fullHTML =
     '<div class="rpt-h">Full HealthCheck Scorecard</div>'+pillarRows
     +'<div class="sc-total"><div class="sc-total-lbl">Overall HealthCheck Score</div>'
-    +'<div class="sc-total-v" style="color:'+overallCol+'">'+r.healthCheckScore+' / 100</div></div>'
+    +'<div class="sc-total-v" style="color:'+overallCol+'">'+SC.text+' / 100</div></div>'
 
     +'<div class="rpt-h">Online Presence &amp; Strength Score</div>'
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
@@ -1413,8 +1456,12 @@ function buildFallback(d) {
   var cs=sc2(sv.perf||5),pa=sc2(sv.price||5),es=sc2(sv.ret||5),sm=sc2(sv.online||5);
   var cp=Math.round((sc2(sv.perf||5)+sc2(sv.book||5))/2);
   var bg=Math.round((sc2(sv.future||5)+sc2(sv.menu||5))/2);
-  var overall=Math.round((cs+pa+es+sm+cp+bg)/6);
-  var v=overall>=75?'Excellent':overall>=60?'Good':overall>=45?'Fair':'Needs Attention';
+  // v8.11.50: the library, not a fourth band table and not Math.round. This
+  // had its own 75/60/45 cutoffs and rounded half away from zero.
+  var _p={cs:{score:cs},pa:{score:pa},es:{score:es},sm:{score:sm},cp:{score:cp},bg:{score:bg}};
+  var _o=window.RVPScore.computeOverall(_p);
+  var overall=_o.score;
+  var v=window.RVPScore.verdictFor(overall) || '';
   return {
     healthCheckScore:overall, scoreVerdict:v,
     cuisineDetected:null, priceDetected:null,

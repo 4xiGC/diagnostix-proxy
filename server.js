@@ -1534,6 +1534,34 @@ app.get('/', (req, res) => {
   }
 });
 
+// v8.11.50: THE BROWSER GETS THE REAL SCORE LIBRARY, NOT A COPY OF IT.
+//
+// public/index.html rendered the typed score in nine places and carried two
+// band tables of its own on top of the prompt's. Fixing that by writing the
+// arithmetic a second time in a browser file is the exact drift this part
+// exists to remove, so the module is served and the page imports it.
+//
+// Read from disk per request, like index.html above, so the two cannot get
+// out of step in a way a restart would hide.
+function serveScoreLib() {
+  return {
+    type: 'text/javascript; charset=utf-8',
+    body: readFileSync(join(__dirname, 'lib-score.js'), 'utf8'),
+  };
+}
+
+app.get('/lib-score.js', (req, res) => {
+  try {
+    const sent = serveScoreLib();
+    res.setHeader('Content-Type', sent.type);
+    res.setHeader('Cache-Control', 'no-cache');
+    res.send(sent.body);
+  } catch (e) {
+    console.log('[score-lib] could not be served: ' + (e && e.message));
+    res.status(500).send('// score library unavailable');
+  }
+});
+
 app.get('/health', (req, res) => {
   // benchmarks is this endpoint's first configuration handle. Without one there
   // is no way to check capture state from outside, and /health is where that
@@ -7454,6 +7482,7 @@ export const __test__ = {
   // Exposed so the ship gate can render a real report page in a real browser
   // rather than asserting on a string this file also builds.
   renderReportHtml,
+  serveScoreLib,
   buildBenchmarkRow,
   benchmarkSkipReason,
   createCustomer,
