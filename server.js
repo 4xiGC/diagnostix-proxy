@@ -1246,6 +1246,17 @@ let claude = async function claudeImpl(prompt, opts) {
   if (!ak) throw new Error('ANTHROPIC_API_KEY missing');
 
   // Single Anthropic call — returns {ok:true,data,stopReason} or {ok:false,...diag}
+    // v8.11.52: THE BILLED TOKENS, WHEN THE CALLER ASKS FOR THEM.
+  //
+  // The regeneration script needs input_tokens and output_tokens to compute a
+  // measured total, and its first version got them by making a DIRECT
+  // Anthropic call instead. That bypass cost it retryOnParseFail, and one of
+  // its two measuring calls came back as unparseable JSON with nothing to
+  // catch it. A caller should not have to choose between the retry and the
+  // measurement.
+  const withUsage = opts.withUsage === true;
+  let lastUsage = null;
+
   async function callOnce(tokenBudget, extraInstruction) {
     const systemPrompt = 'You are a JSON API. Output ONLY valid JSON. No markdown. No backticks. Start with { end with }. CRITICAL: All text values in the JSON must be written in English, regardless of the language of the source data or the restaurant\'s location.'
       + (extraInstruction ? ' ' + extraInstruction : '');
@@ -1298,6 +1309,7 @@ let claude = async function claudeImpl(prompt, opts) {
     }
 
     // Attempt 1: parse full text as-is.
+    lastUsage = usage;
     try { return { ok: true, data: JSON.parse(t), stopReason }; } catch(e) {}
 
     // Attempt 2: slice between first { and last } in case there is leading/
@@ -1319,7 +1331,7 @@ let claude = async function claudeImpl(prompt, opts) {
 
   // Attempt 1: normal budget.
   let result = await callOnce(maxTokens);
-  if (result.ok) return result.data;
+  if (result.ok) return withUsage ? { data: result.data, usage: lastUsage || {}, model } : result.data;
 
   console.log(`[${label}] parse failed on attempt 1 — stop_reason=${result.stopReason}, length=${result.length}ch, truncated=${result.truncated}, preview="${result.preview}"`);
 
@@ -1333,7 +1345,7 @@ let claude = async function claudeImpl(prompt, opts) {
 
   if (result.ok) {
     console.log(`[${label}] retry succeeded`);
-    return result.data;
+    return withUsage ? { data: result.data, usage: lastUsage || {}, model } : result.data;
   }
 
   console.log(`[${label}] retry also failed — stop_reason=${result.stopReason}, length=${result.length}ch, preview="${result.preview}"`);
@@ -1632,6 +1644,11 @@ app.get('/health', (req, res) => {
 //
 // LOSING THREE SENTENCES IS BETTER THAN LOSING THE REPORT, and far better than
 // shipping a cover that says Fair above a paragraph that says strong.
+// THE TARGET IS WHAT THE PROMPT ASKS FOR. THE LIMIT IS WHAT THE GATE ENFORCES.
+// They differ on purpose: see the comment at the gate below.
+const SUMMARY_TARGET_WORDS = 70;
+const SUMMARY_MAX_WORDS = 80;
+
 async function writeExecutiveSummary({ name, location, report, score, band }) {
   if (!band || typeof score !== 'number') {
     return { text: '', reason: 'no-band' };
@@ -1656,18 +1673,43 @@ async function writeExecutiveSummary({ name, location, report, score, band }) {
     '',
     'THE OVERALL SCORE IS ' + score + ' OUT OF 100, AND ITS BAND IS "' + band + '".',
     'That score is the mean of the six pillar scores above. It is a given fact.',
-    'Do not restate it as a number and do not dispute it.',
+    'Do not dispute it.',
+    '',
+    'NEVER WRITE ANY OF THESE NUMBERS IN THE SUMMARY: the overall score, and',
+    'any of the six pillar scores. They are printed beside the summary as',
+    'tiles and a gauge, so repeating them is duplication and a bare pillar',
+    'number beside a different overall number reads as a contradiction.',
+    'An earlier version of this instruction said "do not restate it as a',
+    'number" and produced "earns a Fair rating with a score of 63 out of 100",',
+    'so it is spelled out: the digits ' + score + ' and the six pillar values',
+    'must not appear.',
+    '',
+    'CITE EXTERNAL FACTS ONLY: star ratings, review counts, dates, named',
+    'platforms, prices, opening hours. Those come from outside this report and',
+    'are what a reader cannot already see.',
+    '',
+    'AT MOST ' + SUMMARY_TARGET_WORDS + ' WORDS IN TOTAL.',
     '',
     'Bands: 80 and above Excellent, 65 to 79 Good, 45 to 64 Fair, below 45 Needs Attention.',
     '',
     strengths ? 'STRENGTHS FOUND:\n' + strengths : '',
     risks ? 'RISKS FOUND:\n' + risks : '',
     '',
-    'Write 2 to 3 sentences. Name specific strengths and weaknesses. Do NOT',
-    'characterise the business overall in a word that names a band other than',
-    '"' + band + '". Words such as excellent, strong, solid, fair, mixed, weak and',
-    'poor name bands; use the one that matches, or describe the specific thing',
-    'rather than the business as a whole.',
+    'Write 2 to 3 sentences, in this shape:',
+    '',
+    'ONE overall verdict sentence that states the band in its own word,',
+    '"' + band + '", exactly once. Then sentences describing SPECIFIC strengths',
+    'and specific gaps by name.',
+    '',
+    'IN THOSE SPECIFIC SENTENCES, DO NOT USE ANY OF THESE WORDS: excellent,',
+    'exceptional, outstanding, superb, good, strong, solid, healthy, fair,',
+    'mixed, middling, average, adequate, poor, weak, critical, failing,',
+    'struggling. They all name bands, and a band word attached to one aspect',
+    'reads as a verdict on the business.',
+    '',
+    'Name the thing instead: what the reviews say, what the rating is, what is',
+    'missing. "Rated 4.9 on TripAdvisor" rather than "a strong rating". "No',
+    'organic reviews in twelve months" rather than "weak online presence".',
     '',
     'PUNCTUATION, HARD RULE: never use an em-dash or an en-dash, and never',
     'their HTML entity forms. Use a comma, a colon, parentheses, or a full stop',
@@ -1680,9 +1722,15 @@ async function writeExecutiveSummary({ name, location, report, score, band }) {
     let out;
     try {
       const extra = attempt === 1 ? '' : ('\n\n' + writeExecutiveSummary._lastRetry);
+      // v8.11.52: SONNET, BY OMISSION, WHICH IS THE DEFAULT AT claude().
+      //
+      // This was an explicit Haiku override. The existing summaries were
+      // written by diagnose-p1, which passes no model and therefore takes the
+      // Sonnet default, so Haiku here would have given the corpus two authors:
+      // Sonnet for everything delivered before this release, Haiku for
+      // everything after. ONE MODEL FOR THE CORPUS.
       out = await claude(basePrompt + extra, {
         label: 'diagnose-summary', maxTokens: 700,
-        model: 'claude-haiku-4-5-20251001',
       });
     } catch (e) {
       console.log('[summary] attempt ' + attempt + ' threw: ' + (e && e.message));
@@ -1691,22 +1739,57 @@ async function writeExecutiveSummary({ name, location, report, score, band }) {
     const text = String((out && out.executiveSummary) || '').trim();
     if (!text) { console.log('[summary] attempt ' + attempt + ' returned nothing'); continue; }
 
+    // TWO HARD RULES, AND THE LENGTH ONE IS NOT THE ONE IN THE PROMPT.
+    //
+    // The prompt asks for at most 70. The gate enforces 80. That gap is
+    // deliberate: measured on 2026-09-23, asking for 70 produced 62, 64, 64,
+    // 67, 71, 72, 74, 75, 76 and 79 across ten subjects. The model clusters
+    // just above whatever ceiling it is given, so a gate set AT the asked
+    // number would retry six times in ten for one to nine words.
+    //
+    // 80 IS AN EDITORIAL NUMBER, NOT A LAYOUT ONE, and that is worth saying
+    // where somebody will look for the reason. The box was measured in real
+    // Chrome under print media and holds 338 words on Letter and 366 on A4
+    // before it crosses a page boundary. It has no height and no max-height,
+    // so it never clips. The layout imposes no useful limit; this one is a
+    // judgment about what an executive summary should be.
     const verdict = contradictsBand(text, band);
-    if (!verdict.contradicts) {
-      console.log('[summary] accepted on attempt ' + attempt + ' band=' + band);
-      return { text, reason: 'accepted-attempt-' + attempt };
+    const words = text.split(/\s+/).filter(Boolean).length;
+    const tooLong = words > SUMMARY_MAX_WORDS;
+
+    if (!verdict.contradicts && !tooLong) {
+      console.log('[summary] accepted on attempt ' + attempt + ' band=' + band
+        + ' words=' + words);
+      return { text, reason: 'accepted-attempt-' + attempt, words };
     }
-    console.log('[summary] attempt ' + attempt + ' CONTRADICTS band=' + band
-      + ' words=' + JSON.stringify(verdict.hits.map(h => h.word)));
-    writeExecutiveSummary._lastRetry = retryInstruction(verdict);
+    if (verdict.contradicts) {
+      console.log('[summary] attempt ' + attempt + ' CONTRADICTS band=' + band
+        + ' words=' + JSON.stringify(verdict.hits.map(h => h.word)));
+    }
+    if (tooLong) {
+      console.log('[summary] attempt ' + attempt + ' TOO LONG: ' + words
+        + ' words, limit ' + SUMMARY_MAX_WORDS);
+    }
+    // The retry quotes the ACTUAL COUNT back, because "be shorter" is what the
+    // prompt already said and it did not land.
+    const parts = [];
+    if (verdict.contradicts) parts.push(retryInstruction(verdict));
+    if (tooLong) {
+      parts.push('The previous attempt was ' + words + ' words. The hard limit is '
+        + SUMMARY_MAX_WORDS + ' and the target is ' + SUMMARY_TARGET_WORDS
+        + '. Cut it to ' + SUMMARY_TARGET_WORDS + ' words or fewer by removing '
+        + 'whole clauses, not by compressing them into longer sentences.');
+    }
+    writeExecutiveSummary._lastRetry = parts.join(' ');
   }
 
   // THE REPORT SHIPS WITHOUT A SUMMARY RATHER THAN WITH A CONTRADICTION.
   await alertWebhookProblem({
     kind: 'summary-gate-failed',
-    detail: 'The executive summary contradicted the computed band twice for '
-      + name + ' at ' + score + ' (' + band + '). The report was delivered '
-      + 'without a summary. Every other section is unaffected.',
+    detail: 'The executive summary failed the gate twice for ' + name + ' at '
+      + score + ' (' + band + '), on the band rule, the ' + SUMMARY_MAX_WORDS
+      + ' word limit, or both. The report was delivered without a summary. '
+      + 'Every other section is unaffected.',
   }).catch(() => {});
   return { text: '', reason: 'gate-failed-twice' };
 }
@@ -4393,7 +4476,16 @@ ul.bullet-list li{margin:4px 0}
   }
   @page{margin:0.6in}
   .rpt-h{page-break-after:avoid}
-  .act,.comp-card,.qblock{page-break-inside:avoid}
+  /* v8.11.52: .exec-box JOINS THE LIST.
+     The executive summary was the only display block on the page that could
+     split across a page break. The coloured left stripe restarted on the next
+     page and the background band was cut in half. Measured in real Chrome at
+     both Letter and A4 on 2026-09-23; its computed page-break-inside was
+     'auto' while every other block here was 'avoid'.
+     THE RULE CANNOT SAVE A BOX TALLER THAN A PAGE. At 338 words on Letter the
+     box exceeds the page itself and must split whatever this says. It fixes
+     the case that actually occurs: a box too tall for the space remaining. */
+  .exec-box,.act,.comp-card,.qblock{page-break-inside:avoid}
   .col-2{page-break-inside:avoid}
 }
 </style></head><body>
@@ -7777,7 +7869,10 @@ export const __test__ = {
   // cannot leave the real one swapped out for the files that run after it.
   setFetch(fn) { const was = fetch; fetch = fn; return () => { fetch = was; }; },
   setClaude(fn) { const was = claude; claude = fn; return () => { claude = was; }; },
+  getClaude() { return claude; },
   writeExecutiveSummary,
+  SUMMARY_TARGET_WORDS,
+  SUMMARY_MAX_WORDS,
   // Exposed so the ship gate can render a real report page in a real browser
   // rather than asserting on a string this file also builds.
   renderReportHtml,
