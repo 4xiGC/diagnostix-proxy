@@ -4290,7 +4290,18 @@ ul.bullet-list li{margin:4px 0}
       ${pillarRows}
       ${hasScore ? `<div class="score-formula">Overall score: `
         + esc(overallFormula(overall)) + `. Verdict bands: 80 and above Excellent, `
-        + `65 to 79 Good, 45 to 64 Fair, below 45 Needs Attention.</div>` : ''}
+        + `65 to 79 Good, 45 to 64 Fair, below 45 Needs Attention.`
+        // v8.11.50: A CHANGED SCORE EXPLAINS ITSELF.
+        //
+        // This page is rendered at READ time from the stored pillars, so the
+        // change is retroactive and nothing needs backfilling. Which means a
+        // customer reopening a link from May sees a number about 7 points
+        // below the one in the email they were sent. A number that changes
+        // under a reader with no explanation is worse than either number.
+        + ` Method ` + esc(OVERALL_METHOD_VERSION) + `: the overall score is `
+        + `the mean of the six pillar scores above, rounded half up. Reports `
+        + `issued before this method was introduced may show a different `
+        + `overall score.</div>` : ''}
     ` : ''}
 
     ${businessRealityBlock}
