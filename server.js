@@ -6125,6 +6125,15 @@ async function handlePaymentWebhook(req, res) {
       kind: 'REJECTED payment webhook',
       detail: 'secret status: ' + secretStatus + ', presented length: ' + presented.length,
     });
+    // v8.11.51 [B2.3]: AN UNAUTHENTICATED POST TO THE PAYMENT WEBHOOK IS
+    // THE ONLY SIGNAL THAT SOMEBODY IS PROBING IT, and it existed only as
+    // an alert email. The row carries the secret status and the presented
+    // LENGTH, never the presented value.
+    await writeOutcome(outcomeRecord({
+      kind: 'webhook', secretStatus, decision: 'refused',
+      reason: 'rejected-secret-' + secretStatus + '-len=' + presented.length,
+      delivered: false,
+    }));
     return;
   }
 
@@ -6140,6 +6149,12 @@ async function handlePaymentWebhook(req, res) {
   const body = req.body;
   if (!body) {
     console.log('[webhook] Empty body received');
+    // v8.11.51 [B2.4]: recorded, because a POST that reached this far
+    // carried a valid secret and is a real caller misbehaving.
+    await writeOutcome(outcomeRecord({
+      kind: 'webhook', secretStatus, decision: 'none',
+      reason: 'empty-body', delivered: false,
+    }));
     return;
   }
 
@@ -6150,6 +6165,13 @@ async function handlePaymentWebhook(req, res) {
 
   if (!email) {
     safeLog(() => '[webhook] No email found in body, shape=' + safeShape(body));
+    // v8.11.51 [B2.4]: a payment arrived that cannot be attributed to
+    // anybody. That is the most expensive kind of unreadable call and it
+    // left no row at all.
+    await writeOutcome(outcomeRecord({
+      kind: 'webhook', secretStatus, decision: 'none',
+      reason: 'no-email-in-body', delivered: false,
+    }));
     return;
   }
 
@@ -6350,6 +6372,19 @@ async function handlePaymentWebhook(req, res) {
       console.log('UNMATCHED_SALE [sale] skipped: secret status=' + secretStatus
         + ', no placeholder row and no recovery link on an unauthenticated call');
     }
+    // v8.11.51 [B2.1]: THE SALE THAT MATCHED NOTHING IS NOW RECORDED.
+    //
+    // A real payment arrives, no survey matches, a placeholder row and a
+    // cache-miss alert are written, and this handler returned before the
+    // outcome write at the bottom. So rvp_outcomes, the table that exists
+    // to make sales queryable, was missing EXACTLY THE SALES THAT WENT
+    // WRONG. Measured 2026-09-22: two purchases, zero kind=webhook rows.
+    await writeOutcome(outcomeRecord({
+      kind: 'webhook', secretStatus, decision: matchDecision,
+      reason: 'unmatched-at-purchase' + (mayRecover ? '' : '-no-recovery-link'),
+      payingEmail: email, surveyEmail: surveyEmailForAlert,
+      delivered: false,
+    }));
     await notifyCacheMiss({
       email, firstName, product,
       restaurantName: payload.restaurantName || '',
@@ -6394,7 +6429,17 @@ async function handlePaymentWebhook(req, res) {
   // decision about what that note says when the match was a guess.
   await markPurchasedAndEmail(destEmail, resolvedFirstName, restaurant, report, product);
 
+  // v8.11.51 [B2.2]: A PAID ORDER THAT PRODUCED NO REPORT.
+  //
+  // No subscriber row, no outcome row and one log line. That combination
+  // is the hardest kind of failure to find later, because nothing
+  // queryable records that the sale happened at all.
   if (!report || Object.keys(report).length === 0) {
+    await writeOutcome(outcomeRecord({
+      kind: 'webhook', secretStatus, decision: matchDecision,
+      reason: 'no-report-data', payingEmail: destEmail,
+      surveyEmail: surveyEmailForAlert, delivered: false,
+    }));
     console.log('[webhook] No report data — skipping full customer creation');
     return;
   }
@@ -7612,6 +7657,7 @@ export const __test__ = {
   renderReportHtml,
   serveScoreLib,
   writeOrderRow,
+  handlePaymentWebhook,
   buildBenchmarkRow,
   benchmarkSkipReason,
   createCustomer,
