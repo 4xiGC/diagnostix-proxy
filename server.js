@@ -4619,10 +4619,34 @@ async function writeSubscribers({ what, filter, method, body, rowId }) {
     // v8.11.42: A NON-2xx NAMES ITS CONSTRAINT.
     //
     // On 2026-09-21 this logged `http=409` and nothing else, and it took a
-    // trip to the SQL editor to learn that the constraint was
-    // subscribers_report_token_key. code and the name were in the body all
-    // along. The VALUE that collided is never logged: on this table it is a
-    // report token, which opens the paid report.
+    // trip to the SQL editor to learn which constraint had fired. code and the
+    // name were in the body all along. The VALUE that collided is never
+    // logged: on this table it is a report token, which opens the paid report.
+    //
+    // v8.11.50: THERE ARE TWO, AND EITHER CAN BE THE ONE NAMED.
+    //
+    // This comment used to say the constraint "was
+    // subscribers_report_token_key", singular. report_token is guarded TWICE,
+    // confirmed from the SQL editor on 2026-09-22:
+    //
+    //   subscribers_report_token_key   UNIQUE CONSTRAINT on report_token,
+    //                                  with its own unique index
+    //   idx_subscribers_report_token   UNIQUE PARTIAL INDEX,
+    //                                  WHERE report_token IS NOT NULL
+    //
+    // The 2026-09-21 insert 409 named the constraint. The 2026-09-22 swap-note
+    // PATCH 409 named the partial index. Same column, same collision, two
+    // different names in the log, and which one Postgres reports is not
+    // something this service controls.
+    //
+    // SO NEVER MATCH ON A CONSTRAINT NAME. Match on `code`, which was 23505
+    // both times and means unique_violation. A branch keyed on one of these
+    // two names would work until the day the other fired.
+    //
+    // The partial index is REDUNDANT: a full unique constraint already permits
+    // any number of NULLs, so excluding them buys nothing. Dropping it is a
+    // low-priority cleanup migration and is recorded in PROGRAM_PROGRESS.md,
+    // not done here, because dropping an index is not a comment change.
     let extra = '';
     if (!r.ok) {
       const f = pgErrorFields(payload);
