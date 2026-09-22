@@ -430,19 +430,50 @@ export function swapOrderKey(args) {
 // AND NULL MUST NEVER MATCH NULL. A lookup that treated one missing key as
 // equal to another would tie every old row to every other old row, which is
 // worse than the defect being fixed.
+// THE ADDRESS COMES OUT OF THE TOKEN, NOT OUT OF THE CALLER.
+//
+// The click side derives its key from verifyRecoveryToken's payingEmail,
+// which is the `e` field inside the token. The mint side was passing
+// deliverPaidReport's destEmail, and those two agree only because the webhook
+// happens to set `const destEmail = email`. If destEmail ever became the
+// survey address the stored key would stop matching, findOrderRow would fall
+// back to the address path without complaining, and the defect this whole
+// change exists to fix would come back silently. Reading `e` out of the token
+// means the two sides cannot disagree about which address was hashed.
+//
+// payingEmail stays as a CROSS-CHECK. When it is supplied and does not match
+// the token, no key is minted: a key that can never be matched is worse than
+// no key, because no key is honest about falling back.
 export function orderKeyForDelivery(args) {
   const a = (args && typeof args === 'object') ? args : {};
-  const email = typeof a.payingEmail === 'string' ? a.payingEmail.trim() : '';
   const url = typeof a.swapUrl === 'string' ? a.swapUrl.trim() : '';
-  if (!email || !url) return null;
+  if (!url) return null;
+
   let token = '';
   try {
-    token = new URL(url).searchParams.get('t') || '';
+    token = String(new URL(url).searchParams.get('t') || '').trim();
   } catch (_) {
     return null;
   }
-  if (!token.trim()) return null;
-  return swapOrderKey({ payingEmail: email, token });
+  if (!token) return null;
+
+  // The payload is read, NOT trusted: this service minted the token moments
+  // ago and the signature is checked at the click. Reading it here only has to
+  // produce the same address the click will.
+  let tokenEmail = '';
+  try {
+    const body = token.split('.')[0];
+    if (!body) return null;
+    tokenEmail = normalizeEmail(JSON.parse(unb64url(body).toString('utf8')).e);
+  } catch (_) {
+    return null;
+  }
+  if (!tokenEmail) return null;
+
+  const claimed = normalizeEmail(a.payingEmail);
+  if (claimed && claimed !== tokenEmail) return null;
+
+  return swapOrderKey({ payingEmail: tokenEmail, token });
 }
 
 

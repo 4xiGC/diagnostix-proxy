@@ -58,11 +58,37 @@ test('a DIFFERENT order yields a different key', () => {
   assert.notEqual(a, b, 'two orders for one buyer would share a key');
 });
 
-test('a different buyer yields a different key for the same token', () => {
+test('THE ADDRESS COMES OUT OF THE TOKEN, not out of the caller', () => {
+  // The click side hashes verifyRecoveryToken's payingEmail, which is the `e`
+  // field inside the token. The mint side must hash the same thing, or the
+  // stored key silently stops matching and findOrderRow falls back to the
+  // address path without complaining, which is the defect coming back.
   const url = urlFor(PAYING);
-  assert.notEqual(
+  assert.equal(orderKeyForDelivery({ swapUrl: url }),
     orderKeyForDelivery({ swapUrl: url, payingEmail: PAYING }),
-    orderKeyForDelivery({ swapUrl: url, payingEmail: 'other@example.invalid' }));
+    'the caller-supplied address changed the answer');
+});
+
+test('A CALLER WHO DISAGREES WITH THE TOKEN GETS NO KEY', () => {
+  // Not a different key: NO key. A key that can never be matched is worse
+  // than none, because none falls back to the address path honestly.
+  assert.equal(orderKeyForDelivery({
+    swapUrl: urlFor(PAYING), payingEmail: 'other@example.invalid' }), null);
+});
+
+test('the cross-check is case and space insensitive, like the rest of the code', () => {
+  const url = urlFor(PAYING);
+  assert.equal(orderKeyForDelivery({ swapUrl: url, payingEmail: '  BUYER@Example.Invalid ' }),
+    orderKeyForDelivery({ swapUrl: url, payingEmail: PAYING }),
+    'a buyer whose address differs only in case lost the key');
+});
+
+test('a token whose payload is not readable yields null', () => {
+  for (const bad of ['notbase64.sig', '.sig', 'e30.sig']) {
+    assert.equal(orderKeyForDelivery({
+      swapUrl: 'https://rvp.example.invalid/recover?t=' + encodeURIComponent(bad),
+      payingEmail: PAYING }), null, 'derived a key from ' + JSON.stringify(bad));
+  }
 });
 
 test('the key carries no address', () => {
@@ -90,9 +116,12 @@ test('a url with no t parameter yields null', () => {
     swapUrl: 'https://rvp.example.invalid/recover?x=1', payingEmail: PAYING }), null);
 });
 
-test('no paying address yields null', () => {
+test('no paying address is fine: the token has one', () => {
+  // This used to expect null. It changed deliberately when the derivation
+  // moved into the token: an absent cross-check is not a disagreement.
+  const expected = orderKeyForDelivery({ swapUrl: urlFor(PAYING), payingEmail: PAYING });
   for (const bad of [null, undefined, '', '  ']) {
-    assert.equal(orderKeyForDelivery({ swapUrl: urlFor(PAYING), payingEmail: bad }), null);
+    assert.equal(orderKeyForDelivery({ swapUrl: urlFor(PAYING), payingEmail: bad }), expected);
   }
 });
 

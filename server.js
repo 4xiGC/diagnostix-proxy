@@ -17,7 +17,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          matchPendingReport, selectRowToClaim, emailDomain, INFER_WINDOW_MS,
          deliveryProvenanceLines, swapLinkSentence, swapEligibility, SWAP_NOTE_PREFIX,
          isDuplicateSubmission, DUPLICATE_WINDOW_MS, DUPLICATE_CLAIM_LABEL,
-         swapOrderKey, patchRowsAffected, claimVerdict, outcomeRecord, recoveryReason,
+         swapOrderKey, orderKeyForDelivery, patchRowsAffected, claimVerdict, outcomeRecord, recoveryReason,
          alertCopyFor, pgErrorFields, recoveryCopy, recoveryNotFound,
          applyShadowMode, recoveryAllowed, inferenceVerdict,
          signRecoveryToken, verifyRecoveryToken,
@@ -4330,7 +4330,7 @@ ul.bullet-list li{margin:4px 0}
 }
 
 // ── CREATE CUSTOMER (Annual or one-off) ──────────────────────
-async function createCustomer({ email, firstName, restaurantName, location, website, report, survey, planType, amountPaid }) {
+async function createCustomer({ email, firstName, restaurantName, location, website, report, survey, planType, amountPaid, orderKey }) {
   const reportToken = crypto.randomBytes(16).toString('hex');
   const now = Date.now();
   const isAnnual = planType === 'annual';
@@ -4403,6 +4403,10 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
           active:             isAnnual,
           plan_type:          planType,
           amount_paid:        amountPaid === undefined ? null : amountPaid,
+          // v8.11.49: THE ORDER THIS ROW WAS MINTED FOR. Null when it could
+          // not be derived, which is not a defect: a delivery that mints no
+          // swap token has no order identity to bind, and null never matches.
+          order_key:          orderKey || null,
           baseline_score:     report?.healthCheckScore || 0,
           baseline_report:    report || null,
           report_token:         reportToken,
@@ -4591,7 +4595,47 @@ async function writeSubscribers({ what, filter, method, body, rowId }) {
 // the wrong row here, still reaches recordSwapUse, and is refused there by the
 // database. What is left on this row is the bookkeeping note, which is best
 // effort and now says so when it changes nothing.
-async function findOrderRow({ payingEmail }) {
+async function findOrderRow({ payingEmail, orderKey }) {
+  // v8.11.49: WHEN THE ORDER IDENTITY IS AVAILABLE, USE IT.
+  //
+  // The address lookup below is kept as the fallback and is still correct for
+  // every order minted before this release, because those 100 rows carry no
+  // key and there is nothing else to find them by. What changes is that an
+  // order minted from here onward is found by the order it is, not by being
+  // the newest thing under an address.
+  //
+  // A NULL OR EMPTY KEY IS NOT A LOOKUP. order_key=is.null would match every
+  // old row, which is worse than the defect, so an underivable key falls
+  // straight through to the address path and today's behaviour.
+  if (typeof orderKey === 'string' && orderKey.trim()) {
+    const url0 = process.env.SUPABASE_URL;
+    const key0 = process.env.SUPABASE_KEY;
+    if (url0 && key0) {
+      try {
+        const r0 = await fetch(url0 + '/rest/v1/subscribers?select=*'
+          + '&order_key=eq.' + encodeURIComponent(orderKey.trim())
+          + '&order=subscribed_at.desc&limit=1',
+          { headers: { apikey: key0, Authorization: 'Bearer ' + key0 } });
+        if (r0.ok) {
+          const rows0 = await r0.json();
+          if (Array.isArray(rows0) && rows0.length) {
+            // The prefix is a hash and carries no address.
+            console.log('SWAP [swap] order found BY KEY key=' + orderKey.slice(0, 12));
+            return rows0[0];
+          }
+          console.log('SWAP [swap] no row for key=' + orderKey.slice(0, 12) + ', trying the address');
+        } else {
+          console.log('SWAP [swap] key lookup failed ' + r0.status + ', trying the address');
+        }
+      } catch (e) {
+        console.log('SWAP [swap] key lookup error ' + (e && e.message) + ', trying the address');
+      }
+    }
+  }
+  return findOrderRowByAddress({ payingEmail });
+}
+
+async function findOrderRowByAddress({ payingEmail }) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
   if (!url || !dbKey) return null;
@@ -4870,6 +4914,13 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
                                    report, survey, product, planType, amountPaid,
                                    source, alsoTo, surveySavedAt, otherWaitingCount, swapUrl }) {
 
+  // v8.11.49: THE ORDER IDENTITY IS BOUND HERE, AT MINT TIME.
+  //
+  // swapUrl is the recovery link this delivery is about to email, and the key
+  // is the same value rvp_swap_uses will store when that link is clicked, so
+  // the row and the use agree without translation. Null when there is no link.
+  const orderKey = orderKeyForDelivery({ swapUrl, payingEmail: destEmail });
+
   const subscriber = await createCustomer({
     email: destEmail,
     firstName: firstName,
@@ -4879,7 +4930,8 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
     report,
     survey,
     planType,
-    amountPaid
+    amountPaid,
+    orderKey
   });
 
   const supaShaped = {
@@ -5364,7 +5416,8 @@ app.get('/recover', async (req, res) => {
   // before, so a failed lookup costs wording and never the page.
   let mode = 'recovery', restaurant = '';
   try {
-    const orderRow = await findOrderRow({ payingEmail: v.payingEmail });
+    const orderRow = await findOrderRow({ payingEmail: v.payingEmail,
+      orderKey: swapOrderKey({ payingEmail: v.payingEmail, token }) });
     const elig = swapEligibility({ orderRow });
     mode = elig.mode;
     restaurant = (orderRow && orderRow.restaurant_name) || '';
@@ -5406,7 +5459,8 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   // The mode is resolved once and used for every exit below, so a buyer who
   // mistypes an address three times is not shown recovery wording on the
   // second try and swap wording on the third.
-  const orderRowForMode = await findOrderRow({ payingEmail });
+  const orderRowForMode = await findOrderRow({ payingEmail,
+    orderKey: swapOrderKey({ payingEmail, token }) });
   const eligForMode = swapEligibility({ orderRow: orderRowForMode });
   const pageMode = eligForMode.mode;
   const pageRestaurant = (orderRowForMode && orderRowForMode.restaurant_name) || '';
