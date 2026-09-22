@@ -4498,6 +4498,160 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
   return subscriber;
 }
 
+
+// ── writeOrderRow (v8.11.51) [B1.1] ─────────────────────────────────────────
+//
+// ONE SALE, ONE ROW, BY NEVER WRITING THE SECOND ONE.
+//
+// THE DEFECT THIS REPLACES, root caused from the live log on 2026-09-22:
+//
+//   SUBSCRIBERS_WRITE [sale] what=swap-note method=PATCH row=cddfe686-...
+//     http=409 rows=0 code=23505 constraint=idx_subscribers_report_token
+//     details="Key (report_token)=(value withheld) already exists."
+//
+// createCustomer INSERTED a row holding the new report token, and then
+// recordSwapOnOrderRow or supersedePlaceholderRow tried to write THAT SAME
+// TOKEN onto a second row. report_token is guarded twice, by
+// subscribers_report_token_key and by idx_subscribers_report_token, and either
+// can be the one named. The guard refused it, and because the duplicate delete
+// was gated on that write succeeding, the refusal cancelled the cleanup too.
+// Both rows survived. Four sales on 2026-09-22 hold two rows each.
+//
+// IT WAS DETERMINISTIC, NOT A RACE. Every swap and every recovery inserted and
+// then patched to the same token, so every one of them had always failed here.
+// The delivery was correct, which is why no customer ever saw it.
+//
+// THE FIX IS TO REMOVE THE COLLISION AT SOURCE RATHER THAN HANDLE IT. When a
+// target row is known, PATCH it and never insert, so no second row ever holds
+// the token.
+//
+//   targetRowId present   the swap path      the order row
+//                         the recovery path  the placeholder row
+//   targetRowId absent    a matched webhook, a genuine first sale
+//
+// AND THE CALLER MUST NOT EMAIL UNLESS THIS RETURNS ok. The patch is required
+// to change EXACTLY ONE ROW and the row is then READ BACK and its token
+// compared. return=representation already makes rows a real count; the read
+// back catches the case the count cannot, a patch that matched one row and
+// wrote a token the caller did not expect.
+//
+// WHAT A PATCH DELIBERATELY DOES NOT TOUCH: order_key, amount_paid,
+// subscribed_at and plan_type. The order recorded those once. Restating them
+// would be inventing a second sale, which is the same reasoning
+// recordSwapOnOrderRow carried and the only part of it worth keeping.
+async function writeOrderRow(args) {
+  const a = (args && typeof args === 'object') ? args : {};
+  const url = process.env.SUPABASE_URL;
+  const dbKey = process.env.SUPABASE_KEY;
+
+  const reportToken = a.forceToken || crypto.randomBytes(16).toString('hex');
+  const now = Date.now();
+  const isAnnual = a.planType === 'annual';
+  const bm = (a.survey && a.survey.businessMetrics) || {};
+  const num = (v) => (typeof v === 'number' ? v : null);
+
+  const subscriber = {
+    email: a.email,
+    firstName: a.firstName || '',
+    restaurantName: a.restaurantName || '',
+    location: a.location || '',
+    website: a.website || '',
+    subscribedAt: now,
+    planType: a.planType,
+    amountPaid: a.amountPaid === undefined ? null : a.amountPaid,
+    reportToken,
+    reports: [{ generatedAt: now, report: a.report, survey: a.survey, reportNumber: 1 }],
+    nextReportAt: isAnnual ? now + (4 * 30 * 24 * 60 * 60 * 1000) : null,
+    guestCountChange: num(bm.guestCountChange),
+    avgCheckChange: num(bm.avgCheckChange),
+    profitabilityChange: num(bm.profitabilityChange),
+  };
+  annualSubscribers.set(reportToken, subscriber);
+
+  if (!url || !dbKey) return { ok: false, subscriber, reason: 'not-configured' };
+
+  // The report and the identity. Shared by both branches so a swapped row and
+  // a freshly sold one cannot disagree about what a delivered row looks like.
+  const reportFields = {
+    first_name:      a.firstName || null,
+    restaurant_name: a.restaurantName || null,
+    location:        a.location || null,
+    website:         a.website || null,
+    report_token:    reportToken,
+    baseline_report: a.report || null,
+    baseline_score:  (a.report && a.report.healthCheckScore) || 0,
+    reports_sent:    1,
+  };
+
+  const targetRowId = typeof a.targetRowId === 'string' ? a.targetRowId.trim() : '';
+
+  if (targetRowId) {
+    const w = await writeSubscribers({
+      what: 'order-row-patch', method: 'PATCH', rowId: targetRowId,
+      filter: 'id=eq.' + encodeURIComponent(targetRowId),
+      body: Object.assign({}, reportFields, {
+        notes: (a.noteText || 'DELIVERED: report written to the order row.'),
+      }),
+    });
+    if (!w.ok || w.rows !== 1) {
+      console.log('ORDER_ROW [sale] patch did not land, NO EMAIL WILL BE SENT'
+        + ' row=' + targetRowId + ' http=' + w.status + ' rows=' + w.rows);
+      return { ok: false, subscriber, reason: 'patch-rows=' + w.rows + '-http=' + w.status };
+    }
+    // READ BACK. The count says one row changed; this says it is the right one.
+    try {
+      const r = await fetch(url + '/rest/v1/subscribers?select=id,report_token'
+        + '&id=eq.' + encodeURIComponent(targetRowId),
+        { headers: { apikey: dbKey, Authorization: 'Bearer ' + dbKey } });
+      const back = r.ok ? await r.json() : null;
+      if (!Array.isArray(back) || back.length !== 1 || back[0].report_token !== reportToken) {
+        console.log('ORDER_ROW [sale] read back disagreed, NO EMAIL WILL BE SENT row=' + targetRowId);
+        return { ok: false, subscriber, reason: 'read-back-mismatch' };
+      }
+    } catch (e) {
+      console.log('ORDER_ROW [sale] read back failed, NO EMAIL WILL BE SENT: ' + (e && e.message));
+      return { ok: false, subscriber, reason: 'read-back-failed' };
+    }
+    console.log('ORDER_ROW [sale] patched row=' + targetRowId + ', no duplicate inserted');
+    return { ok: true, subscriber, reason: 'patched', rowId: targetRowId };
+  }
+
+  // No target: a genuine first sale. INSERT, and the insert is now CHECKED.
+  try {
+    const r = await fetch(url + '/rest/v1/subscribers', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json', apikey: dbKey,
+        Authorization: 'Bearer ' + dbKey, Prefer: 'return=representation',
+      },
+      body: JSON.stringify(Object.assign({}, reportFields, {
+        email:           a.email,
+        subscribed_at:   new Date(now).toISOString(),
+        next_report_at:  isAnnual ? new Date(subscriber.nextReportAt).toISOString() : null,
+        active:          isAnnual,
+        plan_type:       a.planType,
+        amount_paid:     a.amountPaid === undefined ? null : a.amountPaid,
+        guest_count_change:   subscriber.guestCountChange,
+        avg_check_change:     subscriber.avgCheckChange,
+        profitability_change: subscriber.profitabilityChange,
+        order_key:       a.orderKey || null,
+      })),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => null);
+      const f = pgErrorFields(body);
+      console.log('ORDER_ROW [sale] insert failed, NO EMAIL WILL BE SENT http=' + r.status
+        + (f.code ? ' code=' + f.code : '') + (f.constraint ? ' constraint=' + f.constraint : ''));
+      return { ok: false, subscriber, reason: 'insert-http=' + r.status };
+    }
+    safeLog(() => '[customer] saved ' + a.planType + ' ' + maskAddr(a.email));
+    return { ok: true, subscriber, reason: 'inserted' };
+  } catch (e) {
+    console.log('ORDER_ROW [sale] insert threw, NO EMAIL WILL BE SENT: ' + (e && e.message));
+    return { ok: false, subscriber, reason: 'insert-threw' };
+  }
+}
+
 // ── A4: one sale, one subscriber row ────────────────────────────────────────
 //
 // THE PROBLEM. An unmatched order writes a placeholder row carrying the
@@ -7507,6 +7661,7 @@ export const __test__ = {
   // rather than asserting on a string this file also builds.
   renderReportHtml,
   serveScoreLib,
+  writeOrderRow,
   buildBenchmarkRow,
   benchmarkSkipReason,
   createCustomer,
