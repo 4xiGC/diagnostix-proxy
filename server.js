@@ -1,5 +1,14 @@
 import express from 'express';
-import fetch from 'node-fetch';
+// v8.11.49: node-fetch, behind a name a test can rebind.
+//
+// This was `import fetch from 'node-fetch'`, and an ESM import binding cannot
+// be replaced from outside the module, so setting globalThis.fetch in a test
+// changed nothing and the first run of test/order-row-lookup.test.js went out
+// to the real network: "getaddrinfo ENOTFOUND db.invalid". Every fetch( call
+// in this file is unchanged and still resolves here; only the binding is now
+// one a test can point somewhere else through __test__.setFetch.
+import nodeFetch from 'node-fetch';
+let fetch = nodeFetch;
 import crypto from 'crypto';
 import { describeShape, emailDomainOnly, addrLabel } from './lib-webhook-log.js';
 import { buildCustomerReportEmail, buildCacheMissEmail } from './lib-email.js';
@@ -7318,6 +7327,9 @@ if (process.env.RVP_IMPORT_ONLY === '1') {
 // unroutable host and replaces globalThis.fetch. That keeps the seam at the
 // boundary the code already has instead of adding a parameter for the test.
 export const __test__ = {
+  // Replaces the module's fetch and hands back a restore function, so a test
+  // cannot leave the real one swapped out for the files that run after it.
+  setFetch(fn) { const was = fetch; fetch = fn; return () => { fetch = was; }; },
   createCustomer,
   findOrderRow,
   recordSwapOnOrderRow,

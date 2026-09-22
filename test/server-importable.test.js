@@ -82,7 +82,7 @@ test('the seam is exported', () => {
 });
 
 test('every function the subscriber rules need is on the seam', () => {
-  const needed = ['createCustomer', 'findOrderRow', 'recordSwapOnOrderRow',
+  const needed = ['setFetch', 'createCustomer', 'findOrderRow', 'recordSwapOnOrderRow',
     'supersedePlaceholderRow', 'deleteDuplicateSubscriberRow', 'writeSubscribers'];
   for (const name of needed) {
     assert.equal(typeof mod.__test__[name], 'function', name + ' is not on the seam');
@@ -93,7 +93,49 @@ test('the seam carries the version, so a test can say what it measured', () => {
   assert.match(String(mod.__test__.VERSION), /^\d+\.\d+\.\d+$/);
 });
 
+// ── The seam can replace fetch ────────────────────────────────────────────
+//
+// server.js imports node-fetch, and an ESM import binding cannot be replaced
+// from outside the module. Setting globalThis.fetch changes nothing: the first
+// run of test/order-row-lookup.test.js did exactly that and went out to the
+// real network, "getaddrinfo ENOTFOUND db.invalid", while every assertion
+// about the request it sent quietly failed for the wrong reason.
+
+test('setFetch replaces the fetch the real functions call', async () => {
+  const seen = [];
+  const restore = mod.__test__.setFetch(async (url) => {
+    seen.push(String(url));
+    return { ok: true, status: 200, json: async () => [], text: async () => '[]' };
+  });
+  try {
+    await mod.__test__.findOrderRow({ payingEmail: 'a@b.invalid' });
+  } finally { restore(); }
+  assert.equal(seen.length, 1, 'the replacement was not called');
+  assert.match(seen[0], /db\.invalid\/rest\/v1\/subscribers/);
+});
+
+test('setFetch hands back a restore that really restores', async () => {
+  // A test that leaves the fake installed poisons every file after it, and
+  // node --test shares a process per file.
+  const seen = [];
+  const restore = mod.__test__.setFetch(async () => {
+    seen.push(1);
+    return { ok: true, status: 200, json: async () => [], text: async () => '[]' };
+  });
+  restore();
+  // SUPABASE_URL is unroutable, so the real fetch fails and findOrderRow
+  // returns null. What matters is that the fake did not see it.
+  await mod.__test__.findOrderRow({ payingEmail: 'a@b.invalid' }).catch(() => {});
+  assert.equal(seen.length, 0, 'the fake is still installed after restore()');
+});
+
 // ── Controls ──────────────────────────────────────────────────────────────
+
+test('CONTROL: setFetch returns something callable, or restore proves nothing', () => {
+  const restore = mod.__test__.setFetch(async () => ({ ok: true, status: 200, json: async () => [] }));
+  assert.equal(typeof restore, 'function');
+  restore();
+});
 
 test('CONTROL: the check can see a server that IS serving', async () => {
   // Without this, "nothing answered" would also be the reading for a check
