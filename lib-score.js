@@ -148,3 +148,18 @@ export function verdictFor(score) {
   }
   return null;
 }
+
+// v8.11.53: THE SCORE EVERY RECORD OUTSIDE THE PAGE CARRIES.
+//
+// subscribers.baseline_score, the internal summary email and HubSpot all read
+// report.healthCheckScore with `|| 0`. 8.11.52 stopped the model writing that
+// field, so they recorded 0; on older payloads they recorded the model's typed
+// number, which the page stopped printing at 8.11.50. Both are wrong. This is
+// computeOverall, the cover's own function, and it IGNORES healthCheckScore on
+// purpose. score and verdict are null when the six pillars are not all there;
+// each caller decides how to write an absence, and none may write a number.
+export function recordedScore(report) {
+  const r = computeOverall(report && report.pillars);
+  const score = r.ok ? r.score : null;
+  return { score, verdict: verdictFor(score) };
+}

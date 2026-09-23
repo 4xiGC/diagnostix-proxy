@@ -10,7 +10,7 @@ import express from 'express';
 import nodeFetch from 'node-fetch';
 let fetch = nodeFetch;
 import { computeOverall, overallFormula, verdictFor, NO_SCORE_SENTENCE,
-         OVERALL_METHOD_VERSION } from './lib-score.js';
+         OVERALL_METHOD_VERSION, recordedScore } from './lib-score.js';
 import { contradictsBand, retryInstruction } from './lib-narrative.js';
 import crypto from 'crypto';
 import { describeShape, emailDomainOnly, addrLabel } from './lib-webhook-log.js';
@@ -1447,8 +1447,10 @@ async function sendInternalSummaryEmail({ subscriber, report, reportNumber, surv
   const planTypeSafe = subField('plan_type', 'planType') || '';
 
   const link = baseUrl + '/report?token=' + reportTokenSafe;
-  const score = report?.healthCheckScore ?? 0;
-  const verdict = report?.scoreVerdict || '';
+  // v8.11.53: the computed score, never the typed one and never a fabricated 0.
+  const rec = recordedScore(report);
+  const score = rec.score === null ? 'N/A' : rec.score;
+  const verdict = rec.verdict || '';
   const restaurant = restaurantNameSafe || '(unknown)';
   const location = (survey && survey.location) || subscriber.location || '';
   const cuisine = (survey && survey.cuisine) || '';
@@ -3110,8 +3112,9 @@ async function saveToHubSpot(email, firstName, restaurantName, location, report)
       firstname:               firstName || '',
       restaurant_name:         restaurantName || '',
       restaurant_location:     location || '',
-      diagnostix_score:        report.healthCheckScore || 0,
-      diagnostix_verdict:      report.scoreVerdict || '',
+      // v8.11.53: computed from the pillars. 0 was recorded on every 8.11.52 sale.
+      diagnostix_score:        recordedScore(report).score ?? 0,
+      diagnostix_verdict:      recordedScore(report).verdict || '',
       diagnostix_cuisine:      report.cuisineDetected || '',
       diagnostix_online_score: report.onlinePresence && report.onlinePresence.overall ? report.onlinePresence.overall : 0,
       diagnostix_date:         new Date().toISOString().split('T')[0],
@@ -3435,7 +3438,7 @@ async function markPurchasedAndEmail(email, firstName, restaurantName, report, p
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify({
           properties: {
-            hs_note_body: 'DiagnostiX ' + product + ' report purchased. Score: ' + (report.healthCheckScore || 'N/A') + '. Restaurant: ' + restaurantName,
+            hs_note_body: 'DiagnostiX ' + product + ' report purchased. Score: ' + (recordedScore(report).score ?? 'N/A') + '. Restaurant: ' + restaurantName,
             hs_timestamp: new Date().toISOString()
           },
           associations: [{
@@ -3472,8 +3475,9 @@ async function pushReportContextToHubSpot({ subscriber, report, reportNumber, re
     : (subscribedAtRaw || new Date().toISOString());
 
   const isAnnual = planTypeSafe === 'annual';
-  const score = report?.healthCheckScore || 0;
-  const baselineScore = baseline?.healthCheckScore || 0;
+  // v8.11.53: computed from the pillars of each report, not read from a field.
+  const score = recordedScore(report).score ?? 0;
+  const baselineScore = recordedScore(baseline).score ?? 0;
 
   const trajectory = reportNumber === 1 ? '' : (
     score - baselineScore >= 3 ? 'improving' :
@@ -3664,7 +3668,7 @@ app.get('/report', async (req, res) => {
         report_token:         memSub.reportToken,
         plan_type:            memSub.planType,
         amount_paid:          memSub.amountPaid,
-        baseline_score:       memSub.reports?.[0]?.report?.healthCheckScore || 0,
+        baseline_score:       recordedScore(memSub.reports?.[0]?.report).score ?? 0,
         baseline_report:      memSub.reports?.[0]?.report || null,
         guest_count_change:   memSub.guestCountChange,
         avg_check_change:     memSub.avgCheckChange,
@@ -4740,7 +4744,9 @@ async function createCustomer({ email, firstName, restaurantName, location, webs
           // not be derived, which is not a defect: a delivery that mints no
           // swap token has no order identity to bind, and null never matches.
           order_key:          orderKey || null,
-          baseline_score:     report?.healthCheckScore || 0,
+          // v8.11.53: computed. 0 only when there is no score, the column's
+          // existing meaning for an undelivered row.
+          baseline_score:     recordedScore(report).score ?? 0,
           baseline_report:    report || null,
           report_token:         reportToken,
           guest_count_change:   guestCountChange,
@@ -4841,7 +4847,7 @@ async function writeOrderRow(args) {
     website:         a.website || null,
     report_token:    reportToken,
     baseline_report: a.report || null,
-    baseline_score:  (a.report && a.report.healthCheckScore) || 0,
+    baseline_score:  recordedScore(a.report).score ?? 0,   // v8.11.53: computed
     reports_sent:    1,
   };
 
@@ -7927,6 +7933,12 @@ export const __test__ = {
   renderReportHtml,
   serveScoreLib,
   writeOrderRow,
+  // The places that RECORD a score outside the page, so a test can read back
+  // the exact value each one sends.
+  sendInternalSummaryEmail,
+  saveToHubSpot,
+  markPurchasedAndEmail,
+  pushReportContextToHubSpot,
   handlePaymentWebhook,
   buildBenchmarkRow,
   benchmarkSkipReason,
