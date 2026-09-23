@@ -4100,7 +4100,7 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   const commercialActions = Array.isArray(report?.commercialActions) ? report.commercialActions : [];
   const commercialActionsBlock = (hasAnyBM && commercialActions.length) ? `
     <h2 class="rpt-h">Commercial Recommendations</h2>
-    <p class="body-p" style="margin:0 0 14px;color:#666;font-size:13px">Actions tied directly to your financial reality. These complement &mdash; not replace &mdash; the operational actions below.</p>
+    <p class="body-p" style="margin:0 0 14px;color:#666;font-size:13px">Actions tied directly to your financial reality. These complement, and do not replace, the operational actions below.</p>
     ${commercialActions.slice(0, 3).map((a, idx) => {
       const evidence = a.evidence || '';
       return `
@@ -4490,7 +4490,7 @@ ul.bullet-list li{margin:4px 0}
   .pres-name{width:110px;font-size:12px}
 }
 
-/* PRINT — clean PDF output */
+/* PRINT, clean PDF output */
 @media print{
   body{background:#fff !important}
   .print-bar{display:none !important}
@@ -7918,6 +7918,11 @@ export const __test__ = {
   benchmarkSkipReason,
   createCustomer,
   findOrderRow,
+  // The dash backstop, exposed so its two sides can be asserted: that it
+  // converts what the prompt rule failed to prevent, and that it is not what
+  // hard coded template copy relies on.
+  stripDashes,
+  sanitizeReportProse,
   writeSubscribers,
   VERSION,
 };
