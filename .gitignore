@@ -4,3 +4,7 @@
 # DiagnostiX repos ignores it, and none tracks it.
 
 node_modules/
+
+# Before-images of subscribers rows carry email addresses. They live in
+# C:/Users/SIMON/diagnostix-private/before-images, never in a repo.
+*before-image*
