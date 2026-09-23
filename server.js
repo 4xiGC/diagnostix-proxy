@@ -3723,6 +3723,34 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   const hasScore   = overall.ok;
   const verdict    = verdictFor(score) || '';
   const summary    = report?.executiveSummary || '';
+
+  // THE REWRITTEN EXECUTIVE SUMMARY DISCLOSES ITSELF.
+  //
+  // 73 stored payloads had their summary replaced on 2026-09-23: 114 blocking
+  // band contradictions across 66 rows, plus eight that agreed with their band
+  // but ran long. The originals are kept forever in
+  // meta.executiveSummaryOriginal.
+  //
+  // This page renders at READ time, so a customer reopening an older link gets
+  // prose they were never sent. Same failure as the v8.11.50 method
+  // disclosure, one layer up: a paragraph that changes under a reader with no
+  // explanation is worse than either paragraph.
+  //
+  // THE DATE COMES FROM THE PAYLOAD AND IS NEVER MANUFACTURED. An unparseable
+  // timestamp still discloses the rewrite, without a date, because the rewrite
+  // happened either way and "Invalid Date" must never reach a customer.
+  const replacedAt = report?.meta?.executiveSummaryReplacedAt;
+  const replacedDay = (() => {
+    if (!replacedAt) return null;
+    const t = Date.parse(replacedAt);
+    return Number.isNaN(t) ? '' : new Date(t).toISOString().slice(0, 10);
+  })();
+  const summaryRevisedNote = replacedAt
+    ? 'The executive summary on this page was rewritten'
+      + (replacedDay ? ' on ' + replacedDay : '')
+      + ' to agree with the computed overall score. The wording first issued '
+      + 'with this report is retained in our records.'
+    : '';
   const cuisine    = report?.cuisineDetected || '';
   const price      = report?.priceDetected || '';
   const location   = subscriber.location || '';
@@ -4547,6 +4575,13 @@ ul.bullet-list li{margin:4px 0}
         + `issued before this method was introduced may show a different `
         + `overall score.</div>` : ''}
     ` : ''}
+
+    ${summaryRevisedNote
+      // OUTSIDE the score block on purpose. The block above renders only when
+      // all six pillars are present, and the rewrite is not a fact about the
+      // score: a report with five pillars had its summary rewritten too, and
+      // its reader is owed the same sentence.
+      ? `<div class="score-formula">${esc(summaryRevisedNote)}</div>` : ''}
 
     ${businessRealityBlock}
 
