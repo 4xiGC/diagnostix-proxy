@@ -7108,7 +7108,12 @@ function buildBenchmarkRow({ report, name, location, country, region, focalConte
       price_detected:   (report && report.priceDetected) || null,
       // Heuristic, NOT an observation. See the note above cohort_tier.
       tier_heuristic:  (focalContext && focalContext.tier) || null,
-      score_verdict:   (report && report.scoreVerdict) || null
+      // THE BAND OF THIS ROW'S OWN SCORE, never the model's word. This read
+      // report.scoreVerdict, which the model stopped writing at b13449b, so
+      // every row from 8.11.52 on carried null beside a computed score, and
+      // 6 of the 69 rows before it carried a verdict that disagreed with
+      // their own band (overnight 2026-09-24, A4). No score, no verdict.
+      score_verdict:   verdictFor(toBenchmarkScore(rvpOverall.score))
     },
 
     // v8.11.50: THE COMPUTED SCORE, AND THE ROW SAYS SO.
