@@ -3284,6 +3284,15 @@ async function fetchPeerComparison({ subjectName, subjectLocation, subjectPillar
     if (!data.ok || !data.html) {
       return { ok: false, reason: data.error ? 'refused' : 'no_html', detail: data.error || '', stats: data.stats || null, ms: Date.now() - started };
     }
+    // v8.11.53: A RUN THAT ASSESSED NOBODY IS NOT A COMPARISON. Analytics
+    // answers ok:true with a fragment even when every peer failed, and on
+    // 2026-09-23 the paid report read "against 0 comparable businesses" above a
+    // table of zeros. Treated as unavailable, so the report carries
+    // PEER_COMPARISON_ABSENT and the internal alert fires.
+    if (data.stats && data.stats.assessed === 0) {
+      return { ok: false, reason: 'zero_assessed', detail: 'named=' + data.stats.named
+        + ' resolved=' + data.stats.resolved, stats: data.stats, ms: Date.now() - started };
+    }
     return { ok: true, html: data.html, stats: data.stats || null, runId: data.runId || null, ms: Date.now() - started };
   } catch (e) {
     return { ok: false, reason: e.name === 'AbortError' ? 'timeout' : 'error', detail: e.message, ms: Date.now() - started };
@@ -7939,6 +7948,9 @@ export const __test__ = {
   saveToHubSpot,
   markPurchasedAndEmail,
   pushReportContextToHubSpot,
+  // The delivery path and the sentence it writes when there is no comparison.
+  deliverPaidReport,
+  PEER_COMPARISON_ABSENT,
   handlePaymentWebhook,
   buildBenchmarkRow,
   benchmarkSkipReason,
