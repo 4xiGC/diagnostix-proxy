@@ -1,0 +1,29 @@
+{
+  "contract": "rvp-diagnose-response",
+  "version": 1,
+  "why": "diagnostix-analytics calls RVP POST /diagnose for every peer assessment and reads the response. 8.11.52 removed healthCheckScore from it, Analytics rejected every peer, and the delivered report said 'against 0 comparable businesses'. No test on either side pinned the response. This file is that pin. An IDENTICAL copy lives in diagnostix-analytics/test/fixtures/, and each repo tests its own side against it: RVP that the real response satisfies it, Analytics that its real acceptance check accepts the example and rejects the example without the score. A change to what either side needs must change this file in BOTH repos.",
+  "producer": "diagnostix-proxy server.js POST /diagnose",
+  "consumers": [
+    "diagnostix-analytics lib/orchestrator.js assessOnce: rejects the response unless typeof healthCheckScore === 'number'",
+    "diagnostix-analytics lib/orchestrator.js: healthCheckScore read into the run's score range",
+    "diagnostix-analytics lib/orchestrator.js: benchmarkId verified and stored on bulk_run_subjects"
+  ],
+  "pillarKeys": ["cs", "pa", "es", "sm", "cp", "bg"],
+  "required": {
+    "healthCheckScore": "integer 0 to 100, the mean of the six pillar scores rounded half up; null only when the six are not all present, and Analytics then refuses the peer",
+    "pillars": "object carrying every key in pillarKeys, each with an integer score 0 to 100",
+    "benchmarkId": "string, or null when the benchmark write was skipped; the key must be present"
+  },
+  "example": {
+    "healthCheckScore": 59,
+    "benchmarkId": "00000000-0000-4000-8000-000000000000",
+    "pillars": {
+      "cs": { "score": 66, "label": "Customer Sentiment" },
+      "pa": { "score": 70, "label": "Pricing & Accessibility" },
+      "es": { "score": 42, "label": "Employee Sentiment" },
+      "sm": { "score": 48, "label": "Social Media Impact" },
+      "cp": { "score": 58, "label": "Competitive Positioning" },
+      "bg": { "score": 72, "label": "Brand Experience & Growth" }
+    }
+  }
+}
