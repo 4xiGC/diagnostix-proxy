@@ -1,0 +1,6 @@
+# DiagnostiX RVP
+#
+# node_modules/ only. package-lock.json is NOT listed: none of the four
+# DiagnostiX repos ignores it, and none tracks it.
+
+node_modules/
