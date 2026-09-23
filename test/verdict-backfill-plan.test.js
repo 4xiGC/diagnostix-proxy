@@ -51,6 +51,12 @@ test('RECOMPUTE respects the cutoff: an older row is out of the decided scope', 
   assert.equal(plan.length, 0);
 });
 
+test('RECOMPUTE WITH NO CUTOFF IS THE WHOLE TABLE, one rule (Simon, 2026-09-24, Q4)', () => {
+  const plan = planVerdictBackfill([row('a', '2026-08-31T17:31:00Z', 'Good', 64), row('b', '2026-09-22T11:01:00Z', 'Good', 61)],
+    { mode: 'recompute', since: null });
+  assert.deepEqual(plan.map((p) => p.id), ['a', 'b']);
+});
+
 test('THE OLD TEXT IS KEPT, and every other cohort_extra key survives the patch', () => {
   const [p] = planVerdictBackfill([row('a', '2026-09-22T11:01:00Z', 'Good', 61, { cuisine_detected: 'Italian' })],
     { mode: 'recompute', since: '2026-09-22T00:00:00Z' });

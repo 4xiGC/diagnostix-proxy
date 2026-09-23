@@ -5,8 +5,10 @@
 // SIMON'S DECISIONS"):
 //   null-fill   rows whose cohort_extra.score_verdict is null get the band of
 //               their own computed score
-//   recompute   rows since 2026-09-22 that carry the MODEL's verdict get the
-//               band of their own computed score
+//   recompute   rows that carry the MODEL's verdict get the band of their own
+//               computed score. First decided for the 69 rows since
+//               2026-09-22; widened on 2026-09-24 to the whole table, one
+//               rule (a `since` cutoff is still accepted)
 //   both        the old text is kept, as cohort_extra.score_verdict_model
 //
 // THE COMPUTED SCORE is the mean of the six stored pillar_scores, rounded half
@@ -34,7 +36,8 @@ export function planVerdictBackfill(rows, { mode, since } = {}) {
     if (mode === 'null-fill' && old !== null) continue;
     if (mode === 'recompute') {
       if (old === null) continue;
-      if (!since || !(String(b.created_at) >= since)) continue;
+      // No cutoff is the whole table (Simon, 2026-09-24: "whole table one rule").
+      if (since && !(String(b.created_at) >= since)) continue;
     }
     const pillars = {};
     for (const k of PILLAR_KEYS) {
