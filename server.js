@@ -2012,6 +2012,17 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     console.log('[diagnose] computed score=' + computed.score + ' band=' + computedBand
       + (computed.ok ? '' : ' reason=' + computed.reason));
 
+    // v8.11.53: THE RESPONSE CARRIES THE COMPUTED SCORE AS healthCheckScore.
+    //
+    // Analytics reads /diagnose for every peer assessment and REJECTS a
+    // response without a numeric healthCheckScore (diagnostix-analytics
+    // lib/orchestrator.js:230). 8.11.52 stopped the model writing that field
+    // and put nothing in its place, so every peer failed and the report said
+    // "against 0 comparable businesses". The value is the cover's own
+    // computeOverall, never a model number. With fewer than six pillars it is
+    // null, and Analytics refuses the peer rather than being fed a guess.
+    report.healthCheckScore = computed.ok ? computed.score : null;
+
     const summary = await writeExecutiveSummary({
       name, location, report, score: computed.score, band: computedBand,
     });
@@ -7905,6 +7916,9 @@ export const __test__ = {
   setFetch(fn) { const was = fetch; fetch = fn; return () => { fetch = was; }; },
   setClaude(fn) { const was = claude; claude = fn; return () => { claude = was; }; },
   getClaude() { return claude; },
+  // The express app, so a test can POST to a REAL route on an ephemeral port.
+  // RVP_IMPORT_ONLY stops the module listening; the test listens on port 0.
+  app,
   writeExecutiveSummary,
   SUMMARY_TARGET_WORDS,
   SUMMARY_MAX_WORDS,
