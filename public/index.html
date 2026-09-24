@@ -47,6 +47,16 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .step-lbl{font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:rgba(201,168,76,0.7)}
 /* ── PANELS ──────────────────────────────────────────── */
 .panel{display:none}.panel.active{display:block;animation:up 0.3s ease}
+/* ── PLACES CONFIRMATION AND REFUSAL (2026-09-26) ─────── */
+.pc-card{border:1.5px solid #e2ddd5;border-radius:8px;background:#fff;padding:1rem 1.2rem;margin:1.2rem 0 0;overflow-wrap:anywhere}
+.pc-name{font-size:1.15rem;font-weight:800;color:var(--navy)}
+.pc-addr{font-size:13px;color:#555;margin-top:4px;line-height:1.5}
+.pc-rev{font-size:13px;color:#333;margin-top:8px;font-weight:600}
+.pc-closed{font-size:12px;color:var(--red);margin-top:8px;font-weight:700}
+.pc-btns button{white-space:normal;max-width:100%}
+.pc-btns .btn-next{flex:1}
+.rf-p{margin:0 0 0.8rem;overflow-wrap:anywhere}
+@media(max-width:600px){.pc-btns{flex-direction:column-reverse}.pc-btns button{width:100%}}
 @keyframes up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 /* ── SURVEY FORM: LIGHT ─────────────────────────────── */
 .survey-wrap{background:var(--sur-bg);padding:2rem}
@@ -415,9 +425,10 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
     </div>
   </div>
 
+  <div id="e1" class="err" style="display:none;margin-bottom:1rem"></div>
   <div class="btn-row" style="padding:0">
     <button class="btn-back" onclick="goStep(0)">&larr; Back</button>
-    <button class="btn-next" style="flex:1" onclick="runHealthCheck()">Run My HealthCheck &rarr;</button>
+    <button class="btn-next" id="run-btn" style="flex:1" onclick="startConfirmation()">Run My HealthCheck &rarr;</button>
   </div>
 </div>
 </div>
@@ -527,6 +538,30 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   <div class="s-sub" id="rf-close" style="font-weight:600"></div>
   <div class="btn-row" style="padding:0">
     <button class="btn-back" id="rf-back" onclick="goStep(0)">&larr; Back to the form</button>
+  </div>
+</div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     STEP 5: IS THIS YOUR RESTAURANT? (overnight 2026-09-26)
+     SUBJECT_INTEGRITY_STANDARD.md 3.1. Shown after the survey is submitted
+     and before anything is spent. Yes runs the assessment on exactly this
+     Google record; No returns to the form with every entry kept.
+═══════════════════════════════════════════════════════ -->
+<div class="panel" id="p5">
+<div class="survey-wrap">
+  <div class="s-eyebrow">Before we run your HealthCheck</div>
+  <div class="s-title">Is this your restaurant?</div>
+  <div class="s-sub">We found this business on Google. We will assess exactly this one.</div>
+  <div class="pc-card" id="pc-card">
+    <div class="pc-name" id="pc-name"></div>
+    <div class="pc-addr" id="pc-addr"></div>
+    <div class="pc-rev" id="pc-rev"></div>
+    <div class="pc-closed" id="pc-closed" style="display:none">Google lists this business as permanently closed.</div>
+  </div>
+  <div class="btn-row pc-btns" style="padding:0">
+    <button class="btn-back" id="pc-no" onclick="declinePlace()">No, let me correct it</button>
+    <button class="btn-next" id="pc-yes" onclick="confirmPlace()">Yes, assess this restaurant</button>
   </div>
 </div>
 </div>
@@ -709,7 +744,7 @@ async function runHealthCheck() {
   surveyData = data;
   var usedFallback = false;
   try {
-    reportData = await callProxy(data);
+    reportData = await callProxy(Object.assign({}, data, { placeToken: currentPlaceToken }));
     // A REFUSAL IS NOT A FAILURE. It must never reach buildFallback below,
     // which would hand the owner an estimated report of a business the
     // product just declined to assess (overnight 2026-09-26).
@@ -724,6 +759,15 @@ async function runHealthCheck() {
       throw new Error('Invalid response from server, missing healthCheckScore');
     }
   } catch(e) {
+    // A confirmation problem (missing, expired or edited token) is not a
+    // failure to estimate around: nothing was assessed. Back to the survey
+    // step, where Run confirms the restaurant again.
+    if (e && e.code && /^confirmation-/.test(e.code)) {
+      clearInterval(iv);
+      currentPlaceToken = null;
+      showStepError(e.message);
+      return;
+    }
     console.error('HealthCheck error:', e.message);
     usedFallback = true;
     reportData = buildFallback(data);
@@ -897,6 +941,68 @@ function trackSubmission(d, r) {
 }
 
 // ── CALL PROXY ────────────────────────────────────────────────
+// ── IS THIS YOUR RESTAURANT? (2026-09-26) ─────────────────────
+// The survey asks /resolve-place for the Google record it would assess and
+// shows it. Nothing is spent until the owner says Yes, and the assessment then
+// runs on exactly that record, carried in a signed token. The token is kept
+// out of surveyData, so it is never saved with the survey.
+var currentPlaceToken = null;
+
+function placeReviewLine(p) {
+  if (typeof p.reviewCount !== 'number') return 'No reviews listed on Google';
+  var n = p.reviewCount.toLocaleString('en-US') + (p.reviewCount === 1 ? ' review' : ' reviews') + ' on Google';
+  return typeof p.rating === 'number' ? n + ', rated ' + p.rating : n;
+}
+
+function showStepError(msg) {
+  var e = document.getElementById('e1');
+  e.textContent = msg; e.style.display = 'block';
+  goStep(1);
+}
+
+async function startConfirmation() {
+  var btn = document.getElementById('run-btn');
+  var e1 = document.getElementById('e1');
+  e1.style.display = 'none';
+  var data = gatherData();
+  btn.disabled = true;
+  var was = btn.innerHTML; btn.textContent = 'Finding your restaurant…';
+  try {
+    var res = await fetch('/resolve-place', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: data.name, location: data.location, email: data.email }) });
+    var j = null; try { j = await res.json(); } catch (_) { j = null; }
+    if (!res.ok || !j) { showStepError((j && j.error) || 'We could not check the restaurant just now. Please try again in a moment.'); return; }
+    if (j.status === 'no-match' && j.copy) { currentPlaceToken = null; showRefusal(j.copy); return; }
+    if (j.status !== 'found' || !j.placeToken || !j.place) { showStepError('We could not check the restaurant just now. Please try again in a moment.'); return; }
+    currentPlaceToken = j.placeToken;
+    document.getElementById('pc-name').textContent = j.place.name || data.name;
+    document.getElementById('pc-addr').textContent = j.place.address || 'No address listed on Google';
+    document.getElementById('pc-rev').textContent = placeReviewLine(j.place);
+    document.getElementById('pc-closed').style.display = j.place.closed ? 'block' : 'none';
+    goStep(5);
+    document.getElementById('step-lbl').textContent = 'Confirm your restaurant';
+  } catch (err) {
+    showStepError('We could not check the restaurant just now. Please try again in a moment.');
+  } finally {
+    btn.disabled = false; btn.innerHTML = was;
+  }
+}
+
+function confirmPlace() { runHealthCheck(); }
+
+function declinePlace() {
+  var tok = currentPlaceToken; currentPlaceToken = null;
+  var data = gatherData();
+  try {
+    fetch('/decline-place', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ placeToken: tok, email: data.email }) }).catch(function(){});
+  } catch (_) { /* the row is best effort; the owner is never held up for it */ }
+  var e0 = document.getElementById('e0');
+  e0.textContent = 'Check the restaurant name and add the city and country so we can find the right one.';
+  e0.style.display = 'block';
+  goStep(0);
+}
+
 // Text into HTML, escaped. The refusal and the note carry the restaurant name
 // as the owner typed it, so they are never set as raw HTML.
 function textToHtml(s) {
@@ -929,7 +1035,13 @@ async function callProxy(d) {
       signal:  controller.signal
     });
     clearTimeout(timeoutId);
-    if (!res.ok) throw new Error('Server returned ' + res.status + ', please try again');
+    if (!res.ok) {
+      // The body carries a code on the confirmation errors; keep it.
+      var ej = null; try { ej = await res.json(); } catch (_) { ej = null; }
+      var err = new Error((ej && ej.error) || ('Server returned ' + res.status + ', please try again'));
+      err.code = ej && ej.code;
+      throw err;
+    }
     var json = await res.json();
     if (json.error) throw new Error(json.error);
     return json;
