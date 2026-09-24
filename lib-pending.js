@@ -857,6 +857,17 @@ export const ALERT_DEFAULT_CLOSING = 'The correct URL is the bare path plus a sl
   + 'nothing was logged by the service at all.';
 
 export function alertCopyFor(kind) {
+  // 2026-09-24: the summary gate is not a webhook failure. The sale was
+  // delivered, only without its executive summary; nothing was rejected, so
+  // the "rejected call is not trusted enough to quote" note is false too.
+  if (String(kind == null ? '' : kind) === 'summary-gate-failed') {
+    return {
+      opening: 'A paid report was delivered without an executive summary. The customer '
+        + 'received it; every other section is unaffected. Nothing is wrong with the payment webhook.',
+      closing: '',
+      requestNote: false,
+    };
+  }
   if (String(kind == null ? '' : kind) === 'subscribers-update-noop') {
     return {
       opening: 'A write to the sale record changed nothing. The report was delivered and '

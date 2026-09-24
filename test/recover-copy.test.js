@@ -48,6 +48,12 @@ test('every other kind keeps today s webhook text, unchanged', () => {
     assert.equal(c.opening, ALERT_DEFAULT_OPENING, kind + ' must not have been changed');
     assert.equal(c.closing, ALERT_DEFAULT_CLOSING, kind + ' must keep the missing-slash note');
   }
+  // 2026-09-24: summary-gate-failed is NOT a webhook kind. It left this default
+  // after the alert told Simon no sale was being delivered when one had been.
+  const s = alertCopyFor('summary-gate-failed');
+  assert.notEqual(s.opening, ALERT_DEFAULT_OPENING);
+  assert.equal(s.closing, '');
+  assert.equal(s.requestNote, false);
 });
 
 test('alertCopyFor never throws on junk and falls back to the default', () => {

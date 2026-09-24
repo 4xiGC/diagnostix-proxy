@@ -6075,8 +6075,9 @@ async function alertWebhookProblem({ kind, detail }) {
         + '<li>next alert possible in: ' + Math.round(ALERT_THROTTLE_MS / 60000) + ' minutes</li>'
         + '</ul>'
         + (copy.closing ? '<p>' + esc(copy.closing) + '</p>' : '')
-        + '<p>Nothing from the request body appears in this alert, deliberately: a '
-        + 'rejected call is not trusted enough to quote.</p>',
+        + (copy.requestNote === false ? ''
+          : '<p>Nothing from the request body appears in this alert, deliberately: a '
+            + 'rejected call is not trusted enough to quote.</p>'),
     });
     return true;
   } catch (e) {
