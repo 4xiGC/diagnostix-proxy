@@ -90,7 +90,8 @@ test('NO MATCH: a row, a LEAD alert without the requester address, and the copy;
   assert.equal(seen.outcomes[0].coverage_verdict, 'no-place-match');
   assert.equal(seen.outcomes[0].survey_addr_domain, '@example.org');
   assert.equal(seen.emails.length, 1);
-  assert.equal(seen.emails[0].subject, 'LEAD, no Places match: Nowhere Bistro');
+  // The suite runs under the guard's marker, so the subject may carry "[TEST RUN] ".
+  assert.equal(String(seen.emails[0].subject).replace(/^\[TEST RUN\] /, ''), 'LEAD, no Places match: Nowhere Bistro');
   assert.doesNotMatch(JSON.stringify(seen.emails[0]), /owner@/);
 });
 

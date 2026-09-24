@@ -99,7 +99,8 @@ test('REFUSED: 12 reviews, no model call, a row with the reason, a lead alert, t
   assert.match(o.reason, /subject-reviews-below-minimum/);
   assert.equal(o.survey_addr_domain, '@example.org');
   assert.equal(seen.emails.length, 1);
-  assert.match(seen.emails[0].subject, /^LEAD, review coverage refused: Teclados$/);
+  // The suite runs under the guard's marker, so the subject may carry "[TEST RUN] ".
+  assert.match(String(seen.emails[0].subject).replace(/^\[TEST RUN\] /, ''), /^LEAD, review coverage refused: Teclados$/);
   assert.doesNotMatch(JSON.stringify(seen.emails[0]), /owner@/, 'no requester address in the alert');
 });
 
@@ -111,7 +112,8 @@ test('LIMITED: 120 reviews, the assessment runs and carries the note', async () 
   assert.match(body.coverage.note, /^Google lists 120 reviews for Teclados, fewer than 300\./);
   assert.equal(seen.outcomes.length, 1);
   assert.equal(seen.outcomes[0].decision, 'limited');
-  assert.equal(seen.emails.filter((e) => /^LEAD/.test(e.subject)).length, 0);
+  // Stripped first: with the marker a /^LEAD/ test would count 0 whatever was sent.
+  assert.equal(seen.emails.filter((e) => /^LEAD/.test(String(e.subject).replace(/^\[TEST RUN\] /, ''))).length, 0);
 });
 
 test('PASS: 900 reviews, the assessment runs with no note', async () => {

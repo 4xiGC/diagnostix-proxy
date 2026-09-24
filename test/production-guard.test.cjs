@@ -45,7 +45,30 @@ test('CONTROL: a test database URL, or none, is allowed', () => {
   assert.equal(guard({}).status, 0);
 });
 
-test('the guard runs BEFORE the tests: npm test starts with it', () => {
+test('the guard runs BEFORE the tests: npm test IS the guard, which starts the suite', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
-  assert.match(pkg.scripts.test, /^node scripts\/guard-test-env\.cjs && node --test/);
+  assert.equal(pkg.scripts.test, 'node scripts/guard-test-env.cjs --test');
+});
+
+// 2026-09-24 (Simon): an email sent by a test says so in its subject. The
+// guard starts the suite with DIAGNOSTIX_TEST_RUN=1; senders read it.
+test('THE GUARD STARTS THE SUITE WITH THE TEST-RUN MARKER SET', () => {
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-marker-'));
+  const probe = path.join(dir, 'probe.test.cjs');
+  fs.writeFileSync(probe, "require('node:test')('marker', () => { if (process.env.DIAGNOSTIX_TEST_RUN !== '1') throw new Error('marker absent'); });\n");
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/SUPABASE|DIAGNOSTIX_TEST_RUN|NODE_TEST_CONTEXT/i.test(k)));
+  const withGuard = spawnSync(process.execPath, [GUARD, '--test', probe], { env: clean, encoding: 'utf8' });
+  assert.equal(withGuard.status, 0, 'the probe did not see the marker: ' + withGuard.stdout + withGuard.stderr);
+  // Exit 0 alone is not proof: a guard that ignores --test exits 0 without
+  // running anything. The probe's own pass line must be in the output.
+  assert.match(withGuard.stdout, /pass 1/, 'the guard did not start the suite');
+  // CONTROL: the same probe run WITHOUT the guard has no marker and fails.
+  const bare = spawnSync(process.execPath, ['--test', probe], { env: clean, encoding: 'utf8' });
+  assert.notEqual(bare.status, 0, 'the probe passes without the guard, so it proves nothing');
+  // And a refused guard starts nothing, --test or not.
+  const refused = spawnSync(process.execPath, [GUARD, '--test', probe], { env: { ...clean, SUPABASE_URL: 'https://' + PROD.evp + '.supabase.co' }, encoding: 'utf8' });
+  assert.notEqual(refused.status, 0);
+  assert.doesNotMatch(refused.stdout + refused.stderr, /marker|# pass/);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node scripts/guard-test-env.cjs && node --test",
+    "test": "node scripts/guard-test-env.cjs --test",
     "integrity": "node scripts/integrity.mjs"
   },
   "engines": {

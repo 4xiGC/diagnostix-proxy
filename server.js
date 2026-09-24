@@ -1375,10 +1375,12 @@ async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
     return { ok: false, reason: 'missing key' };
   }
 
+  // 2026-09-24 (Simon): a test run says so. scripts/guard-test-env.cjs starts
+  // every suite with DIAGNOSTIX_TEST_RUN=1; production never sets it.
   const payload = {
     from: (fromName || 'DiagnostiX') + ' <' + from + '>',
     to: [to],
-    subject,
+    subject: (process.env.DIAGNOSTIX_TEST_RUN === '1' ? '[TEST RUN] ' : '') + subject,
     html
   };
   if (bcc && bcc.length) {
@@ -8223,6 +8225,7 @@ export const __test__ = {
   // RVP_IMPORT_ONLY stops the module listening; the test listens on port 0.
   app,
   writeExecutiveSummary,
+  sendEmailViaResend,
   SUMMARY_TARGET_WORDS,
   SUMMARY_MAX_WORDS,
   // Exposed so the ship gate can render a real report page in a real browser
