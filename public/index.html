@@ -39,6 +39,17 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .logo-img-rpt{height:40px;width:auto;display:block;margin-bottom:0.8rem}
 
 .tagline{font-size:9px;letter-spacing:0.13em;text-transform:uppercase;color:rgba(255,255,255,0.3);text-align:right;line-height:1.65}
+/* 2026-09-24 (Q4): at 320 px the survey scrolled 152 px sideways in a
+   Wix-width frame: the form's centered logo (72 px tall, 402 px wide) and the
+   top bar's byline and tagline. Narrow screens only: the logos scale to their
+   column, and the byline and tagline wrap. Nothing changes above 480 px. */
+@media(max-width:480px){
+  .topbar{padding:1rem;flex-wrap:wrap;gap:6px}
+  .topbar>div:first-child{flex:1 1 100%;min-width:0;flex-wrap:wrap;gap:6px 14px !important}
+  .topbar img{max-width:100%;min-width:0;height:auto !important}
+  .topbar .tagline{text-align:left}
+  .survey-wrap img,.think-wrap>img{max-width:100%;height:auto !important}
+}
 /* ── PROGRESS ────────────────────────────────────────── */
 .prog-wrap{background:var(--navy2);padding:0.7rem 2rem;display:flex;align-items:center;justify-content:space-between}
 .prog-track{display:flex;gap:4px;flex:1;max-width:260px}

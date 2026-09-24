@@ -20,11 +20,11 @@
 // screen's own panel extends past the width. A FAILING CONTROL widens the card
 // in the 320 frame and requires the same check to report it.
 //
-// THE PAGE'S OWN HEADER ALREADY SCROLLS SIDEWAYS AT 320 PX, BEFORE ANY OF THIS
-// (measured 2026-09-24: the logo image is 402 px wide and the tagline ends at
-// 457 px, on the untouched survey form). That is recorded, not fixed here. So
-// the page-level check is that the screen adds NO sideways scroll beyond what
-// the form itself already has, read at the same size before submitting.
+// THE PAGE SCROLLED SIDEWAYS AT 320 PX BEFORE ANY OF THIS (measured
+// 2026-09-24: the form's centered logo was 402 px wide and the top bar's
+// tagline ended at 457 px). FIXED 2026-09-24 (Simon, Q4): the untouched form
+// and the thinking panel are now checked for NO sideways scroll at every size,
+// with a failing control, and the screen may add none beyond the form's.
 //
 // Then the three outcomes: Yes runs the assessment with the token (the row is
 // place_confirmed), a thin place is refused with the standard copy and never
@@ -196,6 +196,32 @@ test('THE PLACES CONFIRMATION SCREEN, IN REAL CHROME', async (t) => {
       { name: 'Wix frame 320 x 568 (narrowest plausible, unmeasured)', width: 1000, height: 900, frame: { w: 320, h: 568 } },
       { name: 'frame 860 x 700 (the page shell width)', width: 1100, height: 900, frame: { w: 860, h: 700 } },
     ];
+    // 2026-09-24, Simon (Q4): the survey must not scroll sideways at 320 px.
+    // Read on the UNTOUCHED form at every size; the control proves the same
+    // reading reports a page that is wider than its frame.
+    for (const s of SIZES) {
+      await t.test('NO SIDEWAYS SCROLL on the survey form at ' + s.name, async () => {
+        const W = await open(s);
+        const o = await evalJs(PAGE_OVERFLOW + '(' + W + ')');
+        assert.equal(typeof o, 'number', s.name + ': the page was never read');
+        assert.ok(o <= 0, s.name + ': the survey scrolls ' + o + 'px sideways');
+      });
+    }
+    await t.test('NO SIDEWAYS SCROLL on the thinking panel in the 320 frame (the same 72 px logo)', async () => {
+      const W = await open(SIZES[2]);
+      await evalJs(`(function(W){ W.goStep(2); return 1; })(${W})`);
+      assert.equal(await evalJs(ACTIVE + '(' + W + ')'), 'p2', 'the thinking panel was not shown, so this proves nothing');
+      const o = await evalJs(PAGE_OVERFLOW + '(' + W + ')');
+      assert.ok(o <= 0, 'the thinking panel scrolls ' + o + 'px sideways');
+    });
+    await t.test('FAILING CONTROL: an element wider than the 320 frame makes the page scroll, and the reading says so', async () => {
+      const W = await open(SIZES[2]);
+      await evalJs(`(function(W){ var d = W.document.createElement('div'); d.style.width = '700px'; d.style.height = '4px';
+        W.document.body.appendChild(d); return 1; })(${W})`);
+      const o = await evalJs(PAGE_OVERFLOW + '(' + W + ')');
+      assert.ok(o > 0, 'a 700px element in a 320px frame read as no sideways scroll: ' + o);
+    });
+
     for (const s of SIZES) {
       await t.test('the screen at ' + s.name, async () => {
         Object.assign(scenario, { mode: 'match', reviews: 765 });
