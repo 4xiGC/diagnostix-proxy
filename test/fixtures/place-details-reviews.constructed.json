@@ -1,0 +1,12 @@
+{
+  "_note": "CONSTRUCTED, NOT RECORDED. Built 2026-09-24 from Google's legacy Place Details documentation (developers.google.com/maps/documentation/places/web-service/legacy/details): with fields=reviews and reviews_sort=newest the response is { result: { reviews: [ ... up to five ... ] }, status }, and each review's time is seconds since 1970-01-01 UTC. Recording a real response needs a paid call, which the overnight 2026-09-27 rules STOP. The review times below are rewritten by each test relative to its clock; only the shape is load-bearing.",
+  "html_attributions": [],
+  "result": {
+    "reviews": [
+      { "author_name": "A. Reviewer", "language": "es", "rating": 5, "relative_time_description": "a week ago", "text": "Muy bueno.", "time": 1758000000 },
+      { "author_name": "B. Reviewer", "language": "en", "rating": 4, "relative_time_description": "a month ago", "text": "Good.", "time": 1756000000 },
+      { "author_name": "C. Reviewer", "language": "es", "rating": 3, "relative_time_description": "2 months ago", "text": "Regular.", "time": 1754000000 }
+    ]
+  },
+  "status": "OK"
+}

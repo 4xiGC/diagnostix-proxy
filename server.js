@@ -30,6 +30,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          webhookEnforcement, misroutedHint, takeBodySecret, webhookSecretCheck } from './lib-pending.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { reviewGate, refusalCopy, limitedNote, coverageNoteHtml, CONTACT_ADDRESS } from './lib-review-gate.js';
+import { fetchNewestReviewAt, PLACE_DETAILS_ASSUMED_USD } from './lib-place-details.js';
 import { signPlaceToken, verifyPlaceToken } from './lib-place-token.js';
 import { attachPlaceIdentity, dedupePeersByPlaceId, peerReviewVolumes,
          placesResolutionSummary } from './lib-places-peers.js';
@@ -1995,8 +1996,23 @@ app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => 
     // are not gated: a peer with few reviews is still a peer, and refusing it
     // would shrink a cohort without anyone deciding to.
     let coverage;
+    let intakeNewestReviewAt = null;
     if (confirmedPlace) {
-      const gate = reviewGate({ subjectReviewCount: confirmedPlace.reviewCount, newestReviewAt: null });
+      // THE NEWEST REVIEW DATE (2026-09-24, lib-place-details.js): one paid
+      // Place Details call for the CONFIRMED place, only when the count alone
+      // does not already refuse (a refused subject needs no date). Here and not
+      // at /resolve-place, which would pay for every "No" and every candidate.
+      // A failed call leaves recency unknown and never blocks the sale.
+      if (reviewGate({ subjectReviewCount: confirmedPlace.reviewCount }).state !== 'refused-coverage') {
+        const rd = await fetchNewestReviewAt({ placeId: confirmedPlace.placeId, apiKey: process.env.GOOGLE_PLACES_API_KEY, fetchFn: fetch });
+        intakeNewestReviewAt = rd.newestReviewAt;
+        console.log('PLACE_DETAILS [places] ' + (rd.ok ? 'ok' : 'failed') + ' reason=' + rd.reason
+          + ' reviewsRead=' + rd.reviewsRead + ' newest=' + (rd.newestReviewAt || 'none') + ' ms=' + rd.ms);
+        // Counted for the spend ledger. The price is ASSUMED from Google's page.
+        if (rd.called) console.log('SPEND [places] place-details=1 skus=Places Details,Atmosphere Data assumedUsdUpTo='
+          + PLACE_DETAILS_ASSUMED_USD.worst);
+      }
+      const gate = reviewGate({ subjectReviewCount: confirmedPlace.reviewCount, newestReviewAt: intakeNewestReviewAt });
       coverage = { state: gate.state, reason: gate.reason, subjectReviewCount: gate.subjectReviewCount,
         recency: gate.recency, note: limitedNote({ subject: displayName, gate }) };
       console.log('COVERAGE [coverage] ' + gate.state + ' reviews=' + gate.subjectReviewCount
@@ -2986,7 +3002,7 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
       focalGeo: compPlacesData.focalGeo || null,
       focalPlaceId: compPlacesData.focalPlaceId || null,
       focalReviewCount: compPlacesData.focalReviewCount,
-      newestReviewAt: null,
+      newestReviewAt: intakeNewestReviewAt,
     });
     const benchmarkSkip = benchmarkSkipReason(benchmarkRow);
     report.benchmarkId = benchmarkSkip ? null : benchmarkRow.id;
