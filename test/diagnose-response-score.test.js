@@ -71,7 +71,11 @@ export async function postDiagnose(pillars) {
     const port = server.address().port;
     const res = await realGlobal('http://127.0.0.1:' + port + '/diagnose', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Teclados', location: 'Santiago, Chile' }),
+      // placeId, as Analytics sends it: this test pins the response Analytics
+      // reads. Without it the request is the survey path, which the review
+      // gate (2026-09-26) refuses when Places gives no count, as every fetch
+      // here does. The survey path's states: test/review-gate-route.test.js.
+      body: JSON.stringify({ name: 'Teclados', location: 'Santiago, Chile', placeId: 'ChIJ-score-test' }),
     });
     return { status: res.status, body: await res.json() };
   } finally {

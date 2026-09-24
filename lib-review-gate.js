@@ -91,3 +91,14 @@ export function limitedNote({ subject, gate }) {
   return `Google lists ${fmt(g.subjectReviewCount)} reviews for ${s}, fewer than ${fmt(p.LIMITED_BELOW_REVIEWS)}. `
     + 'The assessment is produced, and the thinner the public signal, the more it rests on a small number of reviews.';
 }
+
+// The limited note as the delivered report prints it. Empty unless the stored
+// report says limited and carries a note, so a report from before the gate
+// renders exactly as it did.
+export function coverageNoteHtml(report) {
+  const c = report && report.coverage;
+  if (!c || c.state !== 'limited' || typeof c.note !== 'string' || !c.note.trim()) return '';
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return `
+      <div class="cov-note"><span class="cov-k">Limited coverage.</span> ${esc(c.note)}</div>`;
+}

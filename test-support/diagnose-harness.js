@@ -35,7 +35,13 @@ export function diagnoseHarness(seam) {
       await new Promise((r) => server.once('listening', r));
       const res = await realGlobal('http://127.0.0.1:' + server.address().port + '/diagnose', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Teclados', location: 'Santiago, Chile' }),
+        // placeId, as Analytics sends it. The contract this harness serves is
+        // the Analytics one, and since the review gate (2026-09-26) a request
+        // with no placeId is the SURVEY path, which is gated on the subject's
+        // Google review count; with every fetch empty that count is unknown
+        // and the survey path refuses. The survey path's own states are
+        // driven in test/review-gate-route.test.js.
+        body: JSON.stringify({ name: 'Teclados', location: 'Santiago, Chile', placeId: 'ChIJ-harness' }),
       });
       return { status: res.status, body: await res.json() };
     } finally {

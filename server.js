@@ -29,6 +29,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          alertThrottle, ALERT_THROTTLE_MS,
          webhookEnforcement, misroutedHint } from './lib-pending.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { reviewGate, refusalCopy, limitedNote, coverageNoteHtml } from './lib-review-gate.js';
 import { attachPlaceIdentity, dedupePeersByPlaceId, peerReviewVolumes,
          placesResolutionSummary } from './lib-places-peers.js';
 import { newLedger, noteSearch, noteResults, summarizeEvidence,
@@ -1868,6 +1869,45 @@ app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => 
     // the fallback silently produced a focal with no id, which now means no
     // focal review count at all rather than a wrong one.
     const compPlacesData = compResult.placesData || { places: [], focalRating: null, focalReviewCount: null, focalGeo: null, focalPlaceId: null };
+
+    // ── THE REVIEW GATE (overnight 2026-09-26, lib-review-gate.js) ──
+    //
+    // Before any model call. Reads the subject's OWN Google review count, never
+    // evidence.reviewsTotal (a sum over the neighbors too).
+    //
+    // A CALLER WITH A placeId IS NOT GATED. That is Analytics, assessing peers
+    // its own peer gate already chose; a peer with few reviews is still a peer,
+    // and refusing it would shrink a cohort without anyone deciding to. The
+    // survey never sends a placeId.
+    let coverage;
+    if (!suppliedPlaceId) {
+      const gate = reviewGate({ subjectReviewCount: compPlacesData.focalReviewCount, newestReviewAt: null });
+      coverage = { state: gate.state, reason: gate.reason, subjectReviewCount: gate.subjectReviewCount,
+        recency: gate.recency, note: limitedNote({ subject: name, gate }) };
+      console.log('COVERAGE [coverage] ' + gate.state + ' reviews=' + gate.subjectReviewCount
+        + ' recency=' + gate.recency + ' reason=' + gate.reason);
+      await writeOutcome(Object.assign(outcomeRecord({
+        kind: 'coverage',
+        decision: gate.state === 'refused-coverage' ? 'refused' : gate.state,
+        reason: gate.reason + ' reviews=' + gate.subjectReviewCount
+          + ' min=' + gate.thresholds.MIN_SUBJECT_REVIEWS + ' limitedBelow=' + gate.thresholds.LIMITED_BELOW_REVIEWS
+          + ' recency=' + gate.recency,
+        surveyEmail: body.email, deliveredRestaurant: name,
+      }), {
+        coverage_verdict: gate.state,
+        place_id: compPlacesData.focalPlaceId || null,
+        place_confirmed: false,
+        subject_review_count: gate.subjectReviewCount,
+        subject_newest_review_at: gate.newestReviewAt,
+      }));
+      if (gate.state === 'refused-coverage') {
+        await sendLeadAlert({ kind: 'review coverage refused', subject: name, location,
+          lines: ['Reason: ' + gate.reason, 'Google reviews: ' + (gate.subjectReviewCount === null ? 'none listed' : gate.subjectReviewCount),
+            'Rule: at least ' + gate.thresholds.MIN_SUBJECT_REVIEWS] });
+        return res.json({ refused: true, benchmarkId: null,
+          coverage: Object.assign({}, coverage, { copy: refusalCopy({ subject: name, gate, channel: 'page' }) }) });
+      }
+    }
     // Scraping summary: count which categories returned 'no data' so empty-report cases are visible in logs.
     const cats = { GOOGLE:g, REVIEWS:rv, STAFF:st, SOCIAL:so, DELIVERY:dl, COMPETITORS:co };
     const webScoring = budgetCorpus(cats, CORPUS_CAPS_SCORING);
@@ -2798,6 +2838,9 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     const benchmarkSkip = benchmarkSkipReason(benchmarkRow);
     report.benchmarkId = benchmarkSkip ? null : benchmarkRow.id;
     report.benchmarkSkip = benchmarkSkip;
+    // The gate's state travels with the report, so the page and the delivered
+    // report can print the limited note. Absent on an Analytics call.
+    if (coverage) report.coverage = coverage;
 
     console.log('[diagnose] SUCCESS score:', report.healthCheckScore,
       benchmarkSkip ? `benchmark=skipped(${benchmarkSkip})` : `benchmarkId=${benchmarkRow.id}`);
@@ -4299,6 +4342,12 @@ body{
 .ev-l{font-size:10px;letter-spacing:0.07em;text-transform:uppercase;color:#6b6880;margin-top:4px}
 .ev-s{margin:14px 0 0;font-size:12.5px;line-height:1.65;color:#555;border-top:1px solid #ecebf1;padding-top:12px}
 @media print{ .ev-panel{border-color:#ccc;background:#fafafa} }
+.cov-note{
+  border-left:3px solid #C17D11;background:#fdf8ee;padding:12px 16px;margin:0 0 18px;
+  font-size:12.5px;line-height:1.6;color:#4a4a4a;break-inside:avoid;page-break-inside:avoid;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+}
+.cov-k{font-weight:700;color:#8a5a00}
 
 .body-p{font-size:14px;line-height:1.7;color:#333;margin:10px 0}
 
@@ -4580,6 +4629,8 @@ ul.bullet-list li{margin:4px 0}
       <h2 class="rpt-h">Executive Summary</h2>
       <div class="exec-box">${esc(summary)}</div>
     ` : ''}
+
+    ${coverageNoteHtml(report)}
 
     ${evidencePanelHtml(report)}
 
@@ -5805,6 +5856,31 @@ function markMemorySpent({ email, token, reason }) {
 // NOTHING FROM THE BODY EVER APPEARS HERE. A rejected call's body is attacker
 // controlled, and the whole point of rejecting it is to stop acting on it.
 const WEBHOOK_ALERT = { lastAt: 0, suppressed: 0 };
+
+// A consultant-led lead: a requester reached a step that refused them. Same
+// shape as EVP's "LEAD, identity unresolved" mail: what they typed and why, and
+// NEVER the requester's address. Best effort; it never fails a request.
+async function sendLeadAlert({ kind, subject, location, lines }) {
+  try {
+    const esc = (v) => String(v == null ? '' : v)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    await sendEmailViaResend({
+      to: 'hello@4xiconsulting.com',
+      subject: 'LEAD, ' + kind + ': ' + subject,
+      fromName: 'DiagnostiX Alerts',
+      html: '<p>A requester reached the survey and was refused before any assessment ran.</p><ul>'
+        + '<li>Restaurant as typed: ' + esc(subject) + '</li>'
+        + '<li>Location as typed: ' + esc(location || 'not given') + '</li>'
+        + (lines || []).map((l) => '<li>' + esc(l) + '</li>').join('')
+        + '</ul><p>This is a consultant-led lead.</p>',
+    });
+    console.log('LEAD [lead] sent kind=' + kind);
+    return true;
+  } catch (e) {
+    console.log('LEAD [lead] error ' + (e && e.message));
+    return false;
+  }
+}
 
 async function alertWebhookProblem({ kind, detail }) {
   try {

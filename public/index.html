@@ -514,6 +514,23 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 
 </div><!-- end p3 -->
 
+<!-- ══════════════════════════════════════════════════════
+     STEP 4: THE REVIEW GATE REFUSED (overnight 2026-09-26).
+     After p3 on purpose: goStep(n) shows the n-th .panel, so a panel added
+     before p3 would shift every existing step.
+═══════════════════════════════════════════════════════ -->
+<div class="panel" id="p4">
+<div class="survey-wrap">
+  <div class="s-eyebrow">Restaurant HealthCheck</div>
+  <div class="s-title" id="rf-h"></div>
+  <div id="rf-body" class="s-sub"></div>
+  <div class="s-sub" id="rf-close" style="font-weight:600"></div>
+  <div class="btn-row" style="padding:0">
+    <button class="btn-back" id="rf-back" onclick="goStep(0)">&larr; Back to the form</button>
+  </div>
+</div>
+</div>
+
 </div><!-- end .shell -->
 
 <!-- ══════════════════════════════════════════════════════
@@ -693,6 +710,14 @@ async function runHealthCheck() {
   var usedFallback = false;
   try {
     reportData = await callProxy(data);
+    // A REFUSAL IS NOT A FAILURE. It must never reach buildFallback below,
+    // which would hand the owner an estimated report of a business the
+    // product just declined to assess (overnight 2026-09-26).
+    if (reportData && reportData.refused && reportData.coverage && reportData.coverage.copy) {
+      clearInterval(iv);
+      showRefusal(reportData.coverage.copy);
+      return;
+    }
     // Validate the response has the fields we need
     // The pillars are what the page needs now, not the typed total.
     if (!reportData || !reportData.pillars) {
@@ -872,6 +897,26 @@ function trackSubmission(d, r) {
 }
 
 // ── CALL PROXY ────────────────────────────────────────────────
+// Text into HTML, escaped. The refusal and the note carry the restaurant name
+// as the owner typed it, so they are never set as raw HTML.
+function textToHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// The review gate's refusal (SUBJECT_INTEGRITY_STANDARD.md 1.2), shown in
+// place of a report. Built with textContent: nothing here is HTML.
+function showRefusal(copy) {
+  var h = document.getElementById('rf-h'), b = document.getElementById('rf-body'), c = document.getElementById('rf-close');
+  h.textContent = copy.heading || '';
+  b.innerHTML = '';
+  (copy.body || []).forEach(function(line){
+    var p = document.createElement('p'); p.className = 'rf-p'; p.textContent = line; b.appendChild(p);
+  });
+  c.textContent = copy.closing || '';
+  goStep(4);
+  document.getElementById('step-lbl').textContent = 'No assessment produced';
+}
+
 async function callProxy(d) {
   // 90 second timeout, Railway can take up to ~60s for a full scan
   var controller = new AbortController();
@@ -1032,6 +1077,12 @@ function renderReport(r, d) {
     +'<div style="background:#f7f5f0;border-left:3px solid '+overallCol+';padding:1rem 1.2rem;margin-bottom:1.2rem;font-size:13px;color:#333;line-height:1.7">'
       +r.executiveSummary
     +'</div>'
+
+    // ── Limited coverage note (the review gate, 2026-09-26) ──
+    +((r.coverage && r.coverage.state === 'limited' && r.coverage.note)
+      ? '<div class="cov-note" style="border-left:3px solid #C17D11;background:#fdf8ee;padding:0.8rem 1.1rem;margin-bottom:1.2rem;font-size:12.5px;color:#4a4a4a;line-height:1.6">'
+        +'<b style="color:#8a5a00">Limited coverage.</b> '+textToHtml(r.coverage.note)+'</div>'
+      : '')
 
     // ── 6-pillar traffic lights ──
     +'<div style="margin-bottom:1.2rem">'
