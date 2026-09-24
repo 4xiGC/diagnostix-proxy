@@ -2792,6 +2792,8 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
       report, name, location, country, region, focalContext,
       focalGeo: compPlacesData.focalGeo || null,
       focalPlaceId: compPlacesData.focalPlaceId || null,
+      focalReviewCount: compPlacesData.focalReviewCount,
+      newestReviewAt: null,
     });
     const benchmarkSkip = benchmarkSkipReason(benchmarkRow);
     report.benchmarkId = benchmarkSkip ? null : benchmarkRow.id;
@@ -5667,17 +5669,54 @@ async function recordSwapUse(fields) {
 // perform on this database. Best effort: a failure here must never fail a
 // delivery, but it is logged, because the point of the table is that
 // verification stops depending on a log buffer that resets on every deploy.
+// ────────── Inserts that survive an unapplied add-only migration ──────────
+//
+// PostgREST rejects an insert that names a column the table does not have
+// (400, code PGRST204, "Could not find the 'x' column"). A writer that starts
+// sending a new column before its migration is applied would therefore lose
+// EVERY row, and a lost benchmark row breaks Analytics, which verifies the id.
+// So a rejection that names one of the listed new keys is retried ONCE with
+// those keys removed. Any other rejection is returned as it was: this is not a
+// retry loop, and it never drops a column the migration did not add.
+const BENCHMARK_UNMIGRATED_KEYS = ['subject_review_count', 'subject_newest_review_at'];
+const OUTCOME_UNMIGRATED_KEYS = ['coverage_verdict', 'place_id', 'place_confirmed',
+  'subject_review_count', 'subject_newest_review_at'];
+
+function namesMissingColumn(status, text, keys) {
+  if (status !== 400) return false;
+  const s = String(text || '');
+  if (!/PGRST204|Could not find the/.test(s)) return false;
+  return keys.some((k) => s.includes("'" + k + "'"));
+}
+
+async function insertTolerant(table, row, optionalKeys) {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_KEY;
+  const post = (body) => fetch(url + '/rest/v1/' + table, {
+    method: 'POST',
+    headers: { 'apikey': key, 'Authorization': 'Bearer ' + key,
+               'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+    body: JSON.stringify(body),
+  });
+  const first = await post(row);
+  if (first.ok) return first;
+  const text = await first.text().catch(() => '');
+  if (!namesMissingColumn(first.status, text, optionalKeys)) {
+    return { ok: false, status: first.status, text: async () => text };
+  }
+  const stripped = Object.assign({}, row);
+  for (const k of optionalKeys) delete stripped[k];
+  console.log('[insert] ' + table + ': migration not applied, retried without '
+    + optionalKeys.filter((k) => k in row).join(', '));
+  return post(stripped);
+}
+
 async function writeOutcome(fields) {
   const url = process.env.SUPABASE_URL;
   const dbKey = process.env.SUPABASE_KEY;
   if (!url || !dbKey) return false;
   try {
-    const r = await fetch(url + '/rest/v1/rvp_outcomes', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: dbKey,
-                 Authorization: 'Bearer ' + dbKey, Prefer: 'return=minimal' },
-      body: JSON.stringify(fields),
-    });
+    const r = await insertTolerant('rvp_outcomes', fields, OUTCOME_UNMIGRATED_KEYS);
     if (r.status === 404) { console.log('OUTCOME [outcome] table missing, migration 003 not applied'); return false; }
     if (!r.ok) { console.log('OUTCOME [outcome] write failed ' + r.status); return false; }
     console.log('OUTCOME [outcome] ok kind=' + fields.kind + ' decision=' + fields.decision
@@ -7019,7 +7058,7 @@ function toBenchmarkScore(value) {
   return Math.min(100, Math.max(0, Math.round(n)));
 }
 
-function buildBenchmarkRow({ report, name, location, country, region, focalContext, focalGeo, focalPlaceId }) {
+function buildBenchmarkRow({ report, name, location, country, region, focalContext, focalGeo, focalPlaceId, focalReviewCount, newestReviewAt }) {
   // Computed from the same six pillars the report prints, by the same function
   // the renderer uses. Two code paths that disagreed about a subject's score
   // would be worse than either being wrong.
@@ -7061,6 +7100,25 @@ function buildBenchmarkRow({ report, name, location, country, region, focalConte
     // this service; EVP and SVP still send it as null until they are updated,
     // which is why 009 adds rather than renames.
     subject_key:      focalPlaceId || null,
+
+    // ── The subject's own Google review data (overnight 2026-09-26) ──
+    //
+    // user_ratings_total from the focal findplacefromtext candidate, the figure
+    // the review gate reads (lib-review-gate.js). Until now it reached only
+    // report._debug, where no later read of this row could find it. NEVER the
+    // Serper knowledge-graph count in focalContext: on Zulu (2026-09-19) that
+    // said 4,552 where Places said 625. No Places figure, null.
+    //
+    // subject_newest_review_at: RVP makes no Place Details call, so no review
+    // date is read and this is null on every run today. It is written only
+    // when a real date is present.
+    //
+    // BOTH COLUMNS NEED A MIGRATION THAT IS PRINTED, NOT RUN. insertTolerant
+    // drops them and retries once if the insert names them as missing.
+    subject_review_count:     (typeof focalReviewCount === 'number' && Number.isFinite(focalReviewCount) && focalReviewCount >= 0)
+                                ? Math.round(focalReviewCount) : null,
+    subject_newest_review_at: (newestReviewAt && Number.isFinite(Date.parse(newestReviewAt)))
+                                ? new Date(Date.parse(newestReviewAt)).toISOString() : null,
 
     cohort_sector:    null,
     cohort_subsector: null,
@@ -7214,18 +7272,7 @@ async function writeBenchmarkRow(row) {
       return false;
     }
 
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_KEY;
-    const res = await fetch(`${url}/rest/v1/${BENCHMARKS_TABLE}`, {
-      method: 'POST',
-      headers: {
-        'apikey': key,
-        'Authorization': `Bearer ${key}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal'
-      },
-      body: JSON.stringify(row)
-    });
+    const res = await insertTolerant(BENCHMARKS_TABLE, row, BENCHMARK_UNMIGRATED_KEYS);
 
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
@@ -7959,6 +8006,8 @@ export const __test__ = {
   handlePaymentWebhook,
   buildBenchmarkRow,
   benchmarkSkipReason,
+  writeBenchmarkRow,
+  writeOutcome,
   createCustomer,
   findOrderRow,
   // The dash backstop, exposed so its two sides can be asserted: that it
