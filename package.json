@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "integrity": "node scripts/integrity.mjs"
   },
   "engines": {
     "node": ">=18.0.0"
