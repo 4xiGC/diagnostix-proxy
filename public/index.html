@@ -788,6 +788,15 @@ async function runHealthCheck() {
   ts.textContent = usedFallback ? 'Using estimated scores, live data unavailable' : 'HealthCheck complete';
   if (thinkH) thinkH.textContent = usedFallback ? 'Report ready (estimated)' : 'Report ready';
 
+  // 2026-09-24 (Q5): a confirmed place is named by Google on the cover and
+  // in everything built from the saved survey (the delivered report, the
+  // purchase email). The owner's typed name is kept beside it as typedName,
+  // the alias the purchase's peer comparison queries by.
+  if (!usedFallback && reportData && reportData.subject && reportData.subject.name) {
+    data.typedName = data.name;
+    data.name = String(reportData.subject.name);
+  }
+
   // v8.3 FIX: Save report to server cache so /payment-webhook can find it
   if (!usedFallback && reportData && data.email) {
     try {
@@ -1350,10 +1359,12 @@ function renderReport(r, d) {
     }
     return null;
   }
+  // The subject under either of its names (Q5: Google's, and the typed alias).
   var focalNameLower = (d.name || '').trim().toLowerCase();
+  var focalTypedLower = (d.typedName || '').trim().toLowerCase();
   var peers = (r.competitors || []).filter(function(c) {
     var peerName = (c.name || '').trim().toLowerCase();
-    return peerName && peerName !== focalNameLower;
+    return peerName && peerName !== focalNameLower && peerName !== focalTypedLower;
   });
   var compCards = peers.slice(0, 5).map(function(c) {
     var ratingRaw = interpretCompetitorRating(c);

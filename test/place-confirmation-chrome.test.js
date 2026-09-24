@@ -54,17 +54,21 @@ const { app, setFetch, setClaude } = __test__;
 
 const PILLARS = { cs: { score: 66 }, pa: { score: 70 }, es: { score: 42 }, sm: { score: 48 }, cp: { score: 58 }, bg: { score: 72 } };
 const scenario = { mode: 'match', reviews: 765 };
-const seen = { outcomes: [], emails: [] };
+const seen = { outcomes: [], emails: [], pending: [] };
+// The owner types "Teclados"; Google's record is named differently (Q5).
+const GOOGLE_NAME = 'Casa Teclados SpA';
 const fake = async (url, init) => {
   const u = String(url);
   const ok = (j) => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => j, text: async () => JSON.stringify(j) });
   if (u.includes('findplacefromtext') && u.includes('formatted_address')) {
     if (scenario.mode === 'nomatch') return ok({ status: 'ZERO_RESULTS', candidates: [] });
-    return ok({ status: 'OK', candidates: [{ place_id: 'ChIJ-teclados', name: 'Teclados',
+    return ok({ status: 'OK', candidates: [{ place_id: 'ChIJ-teclados', name: GOOGLE_NAME,
       formatted_address: 'Av. Italia 1234, Providencia, Santiago, Chile', rating: 4.4,
       user_ratings_total: scenario.reviews, business_status: 'OPERATIONAL', geometry: { location: { lat: -33.44, lng: -70.62 } } }] });
   }
   if (u.includes('/rest/v1/rvp_outcomes')) { seen.outcomes.push(JSON.parse(init.body)); return { ok: true, status: 201, text: async () => '' }; }
+  if (u.includes('/rest/v1/pending_reports') && init && init.body && String(init.method || '').toUpperCase() === 'POST') {
+    seen.pending.push(JSON.parse(init.body)); return ok([{ id: 'pending-1' }]); }
   if (u.includes('api.resend.com')) { seen.emails.push(JSON.parse(init.body)); return ok({ id: 'x' }); }
   return ok({});
 };
@@ -274,6 +278,14 @@ test('THE PLACES CONFIRMATION SCREEN, IN REAL CHROME', async (t) => {
       assert.ok(row, 'no coverage row');
       assert.equal(row.place_confirmed, true);
       assert.equal(row.coverage_verdict, 'pass');
+      // Q5: Google's name on the cover; the saved survey carries Google's name
+      // as its name and the owner's typed name as the query alias.
+      assert.equal(await evalJs(`(${W}).document.querySelector('.rpt-title').textContent`), GOOGLE_NAME);
+      for (let k = 0; k < 50 && !seen.pending.length; k++) await sleep(60);
+      assert.ok(seen.pending.length, 'the survey was never saved, so this proves nothing');
+      const saved = seen.pending[seen.pending.length - 1].survey;
+      assert.equal(saved.name, GOOGLE_NAME);
+      assert.equal(saved.typedName, 'Teclados');
     });
 
     await t.test('REFUSED: a thin place gets the standard refusal, never an estimated report', async () => {
@@ -285,7 +297,7 @@ test('THE PLACES CONFIRMATION SCREEN, IN REAL CHROME', async (t) => {
       await evalJs(`(function(W){ W.document.getElementById('pc-yes').click(); return 1; })(${W})`);
       assert.equal(await waitPanel(W, 'p4'), 'p4', 'the refusal panel was never shown');
       const text = await evalJs(`(${W}).document.getElementById('p4').innerText`);
-      assert.match(text, /We cannot assess Teclados yet/);
+      assert.match(text, /We cannot assess Casa Teclados SpA yet/);
       assert.match(text, /You have not been charged for this assessment\./);
       assert.doesNotMatch(await evalJs(`(${W}).document.body.innerText`), /estimated/i);
       const p = await evalJs(PANEL_OVERFLOW('p4') + '(' + W + ')');
