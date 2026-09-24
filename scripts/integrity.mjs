@@ -43,8 +43,17 @@ export function suiteCounts(stdout) {
   return { tests: n('tests'), pass: n('pass'), fail: n('fail') };
 }
 
-function run(cmd, args, { cwd = REPO, timeoutMs = 90 * 60 * 1000 } = {}) {
-  const r = spawnSync(cmd, args, { cwd, env: process.env, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, shell: process.platform === 'win32' && cmd === 'npm' });
+// THE SUITE NEVER SEES A PRODUCTION CREDENTIAL. Found by the first full run
+// (2026-09-25): under railway run, tests that do not set their own database URL
+// inherited production's, and one wrote two test rows into evp_assessments. The
+// gates read tables and keep the credentials; the suite gets them stripped.
+const CREDENTIAL = /SUPABASE|ANTHROPIC|SERPER|RESEND|WIX|GOOGLE|PLACES|HUBSPOT|RAILWAY|ANALYTICS|SECRET|PASSWORD|TOKEN|_KEY$|API_KEY/i;
+export function suiteEnv(env) {
+  return Object.fromEntries(Object.entries(env || {}).filter(([k]) => !CREDENTIAL.test(k)));
+}
+
+function run(cmd, args, { cwd = REPO, timeoutMs = 90 * 60 * 1000, env = process.env } = {}) {
+  const r = spawnSync(cmd, args, { cwd, env, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, shell: process.platform === 'win32' && cmd === 'npm' });
   return { code: r.status, out: (r.stdout || '') + (r.stderr || ''), timedOut: r.error && r.error.code === 'ETIMEDOUT' };
 }
 
@@ -57,7 +66,7 @@ export async function runGates(gates, title) {
       const script = g.script ? path.join(GATES_DIR, g.script) : null;
       if (script && !fs.existsSync(script)) { verdict = 'ERROR'; counts = 'gate script missing: ' + script; }
       else {
-        const r = g.npm ? run('npm', ['test']) : run(process.execPath, [script, ...(g.args || [])], { cwd: g.cwd || REPO });
+        const r = g.npm ? run('npm', ['test'], { env: suiteEnv(process.env) }) : run(process.execPath, [script, ...(g.args || [])], { cwd: g.cwd || REPO });
         if (r.timedOut) { verdict = 'ERROR'; counts = 'timed out'; }
         else {
           const parsed = g.parse ? g.parse(r.out, r.code) : null;

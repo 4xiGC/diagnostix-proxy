@@ -47,3 +47,17 @@ test('the RVP gate list names every gate the program built, and says why one is 
   for (const w of ['suite', 'print', 'verdict words', 'score_verdict', 'statistics', 'review-count']) assert.match(names, new RegExp(w));
   for (const g of RVP_GATES.filter((x) => x.skip)) assert.match(g.skip, /^SKIPPED: /);
 });
+
+// 2026-09-25, FOUND BY THE FIRST FULL RUN: the harness ran each suite under
+// `railway run`, so tests that do not set their own database URL inherited
+// PRODUCTION credentials. EVP's confirmation-screen Chrome test then wrote two
+// "STOP: no paid run in a test" error rows into production evp_assessments.
+// A suite must never see a production credential.
+test('THE SUITE RUNS WITHOUT PRODUCTION CREDENTIALS', async () => {
+  const { suiteEnv } = await load();
+  const env = suiteEnv({ PATH: '/bin', SystemRoot: 'C:/Windows', SUPABASE_URL: 'https://x.supabase.co', SUPABASE_KEY: 'k',
+    SUPABASE_SERVICE_KEY: 'k', ANTHROPIC_API_KEY: 'k', SERPER_API_KEY: 'k', RESEND_API_KEY: 'k', WIX_WEBHOOK_SECRET: 's',
+    GOOGLE_PLACES_API_KEY: 'k', HUBSPOT_TOKEN: 't', ANALYTICS_SUPABASE_URL: 'https://y.supabase.co', RAILWAY_ENVIRONMENT: 'production',
+    EVP_IDENTITY_SECRET: 's', ADMIN_PASSWORD: 'p' });
+  assert.deepEqual(Object.keys(env).sort(), ['PATH', 'SystemRoot'], 'a credential reached the suite');
+});
