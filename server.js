@@ -29,7 +29,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          alertThrottle, ALERT_THROTTLE_MS,
          webhookEnforcement, misroutedHint, takeBodySecret, webhookSecretCheck } from './lib-pending.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { reviewGate, refusalCopy, limitedNote, coverageNoteHtml, CONTACT_ADDRESS } from './lib-review-gate.js';
+import { reviewGate, refusalCopy, noMatchCopy, limitedNote, coverageNoteHtml, CONTACT_ADDRESS } from './lib-review-gate.js';
 import { fetchNewestReviewAt, PLACE_DETAILS_ASSUMED_USD } from './lib-place-details.js';
 import { signPlaceToken, verifyPlaceToken } from './lib-place-token.js';
 import { attachPlaceIdentity, dedupePeersByPlaceId, peerReviewVolumes,
@@ -1834,19 +1834,8 @@ function placeTokenSecret() {
 
 const PLACE_FIELDS = 'place_id,name,formatted_address,geometry,rating,user_ratings_total,business_status';
 
-function noMatchCopy(name) {
-  const s = String(name || 'this restaurant');
-  return {
-    heading: `We could not find ${s} on Google`,
-    body: [
-      'We searched Google for the name and location you entered and found no matching business, so there is '
-        + 'nothing to assess yet.',
-      'Check the spelling of the name and add the city and country, then try again.',
-      'You have not been charged for this assessment.',
-    ],
-    closing: `If your restaurant is not listed on Google, email ${CONTACT_ADDRESS} and we will arrange a consultant-led assessment.`,
-  };
-}
+// noMatchCopy lives in lib-review-gate.js with the coverage refusal, so both
+// follow the one refusal layout (2026-09-28).
 
 app.post('/resolve-place', async (req, res) => {
   const b = req.body || {};
@@ -1875,7 +1864,7 @@ app.post('/resolve-place', async (req, res) => {
         }), { coverage_verdict: 'no-place-match', place_id: null, place_confirmed: false }));
         await sendLeadAlert({ kind: 'no Places match', subject: name, location,
           lines: ['Reason: Google Places returned no business for the name and location as typed'] });
-        return res.json({ status: 'no-match', copy: noMatchCopy(name) });
+        return res.json({ status: 'no-match', copy: noMatchCopy(name, 'page') });
       }
       console.log('PLACE [confirm] places error status=' + (d && d.status));
       return res.status(503).json({ error: 'We could not check the restaurant just now. Please try again in a moment.' });

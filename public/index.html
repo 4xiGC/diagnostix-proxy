@@ -544,9 +544,9 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 <div class="panel" id="p4">
 <div class="survey-wrap">
   <div class="s-eyebrow">Restaurant HealthCheck</div>
-  <div class="s-title" id="rf-h"></div>
+  <div class="s-title" id="rf-h" data-part="heading"></div>
   <div id="rf-body" class="s-sub"></div>
-  <div class="s-sub" id="rf-close" style="font-weight:600"></div>
+  <div class="s-sub" id="rf-close" data-part="closing" style="font-weight:600"></div>
   <div class="btn-row" style="padding:0">
     <button class="btn-back" id="rf-back" onclick="goStep(0)">&larr; Back to the form</button>
   </div>
@@ -1035,8 +1035,18 @@ function showRefusal(copy) {
   var h = document.getElementById('rf-h'), b = document.getElementById('rf-body'), c = document.getElementById('rf-close');
   h.textContent = copy.heading || '';
   b.innerHTML = '';
-  (copy.body || []).forEach(function(line){
-    var p = document.createElement('p'); p.className = 'rf-p'; p.textContent = line; b.appendChild(p);
+  // THE REFUSAL LAYOUT (2026-09-28): the plain reason, what happens next and
+  // the consultant route, each its own block, then the one closing line. A
+  // copy without the parts (an older server) prints its body as one block.
+  var parts = Array.isArray(copy.reason)
+    ? [['reason', copy.reason], ['next', copy.next || []], ['consultant', copy.consultant ? [copy.consultant] : []]]
+    : [['reason', copy.body || []]];
+  parts.forEach(function(part){
+    var block = document.createElement('div'); block.setAttribute('data-part', part[0]); block.className = 'rf-block';
+    part[1].forEach(function(line){
+      var p = document.createElement('p'); p.className = 'rf-p'; p.textContent = line; block.appendChild(p);
+    });
+    b.appendChild(block);
   });
   c.textContent = copy.closing || '';
   goStep(4);

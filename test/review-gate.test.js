@@ -81,11 +81,12 @@ test('REFUSAL COPY follows the standard skeleton, page and email closings differ
   const page = refusalCopy({ subject: 'Teclados', gate: g, channel: 'page' });
   assert.equal(page.heading, 'We cannot assess Teclados yet');
   assert.match(page.body.join(' '), /Google lists 12 reviews for Teclados\. The rule requires at least 50\./);
-  assert.match(page.body.join(' '), /Neither is a judgment about the business\./);
-  assert.match(page.body.join(' '), /You have not been charged for this assessment\./);
-  assert.match(page.closing, /^If you would like a consultant-led assessment, email .+ and we will arrange it\.$/);
+  // 2026-09-28: the refusal layout (test/refusal-layout.test.js pins every part).
+  assert.match(page.body.join(' '), /This is not a judgment about the business\./);
+  assert.match(page.body.join(' '), /You have not been charged, and no assessment or score was produced\./);
+  assert.match(page.closing, /^If you would like one, email .+ and we will arrange it\.$/);
   const mail = refusalCopy({ subject: 'Teclados', gate: g, channel: 'email' });
-  assert.equal(mail.closing, 'If you would like a consultant-led assessment, reply to this email and we will arrange it.');
+  assert.equal(mail.closing, 'If you would like one, reply to this email and we will arrange it.');
   assert.doesNotMatch(page.body.join(' ') + page.heading + page.closing, /[–—]/);
 });
 

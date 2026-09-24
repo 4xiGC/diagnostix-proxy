@@ -52,9 +52,28 @@ export function reviewGate(input, overrides, now) {
 
 const fmt = (n) => Number(n).toLocaleString('en-US');
 
-// The standard's skeleton (1.2), in RVP terms: CHANNEL_WORD "sources",
-// SUBJECT_NOUN "business". Line 2 states the count and the rule, because RVP's
-// rule is a count, not a share.
+// ── THE REFUSAL LAYOUT (Simon, 2026-09-28; the same in SVP and EVP) ─────────
+//
+// Five parts, in this order: heading, the plain reason, what happens next, the
+// consultant route, and ONE closing line chosen by medium. `body` keeps the
+// flattened reason, next and consultant, so a reader written before the layout
+// still gets every sentence.
+const CONSULTANT_READS_MORE = 'A consultant-led assessment reads sources this scan cannot, including material '
+  + 'behind logins, in other languages, and supplied by you.';
+function closingFor(channel) {
+  return channel === 'email'
+    ? 'If you would like one, reply to this email and we will arrange it.'
+    : `If you would like one, email ${CONTACT_ADDRESS} and we will arrange it.`;
+}
+function layout({ heading, reason, next, consultant, channel }) {
+  return { heading, reason, next, consultant, closing: closingFor(channel), body: [...reason, ...next, consultant] };
+}
+
+// The coverage refusal, in RVP terms. The reason states the count and the
+// rule, because RVP's rule is a count, not a share. ITS CAUSE IS ITS OWN
+// (standard, section 5 row 14): an RVP refusal is a thin Google review count
+// on a place the requester CONFIRMED, so the SVP and EVP cause, "a name that
+// public sources do not use", does not apply.
 export function refusalCopy({ subject, gate, channel }) {
   const s = String(subject || 'this business');
   const g = gate || {};
@@ -62,20 +81,33 @@ export function refusalCopy({ subject, gate, channel }) {
   const happened = g.subjectReviewCount === null || g.subjectReviewCount === undefined
     ? `Google lists no review count for ${s}. The rule requires at least ${fmt(min)} reviews on Google.`
     : `Google lists ${fmt(g.subjectReviewCount)} reviews for ${s}. The rule requires at least ${fmt(min)}.`;
-  return {
+  return layout({
     heading: `We cannot assess ${s} yet`,
-    body: [
-      happened,
-      'The most common cause is a name that public sources do not use, or a business whose public presence '
-        + 'is mostly in a language or on platforms this scan does not reach. Neither is a judgment about the business.',
-      'A consultant-led assessment reads sources this scan cannot, including material behind logins, in other '
-        + 'languages, and supplied by you.',
-      'You have not been charged for this assessment.',
+    reason: [
+      happened + ' The rule is fixed in advance and is the same for every business.',
+      `Reviews are the public record this assessment reads, and fewer than ${fmt(min)} is not enough to assess `
+        + 'a business fairly. This is not a judgment about the business.',
     ],
-    closing: channel === 'email'
-      ? 'If you would like a consultant-led assessment, reply to this email and we will arrange it.'
-      : `If you would like a consultant-led assessment, email ${CONTACT_ADDRESS} and we will arrange it.`,
-  };
+    next: [
+      'You have not been charged, and no assessment or score was produced.',
+      `When ${s} has at least ${fmt(min)} reviews on Google, you can run the assessment again.`,
+    ],
+    consultant: CONSULTANT_READS_MORE,
+    channel,
+  });
+}
+
+// The identity refusal: Google returned no business for the name typed.
+export function noMatchCopy(name, channel) {
+  const s = String(name || 'this restaurant');
+  return layout({
+    heading: `We could not find ${s} on Google`,
+    reason: ['We searched Google for the name and location you entered and found no matching business, so there is '
+      + 'nothing to assess yet.'],
+    next: ['You have not been charged.', 'Check the spelling of the name and add the city and country, then try again.'],
+    consultant: 'A consultant-led assessment does not depend on a Google listing.',
+    channel,
+  });
 }
 
 // The limited coverage note, printed with the assessment. Null on a pass.
