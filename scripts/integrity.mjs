@@ -103,7 +103,18 @@ export const RVP_GATES = [
     counts: line(/rvp rows \d+, scored \d+, null verdicts \d+, verdicts off their own band \d+/) },
   { name: 'statistics tied to a stored input (Stage 4)', script: 'rvp-stat-shapes.mjs', measure: true,
     counts: line(/reports \d+, statistics \d+, tied \d+ \(\d+%\)/) },
-  { name: 'review-count coverage gate', skip: 'SKIPPED: not built; the focal Places count is not stored (RVP_SAFEGUARDS_SPEC.md)' },
+  // 2026-09-26: the gate is built (lib-review-gate.js). Over stored reports it
+  // is MEASURED, judged on the subject's own Places count only; no pass rule
+  // until live rows carry the stored count.
+  { name: 'review-count coverage gate', script: 'rvp-review-gate-retro.mjs', args: [path.join(REPO, 'lib-review-gate.js')], measure: true,
+    counts: (out) => {
+      // Parsed, not matched: the output's sensitivity block repeats the state names.
+      let t; try { const s = String(out); t = JSON.parse(s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)); } catch { return ''; }
+      if (!Number.isInteger(t.reports) || !Number.isInteger(t.A_subject_places_count) || !t.states) return '';
+      const st = (k) => t.states[k] || 0;
+      return 'reports ' + t.reports + ', judged on the subject\'s own Places count ' + t.A_subject_places_count + ': refused ' + st('refused-coverage') +
+        ', limited ' + st('limited') + ', pass ' + st('pass') + '; not judgeable ' + (t.reports - t.A_subject_places_count);
+    } },
 ];
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {

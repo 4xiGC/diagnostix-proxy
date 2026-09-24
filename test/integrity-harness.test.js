@@ -61,3 +61,20 @@ test('THE SUITE RUNS WITHOUT PRODUCTION CREDENTIALS', async () => {
     EVP_IDENTITY_SECRET: 's', ADMIN_PASSWORD: 'p' });
   assert.deepEqual(Object.keys(env).sort(), ['PATH', 'SystemRoot'], 'a credential reached the suite');
 });
+
+// 2026-09-26, FOUND BY ITEM 7: this branch builds the review gate and stores
+// the subject's own Places count, but the harness still printed "SKIPPED: not
+// built". A superseded skip goes quietly true. The gate now MEASURES what the
+// review gate says over stored reports, on the subject's own Places count only.
+test('THE REVIEW-COUNT GATE MEASURES THE STORED REPORTS, IT IS NOT SKIPPED AS UNBUILT', async () => {
+  const { RVP_GATES } = await load();
+  const g = RVP_GATES.find((x) => /review-count/.test(x.name));
+  assert.ok(!g.skip, 'still skipped as not built');
+  assert.equal(g.script, 'rvp-review-gate-retro.mjs');
+  assert.ok(g.measure, 'no pass rule is set on stored data yet');
+  const out = JSON.stringify({ reports: 108, A_subject_places_count: 16, B_sum_only: 0, C_kg_only: 15, none: 77,
+    states: { limited: 2, pass: 14 }, sensitivity: { '100,500': { 'refused-coverage': 9, limited: 4, pass: 12 } } }, null, 1);
+  assert.equal(g.counts(out), 'reports 108, judged on the subject\'s own Places count 16: refused 0, limited 2, pass 14; not judgeable 92');
+  // CONTROL: an output without the judged count is not a count.
+  assert.equal(g.counts('TypeError: x'), '');
+});
