@@ -1,10 +1,12 @@
 // ════════════════════════════════════════════════════════════════════════════
 // THE REVIEW GATE ON THE REAL /diagnose ROUTE (overnight 2026-09-26, Item 3).
 //
-// Drives POST /diagnose over a socket with every outbound call replaced: the
-// focal findplacefromtext answers with a scripted user_ratings_total, Serper
-// and the other Places calls answer empty, the model is a fake that counts its
-// calls, and rvp_outcomes and Resend writes are captured, not sent.
+// Drives POST /diagnose over a socket with every outbound call replaced. The
+// survey path carries a signed place token (lib-place-token.js) holding the
+// CONFIRMED record's review count, as /resolve-place issues it (Item 4); the
+// ANALYTICS case sends a placeId and no token, and its focal findplacefromtext
+// answers with the scripted count. Serper answers empty, the model is a fake
+// that counts its calls, and rvp_outcomes and Resend writes are captured.
 //
 //   refused-coverage  no model call at all, an outcome row with the reason, a
 //                     lead alert, and the standard's refusal copy returned
@@ -27,9 +29,14 @@ process.env.ANTHROPIC_API_KEY = 'test-not-a-key';
 process.env.SERPER_API_KEY = 'test-not-a-key';
 process.env.GOOGLE_PLACES_API_KEY = 'test-not-a-key';
 process.env.RESEND_API_KEY = 'test-not-a-key';
+process.env.RVP_IDENTITY_SECRET = 'test-identity-secret';
 
 const { __test__ } = await import('../server.js');
 const { app, setFetch, setClaude } = __test__;
+const { signPlaceToken } = await import('../lib-place-token.js');
+const tokenFor = (reviews) => signPlaceToken({ secret: 'test-identity-secret', issuedAt: Date.now(),
+  place: { placeId: 'ChIJ-teclados', name: 'Teclados', address: 'Av. Italia 1234', rating: 4.4,
+    reviewCount: reviews, lat: -33.4, lng: -70.6 } });
 
 const PILLARS = { cs: { score: 66 }, pa: { score: 70 }, es: { score: 42 }, sm: { score: 48 }, cp: { score: 58 }, bg: { score: 72 } };
 
@@ -63,7 +70,8 @@ async function run({ reviews, body }) {
     await new Promise((r) => server.once('listening', r));
     const res = await realGlobal('http://127.0.0.1:' + server.address().port + '/diagnose', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(Object.assign({ name: 'Teclados', location: 'Santiago, Chile', email: 'owner@example.org' }, body || {})),
+      body: JSON.stringify(Object.assign({ name: 'Teclados', location: 'Santiago, Chile', email: 'owner@example.org',
+        placeToken: tokenFor(reviews) }, body || {})),
     });
     return { status: res.status, body: await res.json(), seen };
   } finally {
@@ -87,6 +95,7 @@ test('REFUSED: 12 reviews, no model call, a row with the reason, a lead alert, t
   assert.equal(o.coverage_verdict, 'refused-coverage');
   assert.equal(o.subject_review_count, 12);
   assert.equal(o.place_id, 'ChIJ-teclados');
+  assert.equal(o.place_confirmed, true, 'the requester confirmed this record');
   assert.match(o.reason, /subject-reviews-below-minimum/);
   assert.equal(o.survey_addr_domain, '@example.org');
   assert.equal(seen.emails.length, 1);
@@ -115,7 +124,7 @@ test('PASS: 900 reviews, the assessment runs with no note', async () => {
 });
 
 test('ANALYTICS: a caller with a placeId is not gated, even at 12 reviews', async () => {
-  const { body, seen } = await run({ reviews: 12, body: { placeId: 'ChIJ-teclados', email: undefined } });
+  const { body, seen } = await run({ reviews: 12, body: { placeId: 'ChIJ-teclados', email: undefined, placeToken: undefined } });
   assert.equal(body.refused, undefined);
   assert.equal(typeof body.healthCheckScore, 'number');
   assert.equal(body.coverage, undefined);

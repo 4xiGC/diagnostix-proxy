@@ -1,0 +1,17 @@
+{
+  "contract": "rvp-diagnose-request",
+  "version": 1,
+  "why": "RVP 2026-09-26 made the survey path of POST /diagnose require a signed place token from /resolve-place, and refuse a subject with too few Google reviews. diagnostix-analytics calls the same route for every peer and sends no token. Its request must keep being accepted, ungated, or every peer run fails or silently shrinks. An IDENTICAL copy lives in diagnostix-analytics/test/fixtures/. RVP tests that this example is accepted and assessed without a token and without the review gate; Analytics tests that assessOnce sends exactly these keys, with placeId a non-empty string. A change to either side must change this file in BOTH repos.",
+  "producer": "diagnostix-analytics lib/orchestrator.js assessOnce",
+  "consumer": "diagnostix-proxy server.js POST /diagnose",
+  "required": {
+    "name": "string, the peer's name",
+    "location": "string, the peer's location",
+    "placeId": "string, non-empty: the Google place id Analytics' peer gate confirmed. A request carrying it is the Analytics path: it needs no placeToken and is not review-gated."
+  },
+  "example": {
+    "name": "El Toro Vitacura",
+    "location": "Vitacura, Santiago, Chile",
+    "placeId": "ChIJ-contract-example"
+  }
+}

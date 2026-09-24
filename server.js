@@ -480,7 +480,7 @@ async function fetchPlacesNearby(opts) {
   // same and occasionally not, with nothing recording which. That is the exact
   // ambiguity a stable key exists to remove, so the gated id is preferred
   // whenever the caller has one.
-  const { name, location, placeId: suppliedPlaceId } = opts;
+  const { name, location, placeId: suppliedPlaceId, focal } = opts;
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
     console.log('[places] GOOGLE_PLACES_API_KEY not set — auto-discovery falling back to Serper only');
@@ -497,7 +497,19 @@ async function fetchPlacesNearby(opts) {
   // Seeded from the caller when it has a gated id, so the branch below never
   // overwrites it.
   let focalPlaceId = suppliedPlaceId || null;
-  try {
+  // THE CONFIRMED RECORD (overnight 2026-09-26). /resolve-place already made
+  // this exact findplacefromtext call and the requester approved its answer,
+  // carried here in the signed token. Making it again would cost a second
+  // call and could land on a different business from the one approved.
+  const reuse = focal && typeof focal.lat === 'number' && typeof focal.lng === 'number';
+  if (reuse) {
+    lat = focal.lat; lng = focal.lng;
+    if (typeof focal.rating === 'number') focalRating = focal.rating;
+    if (typeof focal.reviewCount === 'number') focalReviewCount = focal.reviewCount;
+    if (!focalPlaceId && typeof focal.placeId === 'string') focalPlaceId = focal.placeId;
+    console.log(`[places] confirmed focal reused: reviews=${focalReviewCount ?? 'n/a'}, no second Find Place call`);
+  }
+  if (!reuse) try {
     const geocodeQuery = `${name}, ${location}`;
     // Use Places Find Place From Text — better than Geocoding API for restaurants
     // because it returns the restaurant's place_id which we can use to fetch
@@ -994,7 +1006,7 @@ async function detectFocalContext({ name, location }) {
 // Total elapsed is roughly the slowest single layer, not the sum, so cost is
 // minimal vs the old single search.
 async function searchCompetitorsMultiple(opts) {
-  const { name, location, region, userCompetitors, focalContext, placeId } = opts;
+  const { name, location, region, userCompetitors, focalContext, placeId, focal } = opts;
 
   // Parse "City/Neighborhood, State, Country" or "City, Country" location formats.
   // Real inputs include:
@@ -1171,7 +1183,7 @@ async function searchCompetitorsMultiple(opts) {
   // other layers resolve to plain text strings.
   // placesPromise resolves to { places, focalRating, focalReviewCount, focalLatLng } —
   // Google Places is the AUTHORITATIVE source for auto-discovered competitors.
-  const placesPromise = fetchPlacesNearby({ name, location, placeId });
+  const placesPromise = fetchPlacesNearby({ name, location, placeId, focal });
   const t0 = Date.now();
   const [userResults, placesData, ...otherResults] = await Promise.all([
     Promise.all(userSearches),
@@ -1938,6 +1950,67 @@ app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => 
       ? body.placeId.trim() : null;
     if (suppliedPlaceId) console.log(`[diagnose] caller supplied placeId=${suppliedPlaceId}`);
 
+    // ── THE CONFIRMED PLACE (overnight 2026-09-26) ──
+    //
+    // Two callers, told apart by what they send:
+    //   Analytics  placeId, no token: a peer its own gate already confirmed.
+    //              Not gated here (contract/diagnose-request.contract.json).
+    //   survey     a signed place token from /resolve-place, REQUIRED. The
+    //              record the requester said Yes to is assessed; its name is
+    //              never re-resolved, and its Find Place answer is reused.
+    // A request with neither is refused before anything is spent. The page
+    // reads `code` and never turns these into an estimated report.
+    let confirmedPlace = null;
+    if (!suppliedPlaceId) {
+      if (!body.placeToken) {
+        return res.status(400).json({ error: 'Please confirm your restaurant first.', code: 'confirmation-required' });
+      }
+      const v = verifyPlaceToken({ token: body.placeToken, secret: placeTokenSecret() });
+      if (!v.ok) {
+        console.log('PLACE [confirm] token rejected at /diagnose: ' + v.reason);
+        return res.status(400).json(v.reason === 'expired'
+          ? { error: 'Your confirmation expired. Please confirm your restaurant again.', code: 'confirmation-expired' }
+          : { error: 'Your confirmation could not be read. Please confirm your restaurant again.', code: 'confirmation-invalid' });
+      }
+      confirmedPlace = v.place;
+    }
+
+    // ── THE REVIEW GATE (lib-review-gate.js), before ANY spend ──
+    //
+    // On the CONFIRMED record's own Google review count, never
+    // evidence.reviewsTotal (a sum over the neighbors too). Analytics' peers
+    // are not gated: a peer with few reviews is still a peer, and refusing it
+    // would shrink a cohort without anyone deciding to.
+    let coverage;
+    if (confirmedPlace) {
+      const gate = reviewGate({ subjectReviewCount: confirmedPlace.reviewCount, newestReviewAt: null });
+      coverage = { state: gate.state, reason: gate.reason, subjectReviewCount: gate.subjectReviewCount,
+        recency: gate.recency, note: limitedNote({ subject: name, gate }) };
+      console.log('COVERAGE [coverage] ' + gate.state + ' reviews=' + gate.subjectReviewCount
+        + ' recency=' + gate.recency + ' reason=' + gate.reason);
+      await writeOutcome(Object.assign(outcomeRecord({
+        kind: 'coverage',
+        decision: gate.state === 'refused-coverage' ? 'refused' : gate.state,
+        reason: gate.reason + ' reviews=' + gate.subjectReviewCount
+          + ' min=' + gate.thresholds.MIN_SUBJECT_REVIEWS + ' limitedBelow=' + gate.thresholds.LIMITED_BELOW_REVIEWS
+          + ' recency=' + gate.recency,
+        surveyEmail: body.email, deliveredRestaurant: name,
+      }), {
+        coverage_verdict: gate.state,
+        place_id: confirmedPlace.placeId,
+        place_confirmed: true,
+        subject_review_count: gate.subjectReviewCount,
+        subject_newest_review_at: gate.newestReviewAt,
+      }));
+      if (gate.state === 'refused-coverage') {
+        await sendLeadAlert({ kind: 'review coverage refused', subject: name, location,
+          lines: ['Reason: ' + gate.reason, 'Google reviews: ' + (gate.subjectReviewCount === null ? 'none listed' : gate.subjectReviewCount),
+            'Rule: at least ' + gate.thresholds.MIN_SUBJECT_REVIEWS] });
+        return res.json({ refused: true, benchmarkId: null,
+          coverage: Object.assign({}, coverage, { copy: refusalCopy({ subject: name, gate, channel: 'page' }) }) });
+      }
+    }
+
     const userCompetitorsRaw = String(body.competitors || '');
     const userCompetitors = userCompetitorsRaw
       .split(/[,;]/)
@@ -1956,7 +2029,8 @@ app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => 
     const focalCtxPromise = detectFocalContext({ name, location });
     const compSearchPromise = (async () => {
       const focalContext = await focalCtxPromise;
-      return searchCompetitorsMultiple({ name, location, region, userCompetitors, focalContext, placeId: suppliedPlaceId });
+      return searchCompetitorsMultiple({ name, location, region, userCompetitors, focalContext,
+        placeId: suppliedPlaceId || (confirmedPlace && confirmedPlace.placeId) || null, focal: confirmedPlace });
     })();
     const [g,rv,st,so,dl,compResult,focalContext] = await Promise.all([
       searchWithFallback(queries.GOOGLE,      { label: 'GOOGLE' }),
@@ -1974,44 +2048,6 @@ app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => 
     // focal review count at all rather than a wrong one.
     const compPlacesData = compResult.placesData || { places: [], focalRating: null, focalReviewCount: null, focalGeo: null, focalPlaceId: null };
 
-    // ── THE REVIEW GATE (overnight 2026-09-26, lib-review-gate.js) ──
-    //
-    // Before any model call. Reads the subject's OWN Google review count, never
-    // evidence.reviewsTotal (a sum over the neighbors too).
-    //
-    // A CALLER WITH A placeId IS NOT GATED. That is Analytics, assessing peers
-    // its own peer gate already chose; a peer with few reviews is still a peer,
-    // and refusing it would shrink a cohort without anyone deciding to. The
-    // survey never sends a placeId.
-    let coverage;
-    if (!suppliedPlaceId) {
-      const gate = reviewGate({ subjectReviewCount: compPlacesData.focalReviewCount, newestReviewAt: null });
-      coverage = { state: gate.state, reason: gate.reason, subjectReviewCount: gate.subjectReviewCount,
-        recency: gate.recency, note: limitedNote({ subject: name, gate }) };
-      console.log('COVERAGE [coverage] ' + gate.state + ' reviews=' + gate.subjectReviewCount
-        + ' recency=' + gate.recency + ' reason=' + gate.reason);
-      await writeOutcome(Object.assign(outcomeRecord({
-        kind: 'coverage',
-        decision: gate.state === 'refused-coverage' ? 'refused' : gate.state,
-        reason: gate.reason + ' reviews=' + gate.subjectReviewCount
-          + ' min=' + gate.thresholds.MIN_SUBJECT_REVIEWS + ' limitedBelow=' + gate.thresholds.LIMITED_BELOW_REVIEWS
-          + ' recency=' + gate.recency,
-        surveyEmail: body.email, deliveredRestaurant: name,
-      }), {
-        coverage_verdict: gate.state,
-        place_id: compPlacesData.focalPlaceId || null,
-        place_confirmed: false,
-        subject_review_count: gate.subjectReviewCount,
-        subject_newest_review_at: gate.newestReviewAt,
-      }));
-      if (gate.state === 'refused-coverage') {
-        await sendLeadAlert({ kind: 'review coverage refused', subject: name, location,
-          lines: ['Reason: ' + gate.reason, 'Google reviews: ' + (gate.subjectReviewCount === null ? 'none listed' : gate.subjectReviewCount),
-            'Rule: at least ' + gate.thresholds.MIN_SUBJECT_REVIEWS] });
-        return res.json({ refused: true, benchmarkId: null,
-          coverage: Object.assign({}, coverage, { copy: refusalCopy({ subject: name, gate, channel: 'page' }) }) });
-      }
-    }
     // Scraping summary: count which categories returned 'no data' so empty-report cases are visible in logs.
     const cats = { GOOGLE:g, REVIEWS:rv, STAFF:st, SOCIAL:so, DELIVERY:dl, COMPETITORS:co };
     const webScoring = budgetCorpus(cats, CORPUS_CAPS_SCORING);
