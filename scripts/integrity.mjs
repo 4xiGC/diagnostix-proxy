@@ -17,6 +17,7 @@
 //   ERROR     it exited non-zero with no verdict line
 //   MEASURED  a measurement with no pass rule; its counts are printed
 //   SKIPPED   cannot run at zero spend or without an input; the reason is shown
+//   WARNING   a known, recorded result carried with its count; never fails
 // The final line is FAIL when any gate is FAIL or ERROR.
 //
 // READ ONLY: every gate here only reads tables. Nothing is written.
@@ -86,7 +87,8 @@ export async function runGates(gates, title) {
   console.log('='.repeat(110));
   console.log(failed.length ? 'FAIL: ' + failed.length + ' gate(s): ' + failed.map((r) => r.name).join(', ')
     : 'PASS: every gate that has a pass rule passed (' + rows.filter((r) => r.verdict === 'PASS').length + '), '
-      + rows.filter((r) => r.verdict === 'MEASURED').length + ' measured, ' + rows.filter((r) => r.verdict === 'SKIPPED').length + ' skipped');
+      + rows.filter((r) => r.verdict === 'MEASURED').length + ' measured, ' + rows.filter((r) => r.verdict === 'SKIPPED').length + ' skipped'
+      + (rows.some((r) => r.verdict === 'WARNING') ? ', WARNING on ' + rows.filter((r) => r.verdict === 'WARNING').map((r) => r.name).join(', ') : ''));
   return failed.length ? 1 : 0;
 }
 
