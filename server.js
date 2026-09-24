@@ -2008,7 +2008,8 @@ app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => 
         + ' recency=' + gate.recency + ' reason=' + gate.reason);
       await writeOutcome(Object.assign(outcomeRecord({
         kind: 'coverage',
-        decision: gate.state === 'refused-coverage' ? 'refused' : gate.state,
+        // The coverage state itself, as SVP and EVP write it (standard 5, row 16).
+        decision: gate.state,
         reason: gate.reason + ' reviews=' + gate.subjectReviewCount
           + ' min=' + gate.thresholds.MIN_SUBJECT_REVIEWS + ' limitedBelow=' + gate.thresholds.LIMITED_BELOW_REVIEWS
           + ' recency=' + gate.recency,

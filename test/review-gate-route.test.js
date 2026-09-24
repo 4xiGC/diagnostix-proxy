@@ -91,7 +91,9 @@ test('REFUSED: 12 reviews, no model call, a row with the reason, a lead alert, t
   assert.equal(seen.outcomes.length, 1);
   const o = seen.outcomes[0];
   assert.equal(o.kind, 'coverage');
-  assert.equal(o.decision, 'refused');
+  // 2026-09-28 (standard section 5 row 16): the same value SVP and EVP write.
+  // Code only: read before the change, no stored coverage row said "refused".
+  assert.equal(o.decision, 'refused-coverage');
   assert.equal(o.coverage_verdict, 'refused-coverage');
   assert.equal(o.subject_review_count, 12);
   assert.equal(o.place_id, 'ChIJ-teclados');
