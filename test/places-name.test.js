@@ -39,6 +39,8 @@ const { signPlaceToken } = await import('../lib-place-token.js');
 
 const TYPED = 'Teclados';
 const GOOGLE = 'Casa Teclados SpA';
+// The peer comparison request contract (identical in diagnostix-analytics/test/fixtures).
+const PEER_CONTRACT = JSON.parse((await import('node:fs')).readFileSync(new URL('../contract/peer-comparison-request.contract.json', import.meta.url), 'utf8'));
 const PILLARS = { cs: { score: 66 }, pa: { score: 70 }, es: { score: 42 }, sm: { score: 48 }, cp: { score: 58 }, bg: { score: 72 } };
 const place = (reviewCount) => ({ placeId: 'ChIJ-teclados', name: GOOGLE, address: 'Av. Italia 1234', rating: 4.4, reviewCount, lat: -33.4, lng: -70.6 });
 
@@ -146,6 +148,12 @@ test('THE PURCHASE: the email names the Places name, and the peer comparison que
   } finally { server.close(); globalThis.fetch = realGlobal; restoreFetch(); }
   assert.ok(sent.analytics.length, 'the delivery never asked for a peer comparison, so this proves nothing');
   assert.equal(sent.analytics[0].subjectName, TYPED);
+  // 2026-09-24: the heading Analytics renders is customer-facing, so the confirmed
+  // Google name travels as displayName; subjectName stays the typed query alias.
+  assert.equal(sent.analytics[0].displayName, GOOGLE, 'the peer heading would show the typed name');
+  const keys = Object.keys(sent.analytics[0]).sort();
+  for (const k of Object.keys(PEER_CONTRACT.required)) assert.ok(keys.includes(k), 'missing required ' + k);
+  for (const k of keys) assert.ok(k in PEER_CONTRACT.required || k in PEER_CONTRACT.optional, 'not in the contract: ' + k);
   const customer = sent.resend.find((m) => [].concat(m && m.to || []).includes(email));
   assert.ok(customer, 'no email reached the customer: ' + JSON.stringify(sent.resend.map((m) => m && m.subject)));
   assert.match(String(customer.subject) + String(customer.html), /Casa Teclados SpA/);

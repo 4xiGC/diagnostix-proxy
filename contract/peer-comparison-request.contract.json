@@ -1,0 +1,23 @@
+{
+  "contract": "rvp-peer-comparison-request",
+  "version": 1,
+  "why": "2026-09-24 (Simon, Q5): a confirmed survey shows the customer Google's name for the restaurant, and the owner's typed name is kept as the alias Analytics uses to QUERY Places for the subject (lib/peerGate.js). The peer comparison heading, 'X against N comparable businesses' (lib/render.js), is customer-facing, so RVP sends displayName, the confirmed Google name, alongside subjectName, the typed query alias. Analytics renders displayName in the heading and keeps subjectName for its query; a request without displayName (an RVP older than this contract) renders subjectName, as before. An IDENTICAL copy lives in diagnostix-analytics/test/fixtures/. A change to either side must change this file in BOTH repos.",
+  "producer": "diagnostix-proxy server.js fetchPeerComparison, called from the paid delivery",
+  "consumer": "diagnostix-analytics server.js POST /peer-comparison",
+  "required": {
+    "subjectName": "string, the name Analytics queries Places with: the owner's typed name on a confirmed survey",
+    "subjectLocation": "string",
+    "subjectPillars": "object, pillar key to score (number or null)",
+    "peerNames": "array of strings, the competitors the report named"
+  },
+  "optional": {
+    "displayName": "string, the confirmed Google name the customer sees; the heading uses it when present"
+  },
+  "example": {
+    "subjectName": "Teclados",
+    "displayName": "Casa Teclados SpA",
+    "subjectLocation": "Santiago, Chile",
+    "subjectPillars": { "cs": 66, "pa": 70, "es": 42, "sm": 48, "cp": 58, "bg": 72 },
+    "peerNames": ["Peer One"]
+  }
+}

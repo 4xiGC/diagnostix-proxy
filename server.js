@@ -3475,7 +3475,7 @@ async function saveToHubSpot(email, firstName, restaurantName, location, report)
 // next person does not discover it during an incident.
 const PEER_COMPARISON_TIMEOUT_MS = 280000;
 
-async function fetchPeerComparison({ subjectName, subjectLocation, subjectPillars, peerNames }) {
+async function fetchPeerComparison({ subjectName, displayName, subjectLocation, subjectPillars, peerNames }) {
   const base = process.env.ANALYTICS_URL;
   const pass = process.env.ANALYTICS_TEAM_PASSWORD;
   if (!base || !pass) return { ok: false, reason: 'not_configured' };
@@ -3491,7 +3491,10 @@ async function fetchPeerComparison({ subjectName, subjectLocation, subjectPillar
         'Content-Type': 'application/json',
         Authorization: 'Basic ' + Buffer.from('rvp:' + pass).toString('base64'),
       },
-      body: JSON.stringify({ subjectName, subjectLocation, subjectPillars, peerNames }),
+      // displayName (contract/peer-comparison-request.contract.json): the name the
+      // customer sees, for the heading; subjectName stays Analytics' Places query.
+      body: JSON.stringify(Object.assign({ subjectName, subjectLocation, subjectPillars, peerNames },
+        displayName && displayName !== subjectName ? { displayName } : {})),
       signal: ctl.signal,
     });
     const text = await res.text();
@@ -5648,6 +5651,7 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
   // surveys carry no typedName and send their one name, as before.
   const cmp = await fetchPeerComparison({
     subjectName: (survey && survey.typedName) || restaurant,
+    displayName: restaurant,
     subjectLocation: location,
     subjectPillars: Object.fromEntries(
       Object.entries(report.pillars || {}).map(([k, v]) => [k, v && typeof v.score === 'number' ? v.score : null])
