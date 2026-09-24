@@ -83,7 +83,7 @@ test('REFUSAL COPY follows the standard skeleton, page and email closings differ
   assert.match(page.body.join(' '), /Google lists 12 reviews for Teclados\. The rule requires at least 50\./);
   // 2026-09-28: the refusal layout (test/refusal-layout.test.js pins every part).
   assert.match(page.body.join(' '), /This is not a judgment about the business\./);
-  assert.match(page.body.join(' '), /You have not been charged, and no assessment or score was produced\./);
+  assert.match(page.body.join(' '), /You have not been charged, and no assessment was produced\./);
   assert.match(page.closing, /^If you would like one, email .+ and we will arrange it\.$/);
   const mail = refusalCopy({ subject: 'Teclados', gate: g, channel: 'email' });
   assert.equal(mail.closing, 'If you would like one, reply to this email and we will arrange it.');

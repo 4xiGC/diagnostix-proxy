@@ -298,7 +298,7 @@ test('THE PLACES CONFIRMATION SCREEN, IN REAL CHROME', async (t) => {
       assert.equal(await waitPanel(W, 'p4'), 'p4', 'the refusal panel was never shown');
       const text = await evalJs(`(${W}).document.getElementById('p4').innerText`);
       assert.match(text, /We cannot assess Casa Teclados SpA yet/);
-      assert.match(text, /You have not been charged, and no assessment or score was produced\./);
+      assert.match(text, /You have not been charged, and no assessment was produced\./);
       assert.doesNotMatch(await evalJs(`(${W}).document.body.innerText`), /estimated/i);
       const p = await evalJs(PANEL_OVERFLOW('p4') + '(' + W + ')');
       assert.ok(p <= 0, 'the refusal extends ' + p + 'px past the 320 frame');

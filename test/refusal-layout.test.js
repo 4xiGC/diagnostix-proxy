@@ -34,7 +34,7 @@ test('THE COVERAGE REFUSAL HAS THE FIVE PARTS, IN ORDER, WITH RVP WORDING', () =
     'Reviews are the public record this assessment reads, and fewer than 50 is not enough to assess a business fairly. This is not a judgment about the business.',
   ]);
   assert.deepEqual(c.next, [
-    'You have not been charged, and no assessment or score was produced.',
+    'You have not been charged, and no assessment was produced.',
     'When Teclados has at least 50 reviews on Google, you can run the assessment again.',
   ]);
   assert.equal(c.consultant, 'A consultant-led assessment reads sources this scan cannot, including material behind logins, in other languages, and supplied by you.');
@@ -71,5 +71,5 @@ test('no refusal line carries a dash', () => {
     refusalCopy({ subject: 'X', gate: reviewGate({ subjectReviewCount: 3 }, null, NOW), channel: 'page' }),
     refusalCopy({ subject: 'X', gate: reviewGate({ subjectReviewCount: null }, null, NOW), channel: 'email' }),
     noMatchCopy('X', 'page'), noMatchCopy('X', 'email')]);
-  assert.doesNotMatch(all, /[–—]/);
+  assert.doesNotMatch(all, /[\u2013\u2014]/);
 });

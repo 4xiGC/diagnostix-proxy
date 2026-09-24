@@ -89,7 +89,7 @@ export function refusalCopy({ subject, gate, channel }) {
         + 'a business fairly. This is not a judgment about the business.',
     ],
     next: [
-      'You have not been charged, and no assessment or score was produced.',
+      'You have not been charged, and no assessment was produced.',
       `When ${s} has at least ${fmt(min)} reviews on Google, you can run the assessment again.`,
     ],
     consultant: CONSULTANT_READS_MORE,
