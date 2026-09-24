@@ -27,7 +27,7 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          RECOVERY_TTL_MS, RECOVERY_MAX_ATTEMPTS,
          markSpent, memoryHitVerdict,
          alertThrottle, ALERT_THROTTLE_MS,
-         webhookEnforcement, misroutedHint } from './lib-pending.js';
+         webhookEnforcement, misroutedHint, takeBodySecret, webhookSecretCheck } from './lib-pending.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { reviewGate, refusalCopy, limitedNote, coverageNoteHtml, CONTACT_ADDRESS } from './lib-review-gate.js';
 import { signPlaceToken, verifyPlaceToken } from './lib-place-token.js';
@@ -6649,24 +6649,25 @@ async function alertSwapUsed({ payingEmail, surveyEmail, restaurantName, product
 // shows as failing instead of logging a success for a sale that never arrived.
 async function handlePaymentWebhook(req, res) {
   // Secret status. The value is never logged.
-  const presented = String((req.params && req.params.secret) || '');
-  const expected = String(process.env.RVP_WEBHOOK_SECRET || '');
-  let secretStatus;
-  if (!expected) {
-    secretStatus = 'not-configured';
-  } else if (!presented) {
-    secretStatus = 'absent';
-  } else {
-    let ok = false;
-    try {
-      const a = Buffer.from(presented);
-      const b = Buffer.from(expected);
-      ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-    } catch (_) { ok = false; }
-    secretStatus = ok ? 'valid' : 'invalid';
-  }
+  //
+  // 2026-09-24: the body field webhookSecret is read FIRST and removed from the
+  // body before anything logs or stores it; the URL path is read SECOND.
+  // RVP_WEBHOOK_SECRET_NEXT, when set, is accepted too, for a rotation with no
+  // refusal window (lib-pending.js webhookSecretCheck).
+  const bodySecret = takeBodySecret(req.body);
+  const chk = webhookSecretCheck({
+    bodySecret,
+    pathSecret: String((req.params && req.params.secret) || ''),
+    current: process.env.RVP_WEBHOOK_SECRET,
+    next: process.env.RVP_WEBHOOK_SECRET_NEXT,
+    equal: (x, y) => { const a = Buffer.from(x), b = Buffer.from(y); return a.length === b.length && crypto.timingSafeEqual(a, b); },
+  });
+  const secretStatus = chk.status;
+  const presented = { length: chk.presentedLen };
+  const secretVia = 'presentedBy=' + chk.presentedBy + (chk.matched ? ' secret=' + chk.matched : '');
   const gate = webhookEnforcement(secretStatus);
-  safeLog(() => `WEBHOOK_SECRET [webhook] status=${secretStatus} presentedLen=${presented.length}`
+  safeLog(() => `WEBHOOK_SECRET [webhook] status=${secretStatus} presentedBy=${chk.presentedBy}`
+    + ` matched=${chk.matched || 'none'} presentedLen=${presented.length}`
     + ` enforcing=${gate.enforcing ? 'yes' : 'no'}`);
 
   if (gate.reject) {
@@ -6684,7 +6685,7 @@ async function handlePaymentWebhook(req, res) {
     // an alert email. The row carries the secret status and the presented
     // LENGTH, never the presented value.
     await writeOutcome(outcomeRecord({
-      kind: 'webhook', secretStatus, decision: 'refused',
+      kind: 'webhook', secretStatus, secretVia, decision: 'refused',
       reason: 'rejected-secret-' + secretStatus + '-len=' + presented.length,
       delivered: false,
     }));
@@ -6706,7 +6707,7 @@ async function handlePaymentWebhook(req, res) {
     // v8.11.51 [B2.4]: recorded, because a POST that reached this far
     // carried a valid secret and is a real caller misbehaving.
     await writeOutcome(outcomeRecord({
-      kind: 'webhook', secretStatus, decision: 'none',
+      kind: 'webhook', secretStatus, secretVia, decision: 'none',
       reason: 'empty-body', delivered: false,
     }));
     return;
@@ -6723,7 +6724,7 @@ async function handlePaymentWebhook(req, res) {
     // anybody. That is the most expensive kind of unreadable call and it
     // left no row at all.
     await writeOutcome(outcomeRecord({
-      kind: 'webhook', secretStatus, decision: 'none',
+      kind: 'webhook', secretStatus, secretVia, decision: 'none',
       reason: 'no-email-in-body', delivered: false,
     }));
     return;
@@ -6934,7 +6935,7 @@ async function handlePaymentWebhook(req, res) {
     // to make sales queryable, was missing EXACTLY THE SALES THAT WENT
     // WRONG. Measured 2026-09-22: two purchases, zero kind=webhook rows.
     await writeOutcome(outcomeRecord({
-      kind: 'webhook', secretStatus, decision: matchDecision,
+      kind: 'webhook', secretStatus, secretVia, decision: matchDecision,
       reason: 'unmatched-at-purchase' + (mayRecover ? '' : '-no-recovery-link'),
       payingEmail: email, surveyEmail: surveyEmailForAlert,
       delivered: false,
@@ -6990,7 +6991,7 @@ async function handlePaymentWebhook(req, res) {
   // queryable records that the sale happened at all.
   if (!report || Object.keys(report).length === 0) {
     await writeOutcome(outcomeRecord({
-      kind: 'webhook', secretStatus, decision: matchDecision,
+      kind: 'webhook', secretStatus, secretVia, decision: matchDecision,
       reason: 'no-report-data', payingEmail: destEmail,
       surveyEmail: surveyEmailForAlert, delivered: false,
     }));
@@ -7089,7 +7090,7 @@ async function handlePaymentWebhook(req, res) {
       console.log('WEBHOOK_LOST_RACE [webhook] the pending row was claimed by another call, '
         + 'delivering nothing reason=' + claim.reason + ' addr=' + addrLabel(email));
       await writeOutcome(outcomeRecord({
-        kind: 'webhook', secretStatus, decision: matchDecision, reason: 'lost-claim-race',
+        kind: 'webhook', secretStatus, secretVia, decision: matchDecision, reason: 'lost-claim-race',
         payingEmail: email, surveyEmail: surveyEmailForAlert,
         pendingRowId: toClaim.id, delivered: false, claimRows: claim.rows,
       }));
@@ -7122,7 +7123,7 @@ async function handlePaymentWebhook(req, res) {
     await releasePendingClaim({ id: toClaim.id, claimedBy: matchDecision, reason: 'delivery-failed' });
   }
   await writeOutcome(outcomeRecord({
-    kind: 'webhook', secretStatus, decision: matchDecision, reason: matchReason,
+    kind: 'webhook', secretStatus, secretVia, decision: matchDecision, reason: matchReason,
     payingEmail: email, surveyEmail: surveyEmailForAlert,
     pendingRowId: toClaim && toClaim.id, deliveredRestaurant: restaurant,
     delivered: !!delivered, claimRows: claim.rows, strandedCount: strandedRows.length,

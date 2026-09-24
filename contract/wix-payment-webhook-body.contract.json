@@ -1,0 +1,21 @@
+{
+  "contract": "wix-payment-webhook-body",
+  "version": 1,
+  "why": "2026-09-24 (Simon): the webhook secret moves out of the URL path, where Railway's HTTP request log records it, into the request body, which is not logged. The Wix automation's 'Send an HTTP request' step posts to the BARE URL https://diagnostix-proxy-production.up.railway.app/payment-webhook/ (with the slash) and adds webhookSecret to the body through 'Customize structure'. RVP reads the body field first and the URL path second, accepts RVP_WEBHOOK_SECRET or RVP_WEBHOOK_SECRET_NEXT, removes the field from the body before anything logs or stores it, and never logs its value. The example secret is a placeholder; the real one is never written to a file.",
+  "producer": "Wix Automations, 'Send an HTTP request' action, body params 'Customize structure'",
+  "consumer": "diagnostix-proxy server.js POST /payment-webhook and POST /payment-webhook/:secret",
+  "required": {
+    "email": "string, the paying address (the handler also accepts Email, contactEmail, or the same keys under data)",
+    "webhookSecret": "string, the shared secret, a fixed value typed into the Wix editor"
+  },
+  "optional": {
+    "product": "string, defaults to full",
+    "firstName": "string"
+  },
+  "example": {
+    "email": "buyer@example.invalid",
+    "product": "full",
+    "firstName": "Test",
+    "webhookSecret": "PLACEHOLDER-not-a-real-secret"
+  }
+}

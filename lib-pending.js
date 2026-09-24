@@ -518,7 +518,10 @@ export function outcomeRecord(args) {
     kind: String(a.kind || 'unknown'),
     secret_status: a.secretStatus == null ? null : String(a.secretStatus),
     decision: a.decision == null ? null : String(a.decision),
-    reason: a.reason == null ? null : String(a.reason),
+    // secretVia (2026-09-24): which path presented the webhook secret and which
+    // secret matched, appended to the reason; secret_status keeps its values.
+    reason: (a.reason == null && !a.secretVia) ? null
+      : [a.reason == null ? '' : String(a.reason), a.secretVia ? String(a.secretVia) : ''].filter(Boolean).join(' '),
     addr_domain: p.d, addr_local_len: p.l,
     survey_addr_domain: q.d, survey_addr_local_len: q.l,
     pending_row_id: a.pendingRowId || null,
@@ -801,6 +804,42 @@ export function alertThrottle({ lastSentAt, now, windowMs } = {}) {
 //
 // ONE ARGUMENT, ON PURPOSE. This rule cannot read the body, so it cannot be
 // talked into trusting it.
+// ── The webhook secret, from the body first (2026-09-24) ────────────────────
+//
+// The secret was the last path segment, and Railway's HTTP request log records
+// every path. Wix's "Send an HTTP request" has no headers and no signing, so it
+// moves into the body (field webhookSecret), which is not logged. The body is
+// read FIRST, the path SECOND. RVP_WEBHOOK_SECRET is "current";
+// RVP_WEBHOOK_SECRET_NEXT, when set, is "next", so a rotation has no window in
+// which a genuine sale is refused.
+//
+// takeBodySecret REMOVES the field (top level and under data) so nothing after
+// it can log or store the value. webhookSecretCheck never returns the value.
+export const WEBHOOK_BODY_SECRET_FIELD = 'webhookSecret';
+export function takeBodySecret(body) {
+  let found = '';
+  try {
+    for (const o of [body, body && body.data]) {
+      if (o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, WEBHOOK_BODY_SECRET_FIELD)) {
+        const v = o[WEBHOOK_BODY_SECRET_FIELD];
+        if (!found && typeof v === 'string' && v) found = v;
+        delete o[WEBHOOK_BODY_SECRET_FIELD];
+      }
+    }
+  } catch (_) { /* a body that cannot be read presents nothing */ }
+  return found;
+}
+export function webhookSecretCheck({ bodySecret, pathSecret, current, next, equal }) {
+  const cur = String(current || ''), nxt = String(next || '');
+  const presented = String(bodySecret || '') || String(pathSecret || '');
+  const presentedBy = bodySecret ? 'body' : (pathSecret ? 'url' : 'none');
+  if (!cur && !nxt) return { status: 'not-configured', presentedBy, matched: null, presentedLen: presented.length };
+  if (!presented) return { status: 'absent', presentedBy, matched: null, presentedLen: 0 };
+  const same = (a, b) => { if (!b) return false; try { return equal(a, b); } catch (_) { return false; } };
+  const matched = same(presented, cur) ? 'current' : (same(presented, nxt) ? 'next' : null);
+  return { status: matched ? 'valid' : 'invalid', presentedBy, matched, presentedLen: presented.length };
+}
+
 export function webhookEnforcement(secretStatus) {
   if (secretStatus === 'not-configured') {
     return { enforcing: false, reject: false, httpStatus: 200, reason: 'enforcement-off' };
