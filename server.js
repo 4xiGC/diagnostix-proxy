@@ -29,7 +29,8 @@ import { normalizeEmail, saveSizeBytes, MAX_SAVE_BYTES,
          alertThrottle, ALERT_THROTTLE_MS,
          webhookEnforcement, misroutedHint } from './lib-pending.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { reviewGate, refusalCopy, limitedNote, coverageNoteHtml } from './lib-review-gate.js';
+import { reviewGate, refusalCopy, limitedNote, coverageNoteHtml, CONTACT_ADDRESS } from './lib-review-gate.js';
+import { signPlaceToken, verifyPlaceToken } from './lib-place-token.js';
 import { attachPlaceIdentity, dedupePeersByPlaceId, peerReviewVolumes,
          placesResolutionSummary } from './lib-places-peers.js';
 import { newLedger, noteSearch, noteResults, summarizeEvidence,
@@ -1796,6 +1797,109 @@ async function writeExecutiveSummary({ name, location, report, score, band }) {
   }).catch(() => {});
   return { text: '', reason: 'gate-failed-twice' };
 }
+
+// ── CONFIRM THE PLACES RECORD BEFORE ANY ASSESSMENT (overnight 2026-09-26) ──
+//
+// SUBJECT_INTEGRITY_STANDARD.md 3.1. /diagnose used to take the top Places
+// candidate for "name, location" and nobody saw which business it was. Now the
+// survey calls /resolve-place first: ONE findplacefromtext call, the record
+// shown (name, address, review count, rating), and a signed token binding it.
+// /diagnose assesses exactly that record and reuses this call's answer, so a
+// survey still makes one focal Find Place call, only earlier.
+//
+// formatted_address and business_status are added to the fields. Both are
+// Basic Data fields (ASSUMED from Google's field tiers; read the billing page
+// before shipping). rating and user_ratings_total were already requested.
+//
+// The secret falls back to the recovery secret so this ships without a new
+// environment variable, as SVP's does: both key short-lived HMAC tokens.
+function placeTokenSecret() {
+  return process.env.RVP_IDENTITY_SECRET || process.env.RVP_RECOVERY_SECRET || '';
+}
+
+const PLACE_FIELDS = 'place_id,name,formatted_address,geometry,rating,user_ratings_total,business_status';
+
+function noMatchCopy(name) {
+  const s = String(name || 'this restaurant');
+  return {
+    heading: `We could not find ${s} on Google`,
+    body: [
+      'We searched Google for the name and location you entered and found no matching business, so there is '
+        + 'nothing to assess yet.',
+      'Check the spelling of the name and add the city and country, then try again.',
+      'You have not been charged for this assessment.',
+    ],
+    closing: `If your restaurant is not listed on Google, email ${CONTACT_ADDRESS} and we will arrange a consultant-led assessment.`,
+  };
+}
+
+app.post('/resolve-place', async (req, res) => {
+  const b = req.body || {};
+  const name = typeof b.name === 'string' ? b.name.trim() : '';
+  const location = typeof b.location === 'string' ? b.location.trim() : '';
+  if (!name) return res.status(400).json({ error: 'Restaurant name is required' });
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey || !placeTokenSecret()) {
+    // Without Places there is nothing to confirm; without a secret the
+    // approval could not be trusted. Neither is guessed around.
+    console.warn('PLACE [confirm] unavailable: places=' + !!apiKey + ' secret=' + !!placeTokenSecret());
+    return res.status(503).json({ error: 'Confirmation is unavailable right now. Please try again in a moment.' });
+  }
+  try {
+    const url = 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input='
+      + encodeURIComponent(location ? name + ', ' + location : name)
+      + '&inputtype=textquery&fields=' + PLACE_FIELDS + '&key=' + apiKey;
+    const d = await (await fetch(url)).json();
+    const top = d && d.status === 'OK' && Array.isArray(d.candidates) && d.candidates[0];
+    if (!top || typeof top.place_id !== 'string') {
+      if (d && (d.status === 'ZERO_RESULTS' || d.status === 'OK')) {
+        console.log('PLACE [confirm] no match');
+        await writeOutcome(Object.assign(outcomeRecord({
+          kind: 'confirm', decision: 'no-place-match', reason: 'places ' + d.status,
+          surveyEmail: b.email, deliveredRestaurant: name,
+        }), { coverage_verdict: 'no-place-match', place_id: null, place_confirmed: false }));
+        await sendLeadAlert({ kind: 'no Places match', subject: name, location,
+          lines: ['Reason: Google Places returned no business for the name and location as typed'] });
+        return res.json({ status: 'no-match', copy: noMatchCopy(name) });
+      }
+      console.log('PLACE [confirm] places error status=' + (d && d.status));
+      return res.status(503).json({ error: 'We could not check the restaurant just now. Please try again in a moment.' });
+    }
+    const place = {
+      placeId: top.place_id,
+      name: typeof top.name === 'string' ? top.name : name,
+      address: typeof top.formatted_address === 'string' ? top.formatted_address : null,
+      rating: typeof top.rating === 'number' ? top.rating : null,
+      reviewCount: typeof top.user_ratings_total === 'number' ? top.user_ratings_total : null,
+      lat: top.geometry && top.geometry.location && typeof top.geometry.location.lat === 'number' ? top.geometry.location.lat : null,
+      lng: top.geometry && top.geometry.location && typeof top.geometry.location.lng === 'number' ? top.geometry.location.lng : null,
+    };
+    const placeToken = signPlaceToken({ place, secret: placeTokenSecret(), issuedAt: Date.now() });
+    console.log('PLACE [confirm] shown reviews=' + place.reviewCount + ' address=' + (place.address ? 'yes' : 'no'));
+    return res.json({ status: 'found', placeToken, place: {
+      name: place.name, address: place.address, rating: place.rating, reviewCount: place.reviewCount,
+      closed: top.business_status === 'CLOSED_PERMANENTLY' } });
+  } catch (e) {
+    console.log('PLACE [confirm] error ' + (e && e.message));
+    return res.status(503).json({ error: 'We could not check the restaurant just now. Please try again in a moment.' });
+  }
+});
+
+// "No, let me correct it." Recorded whatever the token says: a declined match
+// is exactly the event the confirmation exists to catch, so a bad token only
+// loses the place id, never the row.
+app.post('/decline-place', async (req, res) => {
+  const b = req.body || {};
+  const v = verifyPlaceToken({ token: b.placeToken, secret: placeTokenSecret() });
+  const place = v.ok ? v.place : null;
+  await writeOutcome(Object.assign(outcomeRecord({
+    kind: 'confirm', decision: 'declined-by-user',
+    reason: v.ok ? 'requester said this is not their restaurant' : 'requester declined; token ' + v.reason,
+    surveyEmail: b.email, deliveredRestaurant: place ? place.name : null,
+  }), { coverage_verdict: 'declined-by-user', place_id: place ? place.placeId : null, place_confirmed: false,
+        subject_review_count: place ? place.reviewCount : null }));
+  return res.json({ ok: true });
+});
 
 app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => {
   // ALL-1: everything this handler awaits runs inside one ledger, including the
