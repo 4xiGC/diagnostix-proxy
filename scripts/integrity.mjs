@@ -101,6 +101,11 @@ export const RVP_GATES = [
   { name: 'verdict words match the computed band (Chrome)', script: 'rvp-narrative-gate.js', counts: line(/(PASS|FAIL): [^\n]*/) },
   { name: 'benchmark score_verdict is its own band', script: 'rvp-verdict-consistency.mjs',
     counts: line(/rvp rows \d+, scored \d+, null verdicts \d+, verdicts off their own band \d+/) },
+  // 2026-09-30 (B5): MEASURED until live runs carry provenance (the first is the
+  // morning purchase after the push). The script's control must separate a
+  // complete provenance from an incomplete one or it prints FAIL.
+  { name: 'runs with complete provenance', script: 'rvp-provenance-count.mjs', measure: true,
+    counts: line(/runs with complete provenance: reports \d+, with provenance \d+, complete \d+; [^\n]*/) },
   { name: 'statistics tied to a stored input (Stage 4)', script: 'rvp-stat-shapes.mjs', measure: true,
     counts: line(/reports \d+, statistics \d+, tied \d+ \(\d+%\)/) },
   // 2026-09-26: the gate is built (lib-review-gate.js). Over stored reports it

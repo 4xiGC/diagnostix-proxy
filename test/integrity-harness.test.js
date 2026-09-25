@@ -78,3 +78,14 @@ test('THE REVIEW-COUNT GATE MEASURES THE STORED REPORTS, IT IS NOT SKIPPED AS UN
   // CONTROL: an output without the judged count is not a count.
   assert.equal(g.counts('TypeError: x'), '');
 });
+
+test('THE PROVENANCE COUNT IS A MEASURED GATE, AND A FAILED CONTROL IS NOT A MEASUREMENT (2026-09-30, B5)', async () => {
+  const { RVP_GATES, parseVerdict } = await load();
+  const g = RVP_GATES.find((x) => /complete provenance/.test(x.name));
+  assert.ok(g, 'no provenance gate');
+  assert.equal(g.measure, true);
+  assert.equal(g.script, 'rvp-provenance-count.mjs');
+  const out = 'control: complete and incomplete provenance are told apart\nruns with complete provenance: reports 112, with provenance 0, complete 0; benchmarks: the provenance column does not exist yet (migration not applied)';
+  assert.equal(g.counts(out), 'runs with complete provenance: reports 112, with provenance 0, complete 0; benchmarks: the provenance column does not exist yet (migration not applied)');
+  assert.equal(parseVerdict('FAIL: the control did not separate complete from incomplete', 1), 'FAIL');
+});
