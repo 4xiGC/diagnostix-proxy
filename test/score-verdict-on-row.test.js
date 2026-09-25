@@ -38,9 +38,10 @@ const build = (report) => buildBenchmarkRow({
 });
 
 test('a row with a score carries the band of that score', () => {
-  // Don Antonio Ristorante, 2026-09-22: stored "Good", its own pillars mean 61.
+  // Don Antonio Ristorante, 2026-09-22: stored "Good", its own pillars mean 61
+  // under v1. v2 (Q20) leaves the no-signal 50 out: 316 / 5 = 63.2, so 63, still Fair.
   const row = build({ pillars: pillars(70, 66, 50, 48, 62, 70) });
-  assert.equal(row.overall_score, 61);
+  assert.equal(row.overall_score, 63);
   assert.equal(row.cohort_extra.score_verdict, 'Fair');
 });
 

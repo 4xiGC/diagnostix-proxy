@@ -174,7 +174,7 @@ test('NO SCORE MEANS NO VERDICT', () => {
 });
 
 test('the method version names the rule and the product', () => {
-  assert.equal(OVERALL_METHOD_VERSION, 'rvp-overall-mean-v1');
+  assert.equal(OVERALL_METHOD_VERSION, 'rvp-overall-mean-v2');   // v2 from 2026-09-25 (Q20)
 });
 
 // ── Controls ──────────────────────────────────────────────────────────────
@@ -193,7 +193,7 @@ test('CONTROL: the computed score DISAGREES with the typed one on real data', ()
   // If these ever agreed on the whole corpus the change would be pointless.
   // Three rows lifted from the measurement, with the score the report printed.
   const corpus = [
-    { pillars: six(78, 68, 50, 58, 72, 74), typed: 78, expect: 67 },  // Casa las Cuja
+    { pillars: six(78, 68, 50, 58, 72, 74), typed: 78, expect: 70 },  // Casa las Cuja (v2: es 50 left out; v1 67)
     { pillars: six(68, 62, 45, 58, 67, 72), typed: 72, expect: 62 },  // Lolita Jones
     { pillars: six(85, 78, 55, 48, 80, 83), typed: 82, expect: 72 },  // William & Victoria
   ];

@@ -73,7 +73,7 @@ test('THE ROW CARRIES THE COMPUTED SCORE, not the typed one', () => {
 test('and it NAMES the method', () => {
   const row = build({ healthCheckScore: 68, pillars: pillars(66, 70, 42, 48, 58, 72) });
   assert.equal(row.method_version, OVERALL_METHOD_VERSION);
-  assert.equal(row.method_version, 'rvp-overall-mean-v1');
+  assert.equal(row.method_version, 'rvp-overall-mean-v2');   // v2 from 2026-09-25 (Q20)
 });
 
 test('the method version is not the one SVP uses', () => {

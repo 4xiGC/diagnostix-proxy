@@ -9,7 +9,7 @@ import express from 'express';
 // one a test can point somewhere else through __test__.setFetch.
 import nodeFetch from 'node-fetch';
 let fetch = nodeFetch;
-import { computeOverall, overallFormula, verdictFor, NO_SCORE_SENTENCE,
+import { computeOverall, computeOverallV1, ES_NOT_AVERAGED_SENTENCE, overallFormula, verdictFor, NO_SCORE_SENTENCE,
          OVERALL_METHOD_VERSION, recordedScore } from './lib-score.js';
 import { contradictsBand, retryInstruction } from './lib-narrative.js';
 import crypto from 'crypto';
@@ -4040,6 +4040,12 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   const overall    = computeOverall(report?.pillars);
   const score      = overall.score;
   const hasScore   = overall.ok;
+  // v2 (Q20): the number v1 put on this page, for the revision note when the
+  // two differ. The page renders from stored pillars, so a stored report
+  // delivered under v1 shows v2 and says what it first showed.
+  const overallV1  = computeOverallV1(report?.pillars);
+  const esLeftOut  = hasScore && overall.excluded.includes('es');
+  const revisedFrom = esLeftOut && overallV1.ok && overallV1.score !== score ? overallV1.score : null;
   const verdict    = verdictFor(score) || '';
   const summary    = report?.executiveSummary || '';
 
@@ -4921,10 +4927,19 @@ ul.bullet-list li{margin:4px 0}
         // customer reopening a link from May sees a number about 7 points
         // below the one in the email they were sent. A number that changes
         // under a reader with no explanation is worse than either number.
+        // v2 (Q20): when Employee Sentiment carries the no-signal 50 it is left
+        // out, the formula shows the five averaged, and one sentence says why.
+        + (esLeftOut ? ' ' + esc(ES_NOT_AVERAGED_SENTENCE) : '')
         + ` Method ` + esc(OVERALL_METHOD_VERSION) + `: the overall score is `
-        + `the mean of the six pillar scores above, rounded half up. Reports `
+        + (esLeftOut ? `the mean of the five measured pillar scores above` : `the mean of the six pillar scores above`)
+        + `, rounded half up. Reports `
         + `issued before this method was introduced may show a different `
-        + `overall score.</div>` : ''}
+        + `overall score.`
+        // The revision convention: a stored report whose number changed says
+        // when, from what, and why, in one line.
+        + (revisedFrom !== null ? ' Revised 25 September 2026: this report first showed an overall score of '
+          + esc(String(revisedFrom)) + ', which averaged in that 50.' : '')
+        + `</div>` : ''}
     ` : ''}
 
     ${summaryRevisedNote

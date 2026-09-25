@@ -36,7 +36,19 @@
 // prompt's own JSON schema, and the keys every stored payload carries.
 export const PILLAR_KEYS = ['cs', 'pa', 'es', 'sm', 'cp', 'bg'];
 
-export const OVERALL_METHOD_VERSION = 'rvp-overall-mean-v1';
+// v2 (Simon, 2026-09-25, Q20): Employee Sentiment at exactly ES_NO_SIGNAL is
+// NOT averaged in. The report's own "Where you sit" calls 50 "the value
+// returned when no public employee signal exists", so v1 averaged a
+// placeholder as though it were a measurement. v2 averages the five measured
+// pillars and says so on the cover. Measured 2026-09-29 over 111 six-pillar
+// stored reports: 19 at exactly 50; 2 bands move, both Fair to Good and both
+// the own test restaurant; 17 rise 1 to 2 points within band. A measured 50
+// is indistinguishable from the placeholder; the product's own rule decides.
+export const OVERALL_METHOD_VERSION = 'rvp-overall-mean-v2';
+export const OVERALL_METHOD_VERSION_V1 = 'rvp-overall-mean-v1';
+export const ES_NO_SIGNAL = 50;
+export const ES_NOT_AVERAGED_SENTENCE = 'Employee Sentiment is not averaged in: no public employee '
+  + 'signal was found, and 50 is the value given when there is none.';
 
 export const NO_SCORE_SENTENCE =
   'This report does not carry an overall score, because one or more of the six '
@@ -98,11 +110,28 @@ function roundHalfUp(x) {
   return Math.floor(x + 0.5);
 }
 
+// v2. Returns { ok, score, mean, sum, values, averaged, excluded, reason }.
+// The six must all be present and in range, exactly as v1 requires; only
+// then is a no-signal Employee Sentiment left out of the mean.
+export function computeOverall(pillars, _reportIgnoredOnPurpose) {
+  const v1 = computeOverallV1(pillars);
+  if (!v1.ok) return { ...v1, averaged: [], excluded: [] };
+  const excluded = pillars.es.score === ES_NO_SIGNAL ? ['es'] : [];
+  const averaged = PILLAR_KEYS.filter((k) => !excluded.includes(k));
+  const values = averaged.map((k) => pillars[k].score);
+  const sum = values.reduce((a, b) => a + b, 0);
+  const mean = sum / values.length;
+  return { ok: true, score: roundHalfUp(mean), mean, sum, values, averaged, excluded, reason: 'computed' };
+}
+
+// v1, the mean of all six. Kept so a stored report whose delivered number
+// differs can say what it first showed (the revision note on the cover).
+//
 // Returns { ok, score, mean, sum, values, reason }.
 //
 // score is null whenever ok is false, and the caller must print
 // NO_SCORE_SENTENCE rather than substituting anything.
-export function computeOverall(pillars, _reportIgnoredOnPurpose) {
+export function computeOverallV1(pillars, _reportIgnoredOnPurpose) {
   const fail = (reason) => ({ ok: false, score: null, mean: null, sum: null, values: [], reason });
 
   if (!pillars || typeof pillars !== 'object' || Array.isArray(pillars)) {
@@ -130,12 +159,13 @@ export function computeOverall(pillars, _reportIgnoredOnPurpose) {
 // is no score: a formula for a number that is not shown is worse than none.
 export function overallFormula(result) {
   const r = (result && typeof result === 'object') ? result : null;
-  if (!r || r.ok !== true || !Array.isArray(r.values) || r.values.length !== PILLAR_KEYS.length) {
+  // v2: the pillars actually averaged, five when Employee Sentiment is left out.
+  if (!r || r.ok !== true || !Array.isArray(r.values) || r.values.length < PILLAR_KEYS.length - 1) {
     return '';
   }
   const meanText = Number.isInteger(r.mean) ? String(r.mean) : r.mean.toFixed(1);
   return r.values.join(' + ') + ' = ' + r.sum
-    + ', divided by ' + PILLAR_KEYS.length + ' = ' + meanText
+    + ', divided by ' + r.values.length + ' = ' + meanText
     + ', rounded to ' + r.score;
 }
 
