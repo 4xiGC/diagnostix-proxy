@@ -1071,10 +1071,18 @@ function showRefusal(copy) {
   document.getElementById('step-lbl').textContent = 'No assessment produced';
 }
 
+// THE PAGE WAITS AS LONG AS THE SERVER MAY RUN (Simon, 2026-09-25). This was
+// 90 s, and an abort shows an ESTIMATED report. Since 2026-09-29 every model
+// call may take 180 s and is retried once (server.js MODEL_TIMEOUT_MS_DEFAULT),
+// so the page gave up on runs the server would finish. 420 s is the model
+// phase at its longest (180 s plus one retry; p1 and p2 run in parallel) plus
+// 60 s for the searches and the summary. The still-working line counts the
+// whole time. RVP_DIAGNOSE_TIMEOUT_MS overrides it for the Chrome test only.
+var DIAGNOSE_DEFAULT_MS = 2 * 180000 + 60000;
+window.RVP_DIAGNOSE_DEFAULT_MS = DIAGNOSE_DEFAULT_MS;
 async function callProxy(d) {
-  // 90 second timeout, Railway can take up to ~60s for a full scan
   var controller = new AbortController();
-  var timeoutId = setTimeout(function(){ controller.abort(); }, 90000);
+  var timeoutId = setTimeout(function(){ controller.abort(); }, window.RVP_DIAGNOSE_TIMEOUT_MS || DIAGNOSE_DEFAULT_MS);
   try {
     var res = await fetch(PROXY_URL, {
       method:  'POST',
