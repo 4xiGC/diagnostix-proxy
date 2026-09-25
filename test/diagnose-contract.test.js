@@ -66,3 +66,14 @@ test('CONTROL: the checker catches the 8.11.52 shape', () => {
   delete broken.healthCheckScore;
   assert.deepEqual(breaches(broken), ['healthCheckScore is undefined']);
 });
+
+// 2026-09-30 (B5): the real response carries the OPTIONAL provenance object the
+// contract names, and the contract still does not require it (Analytics ignores it).
+test('THE REAL RESPONSE CARRIES THE OPTIONAL PROVENANCE THE CONTRACT NAMES', async () => {
+  assert.ok(CONTRACT.optional && CONTRACT.optional.provenance, 'the contract does not name provenance');
+  assert.equal(Object.prototype.hasOwnProperty.call(CONTRACT.required, 'provenance'), false, 'provenance must stay optional');
+  const { status, body } = await postDiagnose(CONTRACT.example.pillars);
+  assert.equal(status, 200);
+  assert.equal(typeof body.provenance, 'object');
+  assert.equal(body.provenance && body.provenance.methodVersion, 'rvp-overall-mean-v2');
+});

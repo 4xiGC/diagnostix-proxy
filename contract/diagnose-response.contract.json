@@ -8,9 +8,16 @@
     "diagnostix-analytics lib/orchestrator.js: healthCheckScore read into the run's score range",
     "diagnostix-analytics lib/orchestrator.js: benchmarkId verified and stored on bulk_run_subjects"
   ],
-  "pillarKeys": ["cs", "pa", "es", "sm", "cp", "bg"],
+  "pillarKeys": [
+    "cs",
+    "pa",
+    "es",
+    "sm",
+    "cp",
+    "bg"
+  ],
   "required": {
-    "healthCheckScore": "integer 0 to 100, the mean of the six pillar scores rounded half up; null only when the six are not all present, and Analytics then refuses the peer",
+    "healthCheckScore": "integer 0 to 100, the overall under rvp-overall-mean-v2: the mean of the six pillar scores rounded half up, except that Employee Sentiment at exactly 50 (the no-public-signal value) is left out and the other five are averaged; null only when the six are not all present, and Analytics then refuses the peer",
     "pillars": "object carrying every key in pillarKeys, each with an integer score 0 to 100",
     "benchmarkId": "string, or null when the benchmark write was skipped; the key must be present"
   },
@@ -18,12 +25,33 @@
     "healthCheckScore": 59,
     "benchmarkId": "00000000-0000-4000-8000-000000000000",
     "pillars": {
-      "cs": { "score": 66, "label": "Customer Sentiment" },
-      "pa": { "score": 70, "label": "Pricing & Accessibility" },
-      "es": { "score": 42, "label": "Employee Sentiment" },
-      "sm": { "score": 48, "label": "Social Media Impact" },
-      "cp": { "score": 58, "label": "Competitive Positioning" },
-      "bg": { "score": 72, "label": "Brand Experience & Growth" }
+      "cs": {
+        "score": 66,
+        "label": "Customer Sentiment"
+      },
+      "pa": {
+        "score": 70,
+        "label": "Pricing & Accessibility"
+      },
+      "es": {
+        "score": 42,
+        "label": "Employee Sentiment"
+      },
+      "sm": {
+        "score": 48,
+        "label": "Social Media Impact"
+      },
+      "cp": {
+        "score": 58,
+        "label": "Competitive Positioning"
+      },
+      "bg": {
+        "score": 72,
+        "label": "Brand Experience & Growth"
+      }
     }
+  },
+  "optional": {
+    "provenance": "object, from 2026-09-30 (RVP B5, lib-provenance.js buildProvenance): methodVersion, passes (label, model, promptVersion, tokens), promptVersions, confidence, durationMs, writtenAt. Additive: Analytics does not read it, and a response without it is still valid."
   }
 }
