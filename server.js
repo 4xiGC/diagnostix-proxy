@@ -37,6 +37,7 @@ import { attachPlaceIdentity, dedupePeersByPlaceId, peerReviewVolumes,
 import { newLedger, noteSearch, noteResults, summarizeEvidence,
          renderEvidenceSentence, formatCount, evidencePanelHtml } from './lib-evidence.js';
 import { findContradictions, COMPARISON_RULE } from './lib-comparisons.js';
+import { fetchExternal, createFailureAlerter } from './lib-external.js';
 
 // ── ALL-1: the evidence ledger, scoped to one assessment ───────────────────
 //
@@ -252,11 +253,13 @@ async function search(q, opts) {
   if (!sk) { console.log(`[serper] ${label} q="${q}" → NO API KEY`); return 'no api key'; }
   const t0 = Date.now();
   try {
-    const r = await fetch('https://google.serper.dev/search', {
+    // 2026-09-30 (B2): a 15 s timeout and one retry; a failure takes the empty
+    // path below with its reason, and alerts (lib-external.js).
+    const r = await fetchExternal('https://google.serper.dev/search', {
       method: 'POST',
       headers: { 'X-API-KEY': sk, 'Content-Type': 'application/json' },
       body: JSON.stringify({ q, num: 10 })
-    });
+    }, { fetchFn: fetch, service: 'serper', label });
     const d = await r.json();
     let o = '';
     if (d.knowledgeGraph) {
@@ -278,6 +281,7 @@ async function search(q, opts) {
   } catch(e) {
     const ms = Date.now() - t0;
     console.log(`[serper] ${label} q="${q.slice(0,80)}" → ERR ${ms}ms ${e.message}`);
+    if (e && e.reason) await externalFailed({ service: 'serper', label, reason: e.reason });
     return 'err:'+e.message;
   }
 }
@@ -295,11 +299,13 @@ async function searchStructured(q, opts) {
   if (!sk) { console.log(`[serper] ${label} q="${q}" → NO API KEY`); return { text: 'no api key', rating: null, reviewCount: null, title: null }; }
   const t0 = Date.now();
   try {
-    const r = await fetch('https://google.serper.dev/search', {
+    // 2026-09-30 (B2): a 15 s timeout and one retry; a failure takes the empty
+    // path below with its reason, and alerts (lib-external.js).
+    const r = await fetchExternal('https://google.serper.dev/search', {
       method: 'POST',
       headers: { 'X-API-KEY': sk, 'Content-Type': 'application/json' },
       body: JSON.stringify({ q, num: 10 })
-    });
+    }, { fetchFn: fetch, service: 'serper', label });
     const d = await r.json();
     let text = '';
     let rating = null;
@@ -409,6 +415,7 @@ async function searchStructured(q, opts) {
   } catch(e) {
     const ms = Date.now() - t0;
     console.log(`[serper] ${label} q="${q.slice(0,80)}" → ERR ${ms}ms ${e.message}`);
+    if (e && e.reason) await externalFailed({ service: 'serper', label, reason: e.reason });
     return { text: 'err:'+e.message, rating: null, reviewCount: null, title: null };
   }
 }
@@ -457,7 +464,7 @@ const METRO_CHAIN = ['administrative_area_level_2', 'locality', 'administrative_
 async function reverseGeocodeFocal(lat, lng, apiKey) {
   try {
     const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}`;
-    const d = await (await fetch(url)).json();
+    const d = await (await fetchExternal(url, undefined, { fetchFn: fetch, service: 'places', label: 'reverse-geocode' })).json();
     if (d.status !== 'OK' || !Array.isArray(d.results) || d.results.length === 0) {
       console.log(`[places] reverse geocode: status=${d.status}, metro unavailable`);
       return null;
@@ -471,6 +478,7 @@ async function reverseGeocodeFocal(lat, lng, apiKey) {
     return { metro, metroSource, country };
   } catch (e) {
     console.log(`[places] reverse geocode threw: ${e.message}`);
+    if (e && e.reason) await externalFailed({ service: 'places', label: 'reverse-geocode', reason: e.reason });
     return null;
   }
 }
@@ -517,7 +525,7 @@ async function fetchPlacesNearby(opts) {
     // because it returns the restaurant's place_id which we can use to fetch
     // the focal's own rating in the same shot.
     const findUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(geocodeQuery)}&inputtype=textquery&fields=place_id,geometry,name,rating,user_ratings_total,price_level,types&key=${apiKey}`;
-    const fr = await fetch(findUrl);
+    const fr = await fetchExternal(findUrl, undefined, { fetchFn: fetch, service: 'places', label: 'find-focal' });
     const fd = await fr.json();
     if (fd.status === 'OK' && Array.isArray(fd.candidates) && fd.candidates.length > 0) {
       const top = fd.candidates[0];
@@ -534,7 +542,7 @@ async function fetchPlacesNearby(opts) {
       console.log(`[places] geocode ZERO_RESULTS for "${geocodeQuery}" — falling back to location-only geocode`);
       // Fallback: geocode just the location string
       const locUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(location)}&key=${apiKey}`;
-      const lr = await fetch(locUrl);
+      const lr = await fetchExternal(locUrl, undefined, { fetchFn: fetch, service: 'places', label: 'geocode-location' });
       const ld = await lr.json();
       if (ld.status === 'OK' && Array.isArray(ld.results) && ld.results.length > 0) {
         lat = ld.results[0].geometry?.location?.lat ?? null;
@@ -546,6 +554,7 @@ async function fetchPlacesNearby(opts) {
     }
   } catch (e) {
     console.log(`[places] geocode threw: ${e.message}`);
+    if (e && e.reason) await externalFailed({ service: 'places', label: 'find-focal', reason: e.reason });
   }
 
   if (lat === null || lng === null) {
@@ -566,7 +575,7 @@ async function fetchPlacesNearby(opts) {
   let places = [];
   try {
     const nearbyUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${RADIUS_METERS}&type=restaurant&key=${apiKey}`;
-    const nr = await fetch(nearbyUrl);
+    const nr = await fetchExternal(nearbyUrl, undefined, { fetchFn: fetch, service: 'places', label: 'nearby' });
     const nd = await nr.json();
     if (nd.status === 'OK' && Array.isArray(nd.results)) {
       places = nd.results.map(p => ({
@@ -598,6 +607,7 @@ async function fetchPlacesNearby(opts) {
     }
   } catch (e) {
     console.log(`[places] nearby search threw: ${e.message}`);
+    if (e && e.reason) await externalFailed({ service: 'places', label: 'nearby', reason: e.reason });
   }
 
   // Drop the focal itself from the peer list (it'll typically be the closest match by name)
@@ -870,7 +880,7 @@ async function findPlaceForCompetitor(query) {
   const url = 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json'
     + `?input=${encodeURIComponent(query)}&inputtype=textquery&fields=${fields}&key=${apiKey}`;
   try {
-    const d = await (await fetch(url)).json();
+    const d = await (await fetchExternal(url, undefined, { fetchFn: fetch, service: 'places', label: 'find-competitor' })).json();
     const c = Array.isArray(d.candidates) ? d.candidates[0] : null;
     if (d.status !== 'OK' || !c) return { ok: false, reason: d.status || 'UNKNOWN' };
     return {
@@ -882,7 +892,8 @@ async function findPlaceForCompetitor(query) {
       businessStatus: c.business_status || null,
     };
   } catch (e) {
-    return { ok: false, reason: 'fetch_failed', detail: String(e && e.message).slice(0, 120) };
+    if (e && e.reason) await externalFailed({ service: 'places', label: 'find-competitor', reason: e.reason });
+    return { ok: false, reason: (e && e.reason) || 'fetch_failed', detail: String(e && e.message).slice(0, 120) };
   }
 }
 
@@ -1506,6 +1517,24 @@ async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
 // The internal inbox every alert goes to (the same address the existing alerts use).
 const ALERT_TO = 'hello@4xiconsulting.com';
 
+// 2026-09-30 (B2): A FAILED PLACES OR SERPER CALL IS ALERTED, once per service
+// per ten minutes, after its one retry (lib-external.js). The run goes on down
+// its existing empty or thin path; this is so the business knows.
+let externalAlerter = null;
+function makeExternalAlerter() {
+  return createFailureAlerter({ send: ({ service, label, reason }) => sendEmailViaResend({
+    to: ALERT_TO, fromName: 'DiagnostiX Alerts',
+    subject: 'ALERT: ' + service + ' calls are failing (' + label + ', ' + reason + ')',
+    html: '<p><strong>An external call failed twice and the assessment went on without it.</strong></p>'
+      + '<ul><li>service: ' + service + '</li><li>call: ' + label + '</li><li>reason: ' + reason + '</li></ul>'
+      + '<p>Further failures of this service are logged, not emailed, for ten minutes.</p>',
+  }) });
+}
+async function externalFailed(x) {
+  if (!externalAlerter) externalAlerter = makeExternalAlerter();
+  return externalAlerter(x);
+}
+
 // 2026-09-29 (recommendation 7): A FAILED ASSESSMENT IS ALERTED. /diagnose
 // returned 500 with no row and no alert (C4). Analytics' peer runs call the
 // same route (a placeId and no token), so the alert says which caller it was.
@@ -1934,7 +1963,7 @@ app.post('/resolve-place', async (req, res) => {
     const url = 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input='
       + encodeURIComponent(location ? name + ', ' + location : name)
       + '&inputtype=textquery&fields=' + PLACE_FIELDS + '&key=' + apiKey;
-    const d = await (await fetch(url)).json();
+    const d = await (await fetchExternal(url, undefined, { fetchFn: fetch, service: 'places', label: 'resolve-place' })).json();
     const top = d && d.status === 'OK' && Array.isArray(d.candidates) && d.candidates[0];
     if (!top || typeof top.place_id !== 'string') {
       if (d && (d.status === 'ZERO_RESULTS' || d.status === 'OK')) {
@@ -8350,6 +8379,9 @@ if (process.env.RVP_IMPORT_ONLY === '1') {
 // unroutable host and replaces globalThis.fetch. That keeps the seam at the
 // boundary the code already has instead of adding a parameter for the test.
 export const __test__ = {
+  // 2026-09-30 (B2): the external-call paths, and a reset for the alert window.
+  search, searchStructured, fetchPlacesNearby, findPlaceForCompetitor,
+  resetExternalAlerts() { externalAlerter = null; },
   // Replaces the module's fetch and hands back a restore function, so a test
   // cannot leave the real one swapped out for the files that run after it.
   setFetch(fn) { const was = fetch; fetch = fn; return () => { fetch = was; }; },
