@@ -1251,6 +1251,10 @@ async function searchCompetitorsMultiple(opts) {
 // v8.11.52: BEHIND A REBINDABLE NAME, for the same reason node-fetch is.
 // A test that cannot replace the model call cannot test a gate that runs on
 // the model's output, and the alternative is spending on every test run.
+// 2026-09-29 (recommendation 7): the model-call timeout. RVP_MODEL_TIMEOUT_MS
+// overrides it (the tests use 60 ms); production sets nothing.
+const MODEL_TIMEOUT_MS_DEFAULT = 180000;
+
 let claude = async function claudeImpl(prompt, opts) {
   opts = opts || {};
   const maxTokens         = opts.maxTokens         || 8000;
@@ -1277,23 +1281,46 @@ let claude = async function claudeImpl(prompt, opts) {
     const systemPrompt = 'You are a JSON API. Output ONLY valid JSON. No markdown. No backticks. Start with { end with }. CRITICAL: All text values in the JSON must be written in English, regardless of the language of the source data or the restaurant\'s location.'
       + (extraInstruction ? ' ' + extraInstruction : '');
 
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ak,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: model,
-        max_tokens: tokenBudget,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: prompt }]
-      })
-    });
-
-    // Read body as text first so we can log it on failure (Anthropic 5xx etc.).
-    const rawBody = await r.text();
+    // 2026-09-29 (recommendation 7): EVERY MODEL CALL HAS A TIMEOUT. Before
+    // this a hung call held the buyer on the thinking screen until the
+    // platform gave up. A timeout, a network failure or a 5xx is marked
+    // retryable; the caller below retries it once.
+    const timeoutMs = Number(process.env.RVP_MODEL_TIMEOUT_MS) || MODEL_TIMEOUT_MS_DEFAULT;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let r, rawBody;
+    try {
+      r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ak,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: model,
+          max_tokens: tokenBudget,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: prompt }]
+        }),
+        signal: controller.signal,
+      });
+      // Read body as text first so we can log it on failure (Anthropic 5xx etc.).
+      rawBody = await r.text();
+    } catch (e) {
+      const timedOut = controller.signal.aborted;
+      const err = new Error(timedOut ? 'Anthropic call timed out after ' + timeoutMs + ' ms' : 'Anthropic network error: ' + (e && e.message));
+      err.retryable = true;
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (r.status >= 500) {
+      console.log(`[${label}] Anthropic status ${r.status}:`, String(rawBody).slice(0, 200));
+      const err = new Error('Anthropic ' + r.status + ': ' + String(rawBody).slice(0, 120));
+      err.retryable = true;
+      throw err;
+    }
     let d;
     try {
       d = JSON.parse(rawBody);
@@ -1345,8 +1372,21 @@ let claude = async function claudeImpl(prompt, opts) {
     };
   }
 
+  // ONE retry on a timeout, a network failure or a 5xx, after a short pause.
+  // A 4xx is not retried: it will fail the same way twice.
+  async function callWithRetry(tokenBudget, extraInstruction) {
+    try {
+      return await callOnce(tokenBudget, extraInstruction);
+    } catch (e) {
+      if (!e || !e.retryable) throw e;
+      console.log(`[${label}] MODEL_RETRY after: ${e.message}`);
+      await new Promise((res) => setTimeout(res, Number(process.env.RVP_MODEL_RETRY_DELAY_MS) || 1500));
+      return callOnce(tokenBudget, extraInstruction);
+    }
+  }
+
   // Attempt 1: normal budget.
-  let result = await callOnce(maxTokens);
+  let result = await callWithRetry(maxTokens);
   if (result.ok) return withUsage ? { data: result.data, usage: lastUsage || {}, model } : result.data;
 
   console.log(`[${label}] parse failed on attempt 1 — stop_reason=${result.stopReason}, length=${result.length}ch, truncated=${result.truncated}, preview="${result.preview}"`);
@@ -1357,7 +1397,7 @@ let claude = async function claudeImpl(prompt, opts) {
 
   // Attempt 2: larger budget + concise-output reinforcement.
   console.log(`[${label}] retrying with max_tokens=16000 and length reinforcement...`);
-  result = await callOnce(16000, 'Your previous attempt was truncated. Keep all string values concise (1-2 sentences max per field). Return ONLY valid JSON.');
+  result = await callWithRetry(16000, 'Your previous attempt was truncated. Keep all string values concise (1-2 sentences max per field). Return ONLY valid JSON.');
 
   if (result.ok) {
     console.log(`[${label}] retry succeeded`);
@@ -8265,6 +8305,7 @@ export const __test__ = {
   app,
   writeExecutiveSummary,
   sendEmailViaResend,
+  MODEL_TIMEOUT_MS_DEFAULT,
   SUMMARY_TARGET_WORDS,
   SUMMARY_MAX_WORDS,
   // Exposed so the ship gate can render a real report page in a real browser
