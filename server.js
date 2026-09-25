@@ -4355,7 +4355,11 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   const metaParts = [cuisine, price, location, reportLabel].filter(Boolean);
   const metaRow = metaParts.map(esc).join(' &nbsp;·&nbsp; ');
 
+  // 2026-09-29 (recommendation 1): the viewport tag. Without it a phone laid
+  // the report out at 980 px and shrank it, and the @media (max-width:680px)
+  // rules below never fired (B3, Orchid 94a649d8).
   return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(restaurant)}, DiagnostiX Report</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
