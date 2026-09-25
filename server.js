@@ -38,6 +38,7 @@ import { newLedger, noteSearch, noteResults, summarizeEvidence,
          renderEvidenceSentence, formatCount, evidencePanelHtml } from './lib-evidence.js';
 import { findContradictions, COMPARISON_RULE } from './lib-comparisons.js';
 import { fetchExternal, createFailureAlerter } from './lib-external.js';
+import { buildProvenance } from './lib-provenance.js';
 
 // ── ALL-1: the evidence ledger, scoped to one assessment ───────────────────
 //
@@ -1289,6 +1290,7 @@ let claude = async function claudeImpl(prompt, opts) {
   let lastUsage = null;
 
   async function callOnce(tokenBudget, extraInstruction) {
+    const tCall = Date.now();
     const systemPrompt = 'You are a JSON API. Output ONLY valid JSON. No markdown. No backticks. Start with { end with }. CRITICAL: All text values in the JSON must be written in English, regardless of the language of the source data or the restaurant\'s location.'
       + (extraInstruction ? ' ' + extraInstruction : '');
 
@@ -1364,6 +1366,12 @@ let claude = async function claudeImpl(prompt, opts) {
 
     // Attempt 1: parse full text as-is.
     lastUsage = usage;
+    // 2026-09-30 (B5): every call, retries included, is recorded in the request's
+    // ledger with the usage the API returned, for the run's provenance.
+    const ledgerNow = EVIDENCE.getStore();
+    if (ledgerNow) (ledgerNow.modelCalls = ledgerNow.modelCalls || []).push({ label, model,
+      input: typeof usage.input_tokens === 'number' ? usage.input_tokens : null,
+      output: typeof usage.output_tokens === 'number' ? usage.output_tokens : null, ms: Date.now() - tCall });
     try { return { ok: true, data: JSON.parse(t), stopReason }; } catch(e) {}
 
     // Attempt 2: slice between first { and last } in case there is leading/
@@ -3101,6 +3109,12 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     // "no usable score" immediately instead of inferring it from a row that
     // never appears. The fourth, a Supabase failure, cannot be known in advance
     // and is exactly the case the caveat above is about.
+    // 2026-09-30 (B5, Q27): what this run records about itself (lib-provenance.js).
+    report.provenance = buildProvenance({
+      passes: (EVIDENCE.getStore() && EVIDENCE.getStore().modelCalls) || [],
+      coverage: coverage || null,
+      durationMs: report._debug && report._debug.totalMs,
+    });
     const benchmarkRow = buildBenchmarkRow({
       report, name, location, country, region, focalContext,
       focalGeo: compPlacesData.focalGeo || null,
@@ -6056,7 +6070,7 @@ async function recordSwapUse(fields) {
 // So a rejection that names one of the listed new keys is retried ONCE with
 // those keys removed. Any other rejection is returned as it was: this is not a
 // retry loop, and it never drops a column the migration did not add.
-const BENCHMARK_UNMIGRATED_KEYS = ['subject_review_count', 'subject_newest_review_at'];
+const BENCHMARK_UNMIGRATED_KEYS = ['subject_review_count', 'subject_newest_review_at', 'provenance'];
 const OUTCOME_UNMIGRATED_KEYS = ['coverage_verdict', 'place_id', 'place_confirmed',
   'subject_review_count', 'subject_newest_review_at'];
 
@@ -7634,7 +7648,13 @@ function buildBenchmarkRow({ report, name, location, country, region, focalConte
     // defaults. See the Phase 5 blockers section of the diagnostix-analytics
     // README before changing this.
     confidence_level:     null,
-    expires_at:           null
+    expires_at:           null,
+    // 2026-09-30 (B5): what the run recorded about itself (lib-provenance.js).
+    // A nullable jsonb column (migration-rvp-provenance-DRAFT.sql); until it is
+    // applied insertTolerant writes the row without it. confidence_level above
+    // stays null: the provenance's confidence is the coverage state in words,
+    // not the per-score signal that comment says does not exist yet.
+    provenance:       (report && report.provenance) || null
     // created_at defaults automatically. id does NOT: it is generated above so
     // the caller can return it before the write happens.
   };
