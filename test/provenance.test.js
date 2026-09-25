@@ -91,3 +91,18 @@ test('CONTROL: the prompt hash moves when one character of the prompt moves', ()
   const b = createHash('sha256').update(promptSource('diagnose-p1') + ' ').digest('hex').slice(0, 12);
   assert.notEqual(a, b);
 });
+
+// Simon, 2026-09-30: pass is standard, limited is limited, refused is not
+// assessed. PINS EXISTING BEHAVIOUR (rvpConfidence, 7ed6a31), so it was green
+// on its first run. The state names are the ones lib-review-gate.js writes.
+test('SIMON\'S CONFIDENCE MAPPING, on the state names the review gate writes', async () => {
+  const { reviewGate } = await import('../lib-review-gate.js');
+  // The gate's own output, fed straight to the mapping: a refused count.
+  const refused = reviewGate({ subjectReviewCount: 10 });
+  assert.equal(refused.state, 'refused-coverage', 'the review gate no longer writes refused-coverage');
+  assert.equal(rvpConfidence(refused).level, 'not assessed');
+  assert.equal(rvpConfidence({ state: 'pass', subjectReviewCount: 900 }).level, 'standard');
+  assert.equal(rvpConfidence({ state: 'limited', subjectReviewCount: 120 }).level, 'limited');
+  assert.equal(rvpConfidence({ state: 'refused-coverage', subjectReviewCount: 10 }).level, 'not assessed');
+  assert.match(rvpConfidence({ state: 'refused-coverage', subjectReviewCount: 10 }).basis, /refused-coverage/);
+});
