@@ -20,7 +20,7 @@
 //               ("higher", "more", ... or "lower", "fewer", ...); flagged when
 //               the word's direction disagrees with the two numbers
 //   two-ranks   two DIFFERENT "#N" ranks in one sentence, unless it says
-//               "from #A to #B" (a movement, which is two ranks by design)
+//               it is a range or a movement ("#443-#900", "from #5 to #2")
 // A sentence it cannot read is not flagged. Pure; never throws; never edits.
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -70,8 +70,11 @@ export function findContradictionsInText(text) {
         out.push({ kind: 'direction', detail: '"' + w.word + '" beside ' + m[1] + ' vs ' + m[2], sentence: s.trim() });
       }
     }
-    const ranks = [...s.matchAll(/#(\d+)\b/g)].map((x) => x[1]);
-    if (new Set(ranks).size >= 2 && !/from\s+#\d+\s+to\s+#\d+/i.test(s)) {
+    // A range ("#443-#900", "#2462 to #2501") is ONE ranking: its two ends are
+    // removed before counting (measured 2026-09-29, 2 of 5 stored flags).
+    const unranged = s.replace(/#\d+\s*(?:[-–—]|to)\s*#\d+/gi, ' ');
+    const ranks = [...unranged.matchAll(/#(\d+)\b/g)].map((x) => x[1]);
+    if (new Set(ranks).size >= 2) {
       out.push({ kind: 'two-ranks', detail: 'ranks ' + [...new Set(ranks)].map((r) => '#' + r).join(' and ') + ' in one sentence', sentence: s.trim() });
     }
   }

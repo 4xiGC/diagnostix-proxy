@@ -42,6 +42,11 @@ test('CONTROLS: comparisons whose words match their numbers are NOT flagged', ()
     'It was #3 in 2024 and #3 again in 2025.',
     'Guest count 0% vs 5% last year.',
     'Rated 4.5 on Google and 4.0 on TripAdvisor.',
+    // A RANK RANGE is one ranking, not two (measured 2026-09-29: The Ivy
+    // "#2462–#2501 in London", Jimmy Johns "#443–#900 range").
+    'It ranks #2462–#2501 in London.',
+    'Locations sit in the #443-#900 range.',
+    'It moved from #5 to #2 this year.',
   ]) assert.deepEqual(findContradictionsInText(s), [], s);
 });
 
