@@ -127,3 +127,28 @@ test('searchStructured alerts too when Serper fails twice', { timeout: 5000 }, a
     assert.equal(alerts(calls, 'serper').length, 1);
   });
 });
+
+test('/resolve-place on a hung Places: a 503 the page can say, two attempts, and an internal alert', { timeout: 8000 }, async () => {
+  process.env.RVP_IDENTITY_SECRET = process.env.RVP_IDENTITY_SECRET || "test-identity-secret";
+  // The route is driven with the real Node fetch; the stub replaces only the
+  // module fetch, so it sees the outbound Places and Resend calls.
+  const calls = { places: 0, emails: [] };
+  const fake = async (url, init) => {
+    const u = String(url);
+    if (u.includes('api.resend.com')) { calls.emails.push(JSON.parse(init.body)); return ok({ id: 'e' }); }
+    if (u.includes('maps.googleapis.com')) { calls.places++; return hang(init); }
+    return ok({});
+  };
+  const restore = setFetch(fake);
+  __test__.resetExternalAlerts();
+  const server = __test__.app.listen(0);
+  try {
+    await new Promise((r) => server.once('listening', r));
+    const r = await fetch('http://127.0.0.1:' + server.address().port + '/resolve-place', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Teclados', location: 'Santiago, Chile', email: 'owner@example.org' }) });
+    assert.equal(r.status, 503);
+    assert.equal(calls.places, 2, 'one retry expected');
+    assert.equal(alerts(calls, 'places').length, 1, 'no internal alert for the failed confirmation');
+  } finally { restore(); server.close(); }
+});

@@ -1995,6 +1995,8 @@ app.post('/resolve-place', async (req, res) => {
       closed: top.business_status === 'CLOSED_PERMANENTLY' } });
   } catch (e) {
     console.log('PLACE [confirm] error ' + (e && e.message));
+    // 2026-09-30 (B2): C4 found this path wrote no row and told nobody.
+    if (e && e.reason) await externalFailed({ service: 'places', label: 'resolve-place', reason: e.reason });
     return res.status(503).json({ error: 'We could not check the restaurant just now. Please try again in a moment.' });
   }
 });
