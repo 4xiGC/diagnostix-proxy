@@ -48,12 +48,13 @@ const getJSON = (url) => new Promise((res, rej) => {
 
 const READ = `(function(){ var h = document.querySelector('.think-h'), tw = document.getElementById('tw'), d = document.documentElement;
   return { heading: h ? h.textContent.trim() : null, line: tw ? tw.textContent.trim() : null,
-    estimated: !!(h && /estimated/i.test(h.textContent)), sideways: d.scrollWidth - d.clientWidth }; })()`;
+    estimated: !!(h && /estimated/i.test(h.textContent)), failure: (document.getElementById("rf-h") || {}).textContent || "", sideways: d.scrollWidth - d.clientWidth }; })()`;
 
 // Early fallback, a silent line, or sideways scroll: every one is a problem.
 function problems(r, stage) {
   const p = [];
-  if (r.estimated) p.push(stage + ': the estimated report was shown before the limit');
+  // 2026-09-30 (B3): giving up early is either an estimate (gone) or the failure page.
+  if (r.estimated || r.failure) p.push(stage + ': the page gave up before the limit (' + (r.estimated ? 'an estimate' : 'the failure page') + ')');
   if (!/^(This usually takes|Still working:)/.test(String(r.line || ''))) p.push(stage + ': the still-working line is not showing (' + r.line + ')');
   if (r.sideways > 0) p.push(stage + ': the page scrolls sideways by ' + r.sideways + ' px');
   return p;
@@ -121,7 +122,9 @@ test('THE SURVEY PAGE WAITS OUT THE SERVER, IN REAL CHROME', async (t) => {
         assert.notEqual(a.line, b.line, 'the still-working line stopped counting');
         await sleep(1100);
         const c = await evalJs(READ);
-        assert.equal(c.estimated, true, 'after the limit the page should fall back: ' + JSON.stringify(c));
+        // 2026-09-30 (B3): after the limit the page shows the plain failure, never an estimate.
+        assert.equal(c.estimated, false, 'an estimated report was shown: ' + JSON.stringify(c));
+        assert.equal(c.failure, 'We could not complete this assessment', 'after the limit the failure page should show: ' + JSON.stringify(c));
       });
     }
 

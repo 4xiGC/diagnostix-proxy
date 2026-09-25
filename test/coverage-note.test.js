@@ -55,12 +55,14 @@ test('CONTROL: a pass report, and a stored report with no coverage field, print 
 
 const PAGE = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 
-test('THE SURVEY PAGE checks refused BEFORE the estimated fallback', () => {
+test('THE SURVEY PAGE checks refused BEFORE the failure page (the estimate is gone since 2026-09-30)', () => {
   const fn = PAGE.slice(PAGE.indexOf('async function runHealthCheck'), PAGE.indexOf('// ── PROGRESS REPORT SECTION BUILDER'));
   const refused = fn.indexOf('.refused');
-  const fallback = fn.indexOf('buildFallback(');
+  const failure = fn.indexOf('showRefusal(FAILURE_COPY)');
   assert.ok(refused > 0, 'runHealthCheck reads .refused');
-  assert.ok(refused < fallback, 'and before buildFallback');
+  assert.ok(failure > 0, 'runHealthCheck shows the failure page');
+  assert.ok(refused < failure, 'and reads .refused before it');
+  assert.ok(!fn.includes('buildFallback('), 'the estimated report is back');
   assert.ok(/function showRefusal\(/.test(PAGE), 'the page has a refusal renderer');
   assert.ok(/id="p4"/.test(PAGE), 'and a refusal panel');
 });

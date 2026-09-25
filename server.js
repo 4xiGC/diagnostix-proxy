@@ -1668,7 +1668,9 @@ async function sendInternalSummaryEmail({ subscriber, report, reportNumber, surv
 // ── ROOT + HEALTH + TEST ─────────────────────────────────────
 app.get('/', (req, res) => {
   try {
-    const html = readFileSync(join(__dirname, 'public', 'index.html'), 'utf8');
+    // 2026-09-30 (B3): the failure page's closing names the contact address from
+    // its one constant, not a copy in the page.
+    const html = readFileSync(join(__dirname, 'public', 'index.html'), 'utf8').split('__CONTACT_ADDRESS__').join(CONTACT_ADDRESS);
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch(e) {

@@ -84,12 +84,11 @@ test('the page no longer carries band tables of its own', () => {
   assert.doesNotMatch(HTML, /overall\s*>=\s*75/);
 });
 
-test('buildFallback computes its overall with the library', () => {
-  const fn = (HTML.match(/function buildFallback[\s\S]*?\n\}/) || [''])[0];
-  assert.ok(fn.length > 100, 'buildFallback was not found, so this checks nothing');
-  assert.doesNotMatch(fn, /Math\.round\(\(cs\+pa\+es\+sm\+cp\+bg\)\/6\)/,
-    'it still averages the six pillars with its own arithmetic');
-  assert.match(fn, /RVPScore|computeOverall/, 'it does not use the library');
+// 2026-09-30 (B3): buildFallback, the in-browser estimate, is removed. The page
+// computes no score of its own for a failed assessment; it says it failed.
+test('THE PAGE HAS NO IN-BROWSER ESTIMATE: buildFallback is gone', () => {
+  assert.ok(!HTML.includes('function buildFallback'), 'the in-browser estimate is back');
+  assert.ok(HTML.includes('var FAILURE_COPY = {'), 'the failure copy is missing');
 });
 
 // ── Controls ──────────────────────────────────────────────────────────────

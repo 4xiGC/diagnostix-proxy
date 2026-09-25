@@ -770,12 +770,12 @@ async function runHealthCheck() {
 
   var data = gatherData();
   surveyData = data;
-  var usedFallback = false;
+
   try {
     reportData = await callProxy(Object.assign({}, data, { placeToken: currentPlaceToken }));
-    // A REFUSAL IS NOT A FAILURE. It must never reach buildFallback below,
-    // which would hand the owner an estimated report of a business the
-    // product just declined to assess (overnight 2026-09-26).
+    // A REFUSAL IS NOT A FAILURE. It must never reach the failure page below:
+    // the product declined to assess, which is not the same as failing to
+    // (overnight 2026-09-26; the estimated report is gone since 2026-09-30).
     if (reportData && reportData.refused && reportData.coverage && reportData.coverage.copy) {
       clearInterval(iv); clearInterval(wv);
       showRefusal(reportData.coverage.copy);
@@ -797,26 +797,33 @@ async function runHealthCheck() {
       return;
     }
     console.error('HealthCheck error:', e.message);
-    usedFallback = true;
-    reportData = buildFallback(data);
+    // 2026-09-30 (B3, Simon Q4): NEVER AN ESTIMATED REPORT. The estimate was
+    // built here, in the browser, shown with its paywall, and never saved, so a
+    // buyer could pay for a report the payment webhook could not find. A server
+    // error arrives at once (the server has already alerted); a server that
+    // never answers reaches here only after the 420 s limit in callProxy.
+    clearInterval(iv); clearInterval(wv);
+    if (tw) tw.textContent = '';
+    showRefusal(FAILURE_COPY);
+    return;
   }
   clearInterval(iv); clearInterval(wv);
   pf.style.width = '100%';
-  ts.textContent = usedFallback ? 'Using estimated scores, live data unavailable' : 'HealthCheck complete';
+  ts.textContent = 'HealthCheck complete';
   if (tw) tw.textContent = '';
-  if (thinkH) thinkH.textContent = usedFallback ? 'Report ready (estimated)' : 'Report ready';
+  if (thinkH) thinkH.textContent = 'Report ready';
 
   // 2026-09-24 (Q5): a confirmed place is named by Google on the cover and
   // in everything built from the saved survey (the delivered report, the
   // purchase email). The owner's typed name is kept beside it as typedName,
   // the alias the purchase's peer comparison queries by.
-  if (!usedFallback && reportData && reportData.subject && reportData.subject.name) {
+  if (reportData && reportData.subject && reportData.subject.name) {
     data.typedName = data.name;
     data.name = String(reportData.subject.name);
   }
 
   // v8.3 FIX: Save report to server cache so /payment-webhook can find it
-  if (!usedFallback && reportData && data.email) {
+  if (reportData && data.email) {
     try {
       fetch(PROXY_URL.replace('/diagnose', '/save-report'), {
         method: 'POST',
@@ -1046,6 +1053,18 @@ function declinePlace() {
 function textToHtml(s) {
   return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+// 2026-09-30 (B3): THE FAILURE, IN THE STANDARD'S FIVE PARTS. COPY FOR SIMON'S
+// APPROVAL, NOT YET APPROVED. It mirrors SVP's failed-run message (approved
+// 2026-09-25). __CONTACT_ADDRESS__ is replaced by the server with
+// lib-review-gate.js CONTACT_ADDRESS when it serves this page.
+var FAILURE_COPY = {
+  heading: 'We could not complete this assessment',
+  reason: ['Something went wrong on our side while the assessment was being prepared, and no report was produced.'],
+  next: ['You have not been charged.', 'Please try again in a few minutes.'],
+  consultant: 'If it happens again, a consultant-led assessment can be arranged with you directly.',
+  closing: 'If you would like one, email __CONTACT_ADDRESS__ and we will arrange it.'
+};
 
 // The review gate's refusal (SUBJECT_INTEGRITY_STANDARD.md 1.2), shown in
 // place of a report. Built with textContent: nothing here is HTML.
@@ -1669,55 +1688,8 @@ function unlockFullReport() {
   window.scrollTo(0, 0);
 }
 
-// ── FALLBACK REPORT ───────────────────────────────────────────
-function buildFallback(d) {
-  var sv=d.sentiment||{};
-  function sc2(v){return Math.round(Math.min(95,Math.max(20,(v/10)*100*0.88)));}
-  function st(v){return v>=65?'good':v>=45?'warn':'bad';}
-  var cs=sc2(sv.perf||5),pa=sc2(sv.price||5),es=sc2(sv.ret||5),sm=sc2(sv.online||5);
-  var cp=Math.round((sc2(sv.perf||5)+sc2(sv.book||5))/2);
-  var bg=Math.round((sc2(sv.future||5)+sc2(sv.menu||5))/2);
-  // v8.11.50: the library, not a fourth band table and not Math.round. This
-  // had its own 75/60/45 cutoffs and rounded half away from zero.
-  var _p={cs:{score:cs},pa:{score:pa},es:{score:es},sm:{score:sm},cp:{score:cp},bg:{score:bg}};
-  var _o=window.RVPScore.computeOverall(_p);
-  var overall=_o.score;
-  var v=window.RVPScore.verdictFor(overall) || '';
-  return {
-    healthCheckScore:overall, scoreVerdict:v,
-    cuisineDetected:null, priceDetected:null,
-    executiveSummary:d.name+' has completed the DiagnostiX Reviewer Sentiment Survey. Live web intelligence is currently unavailable, scores below are derived from your self-assessment. Please try again or contact 4xi at hello@4xiconsulting.com.',
-    pillars:{
-      cs:{score:cs,label:'Customer Sentiment',       status:st(cs)},
-      pa:{score:pa,label:'Pricing & Accessibility',  status:st(pa)},
-      es:{score:es,label:'Employee Sentiment',       status:st(es)},
-      sm:{score:sm,label:'Social Media Impact',      status:st(sm)},
-      cp:{score:cp,label:'Competitive Positioning',  status:st(cp)},
-      bg:{score:bg,label:'Brand Experience & Growth',status:st(bg)}
-    },
-    onlinePresence:{overall:sc2(sv.online||5),channels:[
-      {name:'Google Business',   score:sc2(sv.online||5)+5,note:'Live data currently unavailable'},
-      {name:'Yelp',              score:sc2(sv.online||5),  note:'Live data currently unavailable'},
-      {name:'TripAdvisor',       score:sc2(sv.online||5)-5,note:'Live data currently unavailable'},
-      {name:'Social Media',      score:sc2(sv.online||5)-10,note:'Based on reviewer self-report of '+(sv.online||5)+'/10'},
-      {name:'Delivery Platforms',score:sc2(sv.online||5)-15,note:'Live data currently unavailable'},
-    ]},
-    ownerSentimentSummary:'Reviewer rates overall performance at '+(sv.perf||5)+'/10 with a 12-month outlook of '+(sv.future||5)+'/10.',
-    sentimentGap:'Live market comparison unavailable. Survey responses captured, contact 4xi to activate full HealthCheck.',
-    reviewVerbatims:[],
-    strengths:['Reviewer sentiment survey completed across all 10 dimensions','Self-assessment data captured for baseline comparison','Survey indicates '+((sv.perf||5)>=7?'strong reviewer confidence':'areas of operational focus needed')],
-    risks:['Live web intelligence unavailable, proxy configuration may be needed','Contact 4xi at hello@4xiconsulting.com to activate full report','Scores below are self-assessment only and may not reflect market reality'],
-    themes:{positive:['survey complete'],negative:['proxy needed'],neutral:['baseline captured']},
-    employeeSentiment:'Live employee sentiment data unavailable. Reviewer-reported retention of '+(sv.ret||5)+'/10.',
-    competitiveInsight:'Live competitive analysis unavailable. Contact 4xi for a full managed diagnostic.',
-    competitors:[],
-    actions:[
-      {priority:'urgent',  title:'Activate live web intelligence',      desc:'The DiagnostiX backend proxy may need configuration. Contact 4xi at hello@4xiconsulting.com or visit 4xi360.com to activate your full HealthCheck.'},
-      {priority:'30days',  title:'Review your self-assessment baseline', desc:'Your 10 survey scores have been saved. Once live data is active, these will be compared against market signals to reveal your perception gap.'},
-      {priority:'ongoing', title:'Consider DiagnostiX Pro',             desc:'4xi\'s managed Pro service handles all technical setup and delivers quarterly re-diagnostics with trend tracking and competitive matrix analysis.'}
-    ]
-  };
-}
+// 2026-09-30 (B3): buildFallback, the in-browser ESTIMATED report, is removed.
+// Nothing assesses a restaurant in the browser; a failure says so.
 
 // ── TRANSLATION ──────────────────────────────────────────────
 var translatedData = null; // holds current translated report (null = showing English original)
