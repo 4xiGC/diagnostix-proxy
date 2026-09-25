@@ -121,6 +121,62 @@ export function renderEvidenceSentence(args) {
     + 'DiagnostiX reads the public summary of each source, not every individual review.';
 }
 
+// ── THE RESTAURANT'S OWN COUNT FIRST (2026-09-29, recommendation 4, Q21) ────
+//
+// reviewsTotal is the subject PLUS its peers (peerReviewVolumes), so the old
+// sentence's first number was not the owner's: Orchid 94a649d8 read "10,461"
+// against its own 648. The split is taken from STORED figures only:
+//   the subject: coverage.subjectReviewCount (8.11.56+), else
+//     _debug.googlePlaces.focalReviewCount, but only when the focal place id was
+//     counted into the total (focalPlaceIdPresent), since otherwise subtracting
+//     it would invent a peer figure;
+//   the peers: the total minus the subject, over sourcesCounted minus one.
+// Anything that does not add up returns null, and the caller keeps the total
+// with an honest label.
+const intOrNull = (v) => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null);
+
+export function splitReviewVolumes(report) {
+  const r = (report && typeof report === 'object') ? report : {};
+  const e = (r.evidence && typeof r.evidence === 'object') ? r.evidence : {};
+  const total = intOrNull(e.reviewsTotal);
+  const counted = intOrNull(e.sourcesCounted);
+  if (total === null || counted === null || counted < 1) return null;
+  const gp = (r._debug && r._debug.googlePlaces) || {};
+  let subject = intOrNull(r.coverage && r.coverage.subjectReviewCount);
+  if (subject === null && gp.focalPlaceIdPresent === true) subject = intOrNull(gp.focalReviewCount);
+  if (subject === null || subject > total) return null;
+  const peersCounted = counted - 1;
+  const peerReviews = total - subject;
+  if (peersCounted === 0 && peerReviews !== 0) return null;
+  return { subjectReviews: subject, peerReviews, peersCounted };
+}
+
+const READS_SUMMARY = 'DiagnostiX reads the public summary of each source, not every individual review.';
+
+export function renderSubjectFirstSentence(args) {
+  const { subjectName, subjectReviews, peerReviews, peersCounted } = (args && typeof args === 'object') ? args : {};
+  const own = formatCount(subjectReviews);
+  if (own === null) return null;
+  const name = String(subjectName || 'this restaurant');
+  const parts = ['Google lists ' + own + ' review' + (subjectReviews === 1 ? '' : 's') + ' for ' + name + '.'];
+  const peers = formatCount(peerReviews);
+  if (peers !== null && Number.isInteger(peersCounted) && peersCounted > 0) {
+    parts.push(peersCounted === 1
+      ? 'The comparable restaurant read alongside it lists ' + peers + '.'
+      : 'The ' + peersCounted + ' comparable restaurants read alongside it list ' + peers + ' between them.');
+  }
+  parts.push(READS_SUMMARY);
+  return parts.join(' ');
+}
+
+// A stored report that cannot be split keeps its total, labeled for what it is.
+function labeledTotalSentence(reviewsTotal) {
+  const n = formatCount(reviewsTotal);
+  if (n === null || reviewsTotal <= 0) return null;
+  return 'The sources read for this assessment, including the comparable restaurants read alongside it, publish '
+    + n + ' reviews and ratings between them. ' + READS_SUMMARY;
+}
+
 // ── ALL-1: the evidence base panel ──────────────────────────────────────────
 //
 // Renders NOTHING when there is nothing honest to render. An assessment from
@@ -134,7 +190,7 @@ export function renderEvidenceSentence(args) {
 // sentence is what the sources it read publish between them. The second half
 // of the sentence is load bearing: without it the first reads as a claim to
 // have processed every one of those reviews, which is false.
-export function evidencePanelHtml(report) {
+export function evidencePanelHtml(report, restaurantName) {
   const e = report && report.evidence;
   if (!e || typeof e !== 'object') return '';
 
@@ -163,8 +219,17 @@ export function evidencePanelHtml(report) {
       ).join('') + `</div>`
     : '';
 
-  const sentence = e.reviewsSentence
-    ? `<p class="ev-s">${esc(e.reviewsSentence)}</p>` : '';
+  // 2026-09-29: the sentence is REBUILT from the stored figures, so every
+  // stored report leads with the restaurant's own count. The stored sentence
+  // is used only as the signal that there was one to print.
+  let text = null;
+  if (e.reviewsSentence) {
+    const split = splitReviewVolumes(report);
+    const name = (report.subject && report.subject.name) || restaurantName;
+    text = split ? renderSubjectFirstSentence({ subjectName: name, ...split }) : labeledTotalSentence(e.reviewsTotal);
+    if (!text) text = e.reviewsSentence;
+  }
+  const sentence = text ? `<p class="ev-s">${esc(text)}</p>` : '';
 
   return `
       <h2 class="rpt-h">Evidence base</h2>

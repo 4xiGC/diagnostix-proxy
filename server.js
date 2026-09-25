@@ -4814,7 +4814,7 @@ ul.bullet-list li{margin:4px 0}
 
     ${coverageNoteHtml(report)}
 
-    ${evidencePanelHtml(report)}
+    ${evidencePanelHtml(report, restaurant)}
 
     ${pillarRows ? `
       <h2 class="rpt-h">Pillar Scores</h2>
