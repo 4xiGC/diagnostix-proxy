@@ -122,6 +122,7 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .think-s{font-size:13px;color:var(--amber);min-height:22px;transition:all 0.3s}
 .pbar{height:3px;background:#e2ddd5;border-radius:2px;margin:1.8rem auto 0;max-width:340px;overflow:hidden}
 .pfill{height:100%;background:var(--grad);border-radius:2px;transition:width 1.2s ease;width:0}
+.think-w{font-size:14px;color:var(--navy);margin:1.2rem auto 0;max-width:340px;line-height:1.5;min-height:21px}
 /* ── REPORT WRAPPER ──────────────────────────────────── */
 .report-wrap{background:#fff;border-top:4px solid var(--navy)}
 /* ── REPORT COVER ────────────────────────────────────── */
@@ -453,6 +454,7 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   <div class="think-h">Running intelligence sweep&hellip;</div>
   <div class="think-s" id="ts">Initialising DiagnostiX engine</div>
   <div class="pbar"><div class="pfill" id="pf"></div></div>
+  <div class="think-w" id="tw" aria-live="polite"></div>
 </div>
 </div>
 
@@ -750,6 +752,21 @@ async function runHealthCheck() {
     pf.style.width = pc+'%';
     if(mi<msgs.length) ts.innerHTML = msgs[mi++];
   }, 1700);
+  // 2026-09-29 (recommendation 3): THE WAIT, TOLD TRUTHFULLY, AND A LINE THAT
+  // KEEPS MOVING. The eight messages above run out at about 14 s and the bar
+  // stops at 88 percent; before this the screen then said nothing for about
+  // 20 s at the median and 54 s at the slowest (B1, 2026-09-28).
+  // WAIT_MEDIAN_S: the median of report._debug.totalMs over the last 28 saved
+  // previews (2026-09-19 to 2026-09-24, pending_reports): 33.5 s, p90 43.4 s,
+  // slowest 67.9 s (overnight/rvp-wait-measure.mjs, 2026-09-25), rounded to
+  // the nearest 5. Re-measure it when the pipeline changes.
+  var WAIT_MEDIAN_S = 35, STEP_S = 20;
+  var tw = document.getElementById('tw'), ticks = 0;
+  if (tw) tw.textContent = 'This usually takes about ' + WAIT_MEDIAN_S + ' seconds.';
+  var wv = setInterval(function(){
+    ticks++;
+    if (tw) tw.textContent = 'Still working: ' + (ticks * STEP_S) + ' seconds so far.';
+  }, window.RVP_STILL_WORKING_MS || STEP_S * 1000);
 
   var data = gatherData();
   surveyData = data;
@@ -760,7 +777,7 @@ async function runHealthCheck() {
     // which would hand the owner an estimated report of a business the
     // product just declined to assess (overnight 2026-09-26).
     if (reportData && reportData.refused && reportData.coverage && reportData.coverage.copy) {
-      clearInterval(iv);
+      clearInterval(iv); clearInterval(wv);
       showRefusal(reportData.coverage.copy);
       return;
     }
@@ -774,7 +791,7 @@ async function runHealthCheck() {
     // failure to estimate around: nothing was assessed. Back to the survey
     // step, where Run confirms the restaurant again.
     if (e && e.code && /^confirmation-/.test(e.code)) {
-      clearInterval(iv);
+      clearInterval(iv); clearInterval(wv);
       currentPlaceToken = null;
       showStepError(e.message);
       return;
@@ -783,9 +800,10 @@ async function runHealthCheck() {
     usedFallback = true;
     reportData = buildFallback(data);
   }
-  clearInterval(iv);
+  clearInterval(iv); clearInterval(wv);
   pf.style.width = '100%';
   ts.textContent = usedFallback ? 'Using estimated scores, live data unavailable' : 'HealthCheck complete';
+  if (tw) tw.textContent = '';
   if (thinkH) thinkH.textContent = usedFallback ? 'Report ready (estimated)' : 'Report ready';
 
   // 2026-09-24 (Q5): a confirmed place is named by Google on the cover and
