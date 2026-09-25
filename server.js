@@ -4620,6 +4620,18 @@ ul.bullet-list li{margin:4px 0}
 .peer-cmp .callout{background:#F7F8FA;border-left:4px solid #C97E36;padding:14px 18px;border-radius:5px}
 .peer-cmp .callout h3{font-size:.9rem;color:#C97E36;text-transform:uppercase;letter-spacing:1.2px;margin:0 0 8px}
 .peer-cmp .callout p{color:#3A4255;font-size:.88rem;line-height:1.55;margin:0}
+/* 2026-09-29: on a phone the fragment's fixed inline column widths (80, 190
+   and three of 90 px, lib/render.js in Analytics) made the table 422 px and
+   the page scroll sideways. They are released here, where the look lives; the
+   fragment is stored frozen HTML, so the fix cannot be in Analytics. SCREEN
+   only: A4 print content is 679 px wide, so a bare max-width:680px rule would
+   also fire on paper. */
+@media screen and (max-width:680px){
+  .peer-cmp table.report th,.peer-cmp table.report td{width:auto !important;padding:7px 5px}
+  .peer-cmp table.report th{letter-spacing:0;font-size:.62rem}
+  .peer-cmp table.report{font-size:.82rem}
+  .peer-cmp .muted{display:block}
+}
 @media (max-width:680px){.comp-grid{grid-template-columns:1fr}}
 .comp-card{
   background:var(--soft-bg);

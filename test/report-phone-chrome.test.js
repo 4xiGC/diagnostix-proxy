@@ -68,6 +68,9 @@ const FIXTURE = {
     { text: 'Service dragged badly once the room filled up.', source: 'Tripadvisor', stars: 2, sentiment: 'negative' },
   ],
   evidence: { searchesRun: 9, resultsReturned: 81, resultsRead: 40, distinctSites: 17, reviewsTotal: 10461 },
+  // "Where you sit", from Analytics' own renderer (the contract fixture): its fixed inline column
+  // widths are what kept the real Orchid report 79 px wider than a phone after the viewport tag.
+  peerComparisonHtml: fs.readFileSync(new URL('../test-support/peer-comparison-fragment-2026-09-29.html', import.meta.url), 'utf8'),
 };
 
 const READ = `(function(){ var d = document.documentElement, small = [], texts = 0;
