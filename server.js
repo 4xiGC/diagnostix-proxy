@@ -39,6 +39,7 @@ import { newLedger, noteSearch, noteResults, summarizeEvidence,
 import { findContradictions, COMPARISON_RULE } from './lib-comparisons.js';
 import { fetchExternal, createFailureAlerter } from './lib-external.js';
 import { buildProvenance } from './lib-provenance.js';
+import { fieldRevisionNote } from './lib-field-revisions.js';
 
 // ── ALL-1: the evidence ledger, scoped to one assessment ───────────────────
 //
@@ -4138,6 +4139,9 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   const esc = (s) => String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  // 2026-09-30 (B4): a field the rewrite route revised says so, beside itself
+  // (lib-field-revisions.js). Empty for every field with no revision.
+  const revNote = (path) => { const t = fieldRevisionNote(report, path); return t ? '<div class="score-formula field-revised">' + esc(t) + '</div>' : ''; };
 
   // The same cutoffs the pillar tiles use, which is now also the band table:
   // green 65 and up, amber 45 to 64, red below 45. They agree because the
@@ -4329,7 +4333,7 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
       <div class="comp-name">${esc(c.name || 'Unknown')}</div>
       ${bigBlock}
       <div class="comp-metric-label">${esc(metricLabel)}</div>
-      <div class="comp-note">${esc(c.note || '')}</div>
+      <div class="comp-note">${esc(c.note || '')}</div>${revNote('competitors[' + (report?.competitors || []).indexOf(c) + '].note')}
     </div>`;
   }).join('');
 
@@ -4367,7 +4371,7 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
               <div class="act-title">${esc(a.title)}</div>
               <span class="act-pri ${priorityClass[p]}">${priorityLabel[p]}</span>
             </div>
-            <div class="act-desc">${esc(a.desc)}</div>
+            <div class="act-desc">${esc(a.desc)}</div>${revNote('actions[' + (report?.actions || []).indexOf(a) + '].desc')}
           </div>
         </div>`;
       }).join('');
@@ -4489,7 +4493,7 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
             <div style="font-family:'League Spartan',Arial,sans-serif;font-weight:900;font-size:24px;color:var(--magenta);line-height:1;min-width:32px">C${idx + 1}</div>
             <div style="flex:1;min-width:0">
               <div style="font-weight:900;font-size:14px;color:var(--navy);letter-spacing:.3px;margin-bottom:6px">${esc(a.title || '')}</div>
-              <div style="font-size:13.5px;line-height:1.65;color:#444;margin-bottom:8px">${esc(a.desc || '')}</div>
+              <div style="font-size:13.5px;line-height:1.65;color:#444;margin-bottom:8px">${esc(a.desc || '')}</div>${revNote('commercialActions[' + idx + '].desc')}
               ${evidence ? '<div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--magenta);font-weight:700;background:#fbf2fa;padding:6px 10px;border-radius:4px;display:inline-block">Tied to: ' + esc(evidence) + '</div>' : ''}
             </div>
           </div>
@@ -5029,7 +5033,7 @@ ul.bullet-list li{margin:4px 0}
 
     ${competitors ? `
       <h2 class="rpt-h">Competitive Landscape</h2>
-      ${report?.competitiveInsight ? '<p class="body-p" style="margin-bottom:14px">' + esc(report.competitiveInsight) + '</p>' : ''}
+      ${report?.competitiveInsight ? '<p class="body-p" style="margin-bottom:14px">' + esc(report.competitiveInsight) + '</p>' + revNote('competitiveInsight') : ''}
       <div class="comp-grid">${competitors}</div>
       <p class="comp-grid-note">These cards describe who your competitors are and how they
       appear publicly. They are not ranked against your HealthCheck score, which measures
