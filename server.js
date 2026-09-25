@@ -36,6 +36,7 @@ import { attachPlaceIdentity, dedupePeersByPlaceId, peerReviewVolumes,
          placesResolutionSummary } from './lib-places-peers.js';
 import { newLedger, noteSearch, noteResults, summarizeEvidence,
          renderEvidenceSentence, formatCount, evidencePanelHtml } from './lib-evidence.js';
+import { findContradictions, COMPARISON_RULE } from './lib-comparisons.js';
 
 // ── ALL-1: the evidence ledger, scoped to one assessment ───────────────────
 //
@@ -3958,6 +3959,14 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   const hasScore   = overall.ok;
   const verdict    = verdictFor(score) || '';
   const summary    = report?.executiveSummary || '';
+
+  // 2026-09-29 (recommendation 4): a comparison whose words contradict its
+  // numbers is FLAGGED here and left as written (lib-comparisons.js says why).
+  const comparisonFlags = findContradictions(report);
+  if (comparisonFlags.length) {
+    console.log('COMPARISON_CHECK [render] flagged=' + comparisonFlags.length + ' restaurant=' + JSON.stringify(restaurant)
+      + ' ' + comparisonFlags.map((f) => f.path + ':' + f.kind).join(','));
+  }
 
   // THE REWRITTEN EXECUTIVE SUMMARY DISCLOSES ITSELF.
   //
