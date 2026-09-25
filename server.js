@@ -1484,7 +1484,44 @@ async function sendEmailViaResend({ to, subject, html, fromName, bcc }) {
     console.log('[email] retry also failed:', result.reason);
   }
 
+  // 2026-09-29 (recommendation 7): A CUSTOMER EMAIL THAT STILL FAILS IS
+  // ALERTED. Before this the final failure was a log line, so the business
+  // learned of an undelivered report when the buyer wrote in. The alert names
+  // the subject and the reason, never the address (addrLabel only). An alert
+  // that fails is never itself alerted: that would loop on a Resend outage.
+  if (to !== ALERT_TO) {
+    console.log('[email] EMAIL_FAILED_FINAL to=' + addrLabel(to) + ' reason=' + result.reason);
+    const escA = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    sendEmailViaResend({
+      to: ALERT_TO,
+      subject: 'ALERT: a customer email failed, ' + addrLabel(to),
+      fromName: 'DiagnostiX Alerts',
+      html: '<p><strong>A customer email failed after its retry. The customer has not received it.</strong></p>'
+        + '<ul><li>subject: ' + escA(subject) + '</li><li>address: ' + escA(addrLabel(to)) + '</li>'
+        + '<li>reason: ' + escA(result.reason) + '</li></ul>',
+    }).catch(() => {});
+  }
   return result;
+}
+// The internal inbox every alert goes to (the same address the existing alerts use).
+const ALERT_TO = 'hello@4xiconsulting.com';
+
+// 2026-09-29 (recommendation 7): A FAILED ASSESSMENT IS ALERTED. /diagnose
+// returned 500 with no row and no alert (C4). Analytics' peer runs call the
+// same route (a placeId and no token), so the alert says which caller it was.
+async function notifyAssessmentFailed({ name, location, caller, error, ms }) {
+  const escA = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  try {
+    await sendEmailViaResend({
+      to: ALERT_TO,
+      subject: 'ALERT: an assessment failed, ' + String(name || '(no name)').slice(0, 80),
+      fromName: 'DiagnostiX Alerts',
+      html: '<p><strong>An assessment failed and returned an error to its caller.</strong></p>'
+        + '<ul><li>restaurant: ' + escA(name) + '</li><li>location: ' + escA(location) + '</li>'
+        + '<li>caller: ' + escA(caller) + '</li><li>error: ' + escA(error) + '</li>'
+        + '<li>elapsed: ' + escA(ms) + ' ms</li></ul>',
+    });
+  } catch (e) { console.log('[diagnose] failure alert not sent: ' + (e && e.message)); }
 }
 
 // ── INTERNAL SUMMARY EMAIL ───────────────────────────────────
@@ -3061,7 +3098,10 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     return;
   } catch(e) {
     console.error('[diagnose] FAILED:', e.message);
-    return res.status(500).json({ error: e.message });
+    res.status(500).json({ error: e.message });
+    notifyAssessmentFailed({ name, location, error: e.message, ms: Date.now() - t0,
+      caller: body.placeToken ? 'survey (confirmed place)' : body.placeId ? 'Analytics peer run' : 'survey' });
+    return;
   }
 }));
 
