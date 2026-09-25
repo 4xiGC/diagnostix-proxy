@@ -20,7 +20,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { launchChrome } from '../test-support/chrome-launch.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 
@@ -34,7 +34,7 @@ const CHROME = [process.env.CHROME_PATH,
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
   '/usr/bin/google-chrome', '/usr/bin/chromium',
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].filter(Boolean);
-const CDP_PORT = 9391, SRV_PORT = 8841;
+const SRV_PORT = 8841;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const getJSON = (url) => new Promise((res, rej) => {
   http.get(url, (r) => { let d = ''; r.on('data', (c) => (d += c));
@@ -90,18 +90,11 @@ test('THE DELIVERED REPORT ON A PHONE, IN REAL CHROME', async (t) => {
     res.end(html);
   });
   await new Promise((r) => server.listen(SRV_PORT, '127.0.0.1', r));
-  const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
-    '--no-default-browser-check', '--remote-debugging-port=' + CDP_PORT,
-    '--user-data-dir=' + (process.env.TEMP || '/tmp') + '/rvp-report-phone', 'about:blank'], { stdio: 'ignore' });
+  // 2026-09-30 (Q14): Chrome picks its own debugging port (test-support/chrome-launch.mjs).
+  const chrome = await launchChrome(chromePath);
   let ws = null;
   try {
-    let targets = null;
-    for (let i = 0; i < 40; i++) {
-      try { targets = await getJSON('http://127.0.0.1:' + CDP_PORT + '/json');
-        if (targets.some((x) => x.type === 'page' && x.webSocketDebuggerUrl)) break; } catch { /* not up */ }
-      await sleep(400);
-    }
-    const tgt = (targets || []).find((x) => x.type === 'page' && x.webSocketDebuggerUrl);
+    const tgt = chrome.target;
     assert.ok(tgt, 'Chrome started but exposed no debuggable page');
     ws = new WebSocket(tgt.webSocketDebuggerUrl);
     let id = 0; const pending = new Map();
