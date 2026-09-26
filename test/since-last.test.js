@@ -43,18 +43,33 @@ test('A CHANGE OF EXACTLY THE NOISE IS NOT MOVEMENT', () => {
   assert.equal(m.rows.find((r) => r.key === 'cp').reading, 'within run-to-run range');
 });
 
+// 2026-09-26 (Simon Q41): ONE wording in all three products, pinned exactly.
+const DIFFERS = 'This restaurant was also assessed earlier, under a different scoring method or one that was not recorded, so the scores are not compared.';
+const SAME = 'Compared with the last assessment of this restaurant, on 1 June 2026, scored under the same method. A change counts as movement only when it is more than 10 points: in 9 of 10 repeat runs of the same restaurant under the same method, a pillar moved by 10 points or less with nothing changing.';
+const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+
 test('DIFFERENT METHODS: one sentence, no numbers', () => {
   const m = sinceLastModel({ current: { ...CUR, methodVersion: 'rvp-overall-mean-v2' }, previous: PREV });
   assert.equal(m.comparable, false);
   assert.equal(m.rows, undefined);
   const html = sinceLastHtml(m);
-  assert.match(html, /scored under a different method/);
+  assert.equal(text(html), 'Since your last report ' + DIFFERS);
   assert.doesNotMatch(html.replace(/<[^>]+>/g, ''), /\d/, 'a number leaked into the methods-differ sentence');
 });
 
 test('AN UNRECORDED METHOD ON EITHER RUN IS NOT "THE SAME"', () => {
   assert.equal(sinceLastModel({ current: { ...CUR, methodVersion: null }, previous: PREV }).comparable, false);
   assert.equal(sinceLastModel({ current: CUR, previous: { ...PREV, method_version: null } }).comparable, false);
+  assert.equal(text(sinceLastHtml(sinceLastModel({ current: CUR, previous: { ...PREV, method_version: null } }))), 'Since your last report ' + DIFFERS);
+});
+
+test('SAME METHOD: the one wording, the five columns and the three readings, no band column', () => {
+  const html = sinceLastHtml(sinceLastModel({ current: CUR, previous: PREV }));
+  assert.ok(text(html).startsWith('Since your last report ' + SAME + ' Pillar Then Now Change Reading '), text(html).slice(0, 400));
+  assert.deepEqual([...html.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((x) => x[1]), ['Pillar', 'Then', 'Now', 'Change', 'Reading']);
+  const readings = new Set([...html.matchAll(/<td class="since-(?:up|down|in)">([^<]*)<\/td>/g)].map((x) => x[1]));
+  assert.deepEqual([...readings].sort(), ['Moved down', 'Moved up', 'Within run-to-run range']);
+  assert.doesNotMatch(html, /Band|Excellent|Good|Fair|Needs Attention|rvp-overall-mean/, 'a band or the method id is printed');
 });
 
 test('NO EARLIER RUN: no section', () => {
@@ -65,10 +80,12 @@ test('NO EARLIER RUN: no section', () => {
 const render = (previousRun) => __test__.renderReportHtml({ subscriber: { restaurant_name: 'Orchid', location: 'Harrogate', email: 'x@example.org' },
   report: { pillars: PILLARS, executiveSummary: 'A summary.', benchmarkId: 'b-2' }, reportLabel: 'Full Report', previousRun });
 
-test('THE PAGE: the section follows the pillar scores, and only when there is an earlier run', () => {
+test('THE PAGE: the section comes IMMEDIATELY after the pillar scores, and only when there is an earlier run', () => {
   const html = render({ current: { methodVersion: 'rvp-overall-mean-v1', createdAt: CUR.createdAt }, previous: PREV });
   const at = html.indexOf('<h2 class="rpt-h">Since your last report</h2>');
-  assert.ok(at > html.indexOf('<h2 class="rpt-h">Pillar Scores</h2>'), 'the section is missing or above the pillar scores');
+  const pillars = html.indexOf('<h2 class="rpt-h">Pillar Scores</h2>');
+  assert.ok(at > pillars, 'the section is missing or above the pillar scores');
+  assert.equal(html.indexOf('<h2', pillars + 10), at, 'another section sits between the pillar scores and this one');
   assert.match(html.slice(at, at + 4000), /within run-to-run range/i);
   assert.equal(render(null).includes('Since your last report'), false);
 });
@@ -111,18 +128,13 @@ test('THE ROUTE: a report with no benchmark row makes no benchmark query', async
   assert.doesNotMatch(r.body, /Since your last report/);
 });
 
-// 2026-10-01, FOUND BY THE PRINT: One Aldwych's two runs two minutes apart moved every pillar 4 to 7
-// points (all within the noise) and the band column still read "Good to Excellent" three times. A band
-// change inside the noise asserts a change the data does not support. The band column names a change
-// only when the reading is movement; otherwise it names the band now.
-test('A BAND CHANGE INSIDE THE NOISE IS NOT PRINTED AS A CHANGE', () => {
+// 2026-10-01, FOUND BY THE PRINT: One Aldwych's band column read "Good to Excellent" inside the noise.
+// 2026-09-26 (Simon Q41): the band column is gone in all three products, so no band is printed at all.
+test('NO BAND IS PRINTED, INSIDE OR BEYOND THE NOISE', () => {
   const m = sinceLastModel({ current: { ...CUR, pillars: { ...PILLARS, sm: P(81, 'Social Media Impact') } }, previous: { ...PREV, pillar_scores: { ...PREV.pillar_scores, sm: 75 } } });
   const html = sinceLastHtml(m);
-  const row = html.slice(html.indexOf('Social Media Impact'), html.indexOf('</tr>', html.indexOf('Social Media Impact')));
-  assert.match(row, /Within run-to-run range/);
-  assert.doesNotMatch(row, / to /, 'a band change printed inside the noise: ' + row.replace(/<[^>]+>/g, ' '));
-  assert.match(row, />Excellent</);
-  // CONTROL: beyond the noise the band change is printed.
-  const cs = html.slice(html.indexOf('Customer Sentiment'), html.indexOf('</tr>', html.indexOf('Customer Sentiment')));
-  assert.match(cs, />Good to Excellent</);
+  const row = (label) => html.slice(html.indexOf(label), html.indexOf('</tr>', html.indexOf(label)));
+  assert.match(row('Social Media Impact'), /Within run-to-run range/);
+  assert.match(row('Customer Sentiment'), /Moved up/);
+  assert.doesNotMatch(html, / to Excellent|Good to|>Excellent<|>Good</);
 });
