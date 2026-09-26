@@ -36,6 +36,7 @@ import { attachPlaceIdentity, dedupePeersByPlaceId, peerReviewVolumes,
          placesResolutionSummary } from './lib-places-peers.js';
 import { newLedger, noteSearch, noteResults, summarizeEvidence,
          renderEvidenceSentence, formatCount, evidencePanelHtml } from './lib-evidence.js';
+import { buildActionPlan } from './lib-action-plan.js';
 import { findContradictions, COMPARISON_RULE } from './lib-comparisons.js';
 import { fetchExternal, createFailureAlerter } from './lib-external.js';
 import { buildProvenance } from './lib-provenance.js';
@@ -4349,34 +4350,30 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   }).join('');
   const onlineOverall = report?.onlinePresence?.overall;
 
-  // Actions grouped by priority
-  const priorityLabel = { urgent: 'Urgent', '30days': 'Next 30 Days', ongoing: 'Ongoing' };
-  const priorityClass = { urgent: 'pri-hi', '30days': 'pri-med', ongoing: 'pri-lo' };
-  const actionsByPriority = {};
-  (report?.actions || []).forEach(a => {
-    const p = a.priority || 'ongoing';
-    if (!actionsByPriority[p]) actionsByPriority[p] = [];
-    actionsByPriority[p].push(a);
-  });
-  let actionNum = 0;
-  const actionsHtml = ['urgent', '30days', 'ongoing']
-    .filter(p => actionsByPriority[p])
-    .map(p => {
-      const items = actionsByPriority[p].map(a => {
-        actionNum++;
-        return `<div class="act">
-          <div class="act-num">${String(actionNum).padStart(2,'0')}</div>
+
+  // 2026-10-01 (recommendation 9, B1): ONE RANKED PLAN, FIRST AFTER THE COVER.
+  // It replaces "Commercial Recommendations" and "Recommended Actions", which
+  // rendered last (lib-action-plan.js says the ranking). A field renders only
+  // where the payload has it; nothing is invented.
+  const planItems = buildActionPlan(report);
+  const planPriorityLabel = { urgent: 'Urgent', commercial: 'Tied to your numbers', '30days': 'Next 30 Days', ongoing: 'Ongoing' };
+  const planPriorityClass = { urgent: 'pri-hi', commercial: 'pri-hi', '30days': 'pri-med', ongoing: 'pri-lo' };
+  const planHtml = planItems.map((it, idx) => {
+    const fields = [['Owner', it.owner], ['By when', it.horizon], ['How you will know', it.indicator], ['Follows from', it.finding]]
+      .filter(([, v]) => v).map(([k, v]) => '<span class="plan-field"><b>' + k + ':</b> ' + esc(v) + '</span>').join('');
+    const pri = planPriorityLabel[it.priority] ? '<span class="act-pri ' + (planPriorityClass[it.priority] || 'pri-lo') + '">' + planPriorityLabel[it.priority] + '</span>' : '';
+    return `<div class="act">
+          <div class="act-num">${String(idx + 1).padStart(2, '0')}</div>
           <div class="act-body">
             <div class="act-head">
-              <div class="act-title">${esc(a.title)}</div>
-              <span class="act-pri ${priorityClass[p]}">${priorityLabel[p]}</span>
+              <div class="act-title">${esc(it.title)}</div>
+              ${pri}
             </div>
-            <div class="act-desc">${esc(a.desc)}</div>${revNote('actions[' + (report?.actions || []).indexOf(a) + '].desc')}
+            <div class="act-desc">${esc(it.desc)}</div>${revNote(it.source + '.desc')}
+            ${fields ? '<div class="plan-fields">' + fields + '</div>' : ''}
           </div>
         </div>`;
-      }).join('');
-      return items;
-    }).join('');
+  }).join('');
 
   // Owner perception vs reality
   const ownerSummary = report?.ownerSentimentSummary || '';
@@ -4479,27 +4476,6 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
     ${perceptionGap ? '<div class="gap-block" style="background:#fff8ec;border-left:4px solid var(--amber);margin-top:14px"><div class="gap-label" style="color:#a85d00">Perception vs reality</div><div class="gap-text">' + esc(perceptionGap) + '</div></div>' : ''}
   ` : '';
 
-  // Commercial recommendations block — distinct from operational actions.
-  // Renders only when AI produced commercialActions AND at least one financial metric was provided.
-  const commercialActions = Array.isArray(report?.commercialActions) ? report.commercialActions : [];
-  const commercialActionsBlock = (hasAnyBM && commercialActions.length) ? `
-    <h2 class="rpt-h">Commercial Recommendations</h2>
-    <p class="body-p" style="margin:0 0 14px;color:#666;font-size:13px">Actions tied directly to your financial reality. These complement, and do not replace, the operational actions below.</p>
-    ${commercialActions.slice(0, 3).map((a, idx) => {
-      const evidence = a.evidence || '';
-      return `
-        <div style="background:#f7f5f0;border-left:3px solid var(--magenta);padding:18px 22px;margin:10px 0;border-radius:0 8px 8px 0">
-          <div style="display:flex;align-items:flex-start;gap:14px">
-            <div style="font-family:'League Spartan',Arial,sans-serif;font-weight:900;font-size:24px;color:var(--magenta);line-height:1;min-width:32px">C${idx + 1}</div>
-            <div style="flex:1;min-width:0">
-              <div style="font-weight:900;font-size:14px;color:var(--navy);letter-spacing:.3px;margin-bottom:6px">${esc(a.title || '')}</div>
-              <div style="font-size:13.5px;line-height:1.65;color:#444;margin-bottom:8px">${esc(a.desc || '')}</div>${revNote('commercialActions[' + idx + '].desc')}
-              ${evidence ? '<div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--magenta);font-weight:700;background:#fbf2fa;padding:6px 10px;border-radius:4px;display:inline-block">Tied to: ' + esc(evidence) + '</div>' : ''}
-            </div>
-          </div>
-        </div>`;
-    }).join('')}
-  ` : '';
 
   const metaParts = [cuisine, price, location, reportLabel].filter(Boolean);
   const metaRow = metaParts.map(esc).join(' &nbsp;·&nbsp; ');
@@ -4874,6 +4850,8 @@ ul.bullet-list li{margin:4px 0}
 .pri-med{background:#FEF3E2;color:#7A4500}
 .pri-lo{background:#E6F8EE;color:#005C2E}
 .act-desc{font-size:13.5px;line-height:1.65;color:#444}
+.plan-fields{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:12px;color:#555}
+.plan-field b{color:var(--navy);font-weight:700}
 
 /* Footer */
 .rpt-footer{
@@ -4955,6 +4933,11 @@ ul.bullet-list li{margin:4px 0}
 
   <!-- White body card -->
   <div class="body-card">
+
+    ${planHtml ? `
+      <h2 class="rpt-h">What to do first</h2>
+      ${planHtml}
+    ` : ''}
 
     ${summary ? `
       <h2 class="rpt-h">Executive Summary</h2>
@@ -5049,13 +5032,6 @@ ul.bullet-list li{margin:4px 0}
     ` : ''}
 
     ${ownerBlock}
-
-    ${commercialActionsBlock}
-
-    ${actionsHtml ? `
-      <h2 class="rpt-h">Recommended Actions</h2>
-      ${actionsHtml}
-    ` : ''}
 
   </div>
 

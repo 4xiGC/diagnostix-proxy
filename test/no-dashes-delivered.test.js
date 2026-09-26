@@ -137,8 +137,11 @@ test('CONTROL: the scanner CAN fail, on all three forms', () => {
 
 test('CONTROL: the report fixture actually renders the block that held the defect', () => {
   const html = render(FULL, WITH_METRICS);
-  assert.match(html, /These complement, and do not replace, the operational actions below/,
-    'the commercial recommendations block must be in the rendered output, '
+  // 2026-10-01 (B1): the commercial actions render inside the one ranked plan
+  // ("What to do first"), not in their own block, so the control reads them there.
+  assert.match(html, /What to do first/);
+  assert.match(html, /Raise midweek covers[\s\S]*Target the office trade\.[\s\S]*Covers down 4%/,
+    'the commercial action must be in the rendered output, '
     + 'otherwise the main test is scanning a page that never contained the bug');
 });
 
