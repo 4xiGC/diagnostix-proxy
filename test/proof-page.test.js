@@ -16,7 +16,8 @@ process.env.PORT = '39735';
 process.env.RVP_IMPORT_ONLY = '1';
 process.env.SUPABASE_URL = 'https://db.invalid';
 process.env.SUPABASE_KEY = 'not-a-key';
-const { __test__ } = await import('../server.js');
+const { __test__ } = await import('../server.js');
+const { PROOF_CLOSING: PROOF_CLOSING_Q7 } = await import('../lib-proof-page.js');
 
 const P = (s, label) => ({ score: s, label, status: 'good' });
 const FULL = {
@@ -96,7 +97,7 @@ test('CONTROL: a report with no payload fields still renders the page, with no "
   const at = html.indexOf('class="proof-page"');
   assert.ok(at > 0);
   assert.equal((html.slice(at).match(/not recorded for this report/g) || []).length, 0);
-  assert.match(html.slice(at), /Reports issued from 26 September 2026 record every value on this page./);
+  assert.ok(html.slice(at).includes(PROOF_CLOSING_Q7), 'the closing sentence is missing');
 });
 
 // THE STANDALONE ROUTE, through the real app, the store replaced.

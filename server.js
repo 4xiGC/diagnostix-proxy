@@ -2130,7 +2130,11 @@ app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => 
       }
       const gate = reviewGate({ subjectReviewCount: confirmedPlace.reviewCount, newestReviewAt: intakeNewestReviewAt });
       coverage = { state: gate.state, reason: gate.reason, subjectReviewCount: gate.subjectReviewCount,
-        recency: gate.recency, note: limitedNote({ subject: displayName, gate }) };
+        recency: gate.recency, note: limitedNote({ subject: displayName, gate }),
+        // 2026-10-02 (Q7): the rule THIS run applied, stored with it, so the proof
+        // page prints the thresholds the run used and not today's constants.
+        rule: { minSubjectReviews: gate.thresholds.MIN_SUBJECT_REVIEWS, limitedBelowReviews: gate.thresholds.LIMITED_BELOW_REVIEWS,
+          maxDaysSinceNewestReview: gate.thresholds.MAX_DAYS_SINCE_NEWEST_REVIEW } };
       console.log('COVERAGE [coverage] ' + gate.state + ' reviews=' + gate.subjectReviewCount
         + ' recency=' + gate.recency + ' reason=' + gate.reason);
       await writeOutcome(Object.assign(outcomeRecord({
@@ -2328,6 +2332,11 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
       console.log('[diagnose] p2 competitors shape:', shapes);
     }
     const report = Object.assign({}, p1, p2);
+    // 2026-10-02 (Simon Q7): EVERY COMPETITOR OR PEER DROPPED BEFORE SCORING, AND WHY.
+    // Stored on the report (always an array on a /diagnose run, empty when nothing
+    // was dropped), so "How this report was built" can print "Removed before
+    // scoring" from what the run did, never from today's filters.
+    const removedBeforeScoring = [];
     // v8.11.52 [B3.1]: THE PILLARS ARE THE REQUIRED FIELD NOW.
     // healthCheckScore is no longer requested, so requiring it would fail
     // every assessment.
@@ -2522,6 +2531,7 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
         for (const pat of areaPatterns) {
           if (pat.test(n)) {
             console.log(`[diagnose] non-restaurant filter: rejected "${n}"`);
+            removedBeforeScoring.push({ name: n, reason: 'an area name, not a restaurant' });
             return false;
           }
         }
@@ -2796,17 +2806,20 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
           for (const pat of nonRestaurantPatterns) {
             if (pat.test(c.name || '')) {
               rejections.push(`"${c.name}" (non-restaurant format: ${pat.source})`);
+              removedBeforeScoring.push({ name: String(c.name || ''), reason: 'a different format (a hotel, a chain, a pub or a food hall)' });
               return false;
             }
           }
           // Rating floor check (only applies when we have a rating)
           if (typeof c.rating === 'number' && c.rating < ratingFloor) {
             rejections.push(`"${c.name}" (rating ${c.rating} < floor ${ratingFloor})`);
+            removedBeforeScoring.push({ name: String(c.name || ''), reason: 'rated ' + c.rating + ', below the floor of ' + ratingFloor });
             return false;
           }
           // Review volume floor — meaningful peer benchmark needs real reach
           if (typeof c.reviewCount === 'number' && c.reviewCount < 50 && c.reviewCount > 0) {
             rejections.push(`"${c.name}" (${c.reviewCount} reviews < 50)`);
+            removedBeforeScoring.push({ name: String(c.name || ''), reason: c.reviewCount + ' reviews, fewer than 50' });
             return false;
           }
           // Self-disqualifying note text
@@ -2814,6 +2827,7 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
           for (const pat of disqualifyPatterns) {
             if (pat.test(note)) {
               rejections.push(`"${c.name}" (note self-disqualifies: ${pat.source})`);
+              removedBeforeScoring.push({ name: String(c.name || ''), reason: 'described as not a comparable restaurant' });
               return false;
             }
           }
@@ -2991,6 +3005,11 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
       });
       const beforeCount = resolved.length;
       report.competitors = dedupePeersByPlaceId(resolved);
+      for (const c of resolved) {
+        if (c && typeof c === 'object' && !report.competitors.includes(c)) {
+          removedBeforeScoring.push({ name: String(c.name || ''), reason: 'the same Google listing as another comparable restaurant, merged into it' });
+        }
+      }
       const summary = placesResolutionSummary(report.competitors);
       console.log('[diagnose] PLACES-ID ' + summary.line
         + (beforeCount !== report.competitors.length
@@ -3122,6 +3141,15 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
       // 2026-10-01 (B1): the plan rule, when its flag is on, is part of p2's prompt.
       promptSuffixes: planPromptEnabled() ? { 'diagnose-p2': '+' + PLAN_PROMPT_VERSION } : {},
     });
+    // 2026-10-02 (Q7): what was checked at delivery, stored with the run: the
+    // comparison check's flags (the same check /report runs) and the summary
+    // gate's outcome, which is RVP's one fallback (a report shipped without a
+    // summary). The dropped competitors and peers travel with the report.
+    report.provenance.checks = {
+      comparisonFlags: findContradictions(report).map((x) => ({ path: x.path, kind: x.kind })),
+      summaryGate: report.summaryGate || null,
+    };
+    report.removedBeforeScoring = removedBeforeScoring;
     const benchmarkRow = buildBenchmarkRow({
       report, name, location, country, region, focalContext,
       focalGeo: compPlacesData.focalGeo || null,

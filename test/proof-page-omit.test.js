@@ -35,7 +35,9 @@ const { __test__ } = await import('../server.js');
 const { signPlaceToken } = await import('../lib-place-token.js');
 const { PROOF_HEADINGS, PROOF_CLOSING } = await import('../lib-proof-page.js');
 
-const CLOSING = 'Reports issued from 26 September 2026 record every value on this page.';
+// 2026-10-02 (Q7): the date is COMPLETE_FROM, set at the push to the day the
+// release that stores every row went live (test/proof-page-complete.test.js pins it).
+const CLOSING = PROOF_CLOSING;
 const P = (s, label) => ({ score: s, label, status: 'good' });
 const PILLARS6 = { cs: P(70, 'Customer Sentiment'), pa: P(66, 'Pricing & Accessibility'), es: P(60, 'Employee Sentiment'), sm: P(58, 'Social Media Impact'), cp: P(72, 'Competitive Positioning'), bg: P(68, 'Brand Experience & Growth') };
 
@@ -48,8 +50,8 @@ const proofOf = (html) => {
 const headingsOf = (proof) => [...proof.matchAll(/<span class="proof-h">([^<]*)<\/span>/g)].map((m) => m[1].replace(/&#39;/g, "'"));
 const textOf = (h) => h.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
 
-test('the closing sentence is the one Simon approved, with the provenance release date', () => {
-  assert.equal(PROOF_CLOSING, CLOSING);
+test('the closing sentence is the one Simon approved, with its release date', () => {
+  assert.match(PROOF_CLOSING, /^Reports issued from \d{1,2} [A-Z][a-z]+ \d{4} record every value on this page\.$/);
 });
 
 test('(a) A STORED PRE-PROVENANCE PAYLOAD: empty sections are left out, nothing reads "not recorded", the sentence ends the page', () => {

@@ -22,10 +22,14 @@
 // /diagnose and asserts all seven sections with nothing unrecorded, so the
 // sentence stays true.
 //
-// Two rows were removed because NO writer stores them, so no run could ever
-// fill them and the closing sentence would be false: "The rule applied" (the
-// coverage thresholds a run used) and "Removed before scoring" (the peers or
-// competitors dropped, and why). They return when a writer stores them.
+// Two rows were removed on 2026-09-26 because NO writer stored them. 2026-10-02
+// (Simon Q7): /diagnose now stores both, so they return, read only from the run:
+// "The rule applied" from coverage.rule (the thresholds the run's gate used) and
+// "Removed before scoring" from removedBeforeScoring (every competitor or peer
+// dropped, and why; an empty list reads "None"). "Comparisons checked against
+// their own numbers" reads provenance.checks.comparisonFlags. The closing
+// sentence's date is COMPLETE_FROM, the day this release went live: ONE constant,
+// set at the push (test/proof-page-complete.test.js names it).
 //
 // COPY FOR SIMON'S APPROVAL: every label, the intro, the closing sentence and
 // the state words below.
@@ -40,7 +44,9 @@ export const PROOF_HEADINGS = ['What was assessed', 'What we read', 'Coverage', 
   'What was checked before you saw it', 'Confidence', 'Revision notes'];
 export const PROOF_INTRO = 'Every value on this page is one the assessment stored when it ran, except the scoring method, '
   + 'which is applied each time the page is shown. Where the run did not store a value, the page leaves it out rather than estimating it.';
-export const PROOF_CLOSING = 'Reports issued from 26 September 2026 record every value on this page.';
+// PROVISIONAL until the push: set to the day the release carrying Q7 goes live.
+export const COMPLETE_FROM = '27 September 2026';
+export const PROOF_CLOSING = 'Reports issued from ' + COMPLETE_FROM + ' record every value on this page.';
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
@@ -56,6 +62,25 @@ function summaryGateWords(reason) {
   if (r === 'gate-failed-twice') return 'Failed the check twice, so no model-written summary was printed';
   if (r === 'no-band') return 'Not run: there was no computed score to check against';
   return r;
+}
+// The rule as the run stored it (coverage.rule), never today's constants.
+function ruleWords(rule) {
+  const u = obj(rule);
+  const min = count(u.minSubjectReviews), lim = count(u.limitedBelowReviews), days = count(u.maxDaysSinceNewestReview);
+  if (!min || !lim) return null;
+  return 'At least ' + min + ' Google reviews to assess; fewer than ' + lim + ': assessed with limited public signal'
+    + (days ? '; a newest review older than ' + days + ' days, when its date is known: limited' : '');
+}
+function removedWords(list) {
+  if (!Array.isArray(list)) return null;
+  const items = list.filter((x) => x && typeof x === 'object' && str(x.name));
+  if (!items.length) return 'None';
+  return items.map((x) => str(x.name) + (str(x.reason) ? ' (' + str(x.reason) + ')' : '')).join('; ');
+}
+function comparisonWords(flags) {
+  if (!Array.isArray(flags)) return null;
+  return flags.length ? 'Checked at delivery: ' + flags.length + ' comparison' + (flags.length === 1 ? '' : 's') + ' flagged'
+    : 'Checked at delivery: no comparison contradicted its own numbers';
 }
 function seconds(ms) {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return null;
@@ -88,6 +113,8 @@ export function proofPageModel(report, opts = {}) {
   const coverage = [
     { label: 'Coverage state', value: or(str(cov.state) ? (COVERAGE_WORDS[cov.state] || cov.state) : null) },
     { label: 'What was measured', value: or(count(cov.subjectReviewCount) ? count(cov.subjectReviewCount) + ' Google reviews of this restaurant' : null) },
+    { label: 'The rule applied', value: or(ruleWords(cov.rule)) },
+    { label: 'Removed before scoring', value: or(removedWords(r.removedBeforeScoring)) },
   ];
   // A pass names only what it stored: no "not recorded" inside a value.
   const passes = Array.isArray(prov.passes) ? prov.passes.filter((p) => p && typeof p === 'object' && (str(p.model) || str(p.promptVersion))) : [];
@@ -106,6 +133,7 @@ export function proofPageModel(report, opts = {}) {
     { label: 'Executive summary checked against the computed score', value: or(summaryGateWords(r.summaryGate)) },
     { label: 'Nearby restaurants found through Google', value: or(count(gp.count)) },
     { label: 'Comparable restaurants read without a matching Google record', value: or(count(gp.peersUnresolved)) },
+    { label: 'Comparisons checked against their own numbers', value: or(comparisonWords(obj(prov.checks).comparisonFlags)) },
   ];
   const conf = obj(prov.confidence);
   let level = str(conf.level), basis = str(conf.basis);
