@@ -38,6 +38,7 @@ import { newLedger, noteSearch, noteResults, summarizeEvidence,
          renderEvidenceSentence, formatCount, evidencePanelHtml } from './lib-evidence.js';
 import { buildActionPlan } from './lib-action-plan.js';
 import { proofPageModel, proofPageHtml, PROOF_CSS } from './lib-proof-page.js';
+import { sinceLastModel, sinceLastHtml, SINCE_CSS } from './lib-since-last.js';
 import { PLAN_RULE, PLAN_PROMPT_VERSION, planPromptEnabled } from './lib-plan-prompt.js';
 import { findContradictions, COMPARISON_RULE } from './lib-comparisons.js';
 import { fetchExternal, createFailureAlerter } from './lib-external.js';
@@ -3979,6 +3980,30 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber, surve
 }
 
 // ── /report VIEWER ───────────────────────────────────────────
+// 2026-10-01 (C2): THE EARLIER RUN OF THE SAME SUBJECT, for "Since your last report".
+// GET only, and only when the report links its benchmark row (report.benchmarkId):
+// that row's subject_key (the place id), method and date, then the latest EARLIER
+// rvp row with the same subject_key. Any failure means no section, never a
+// failed page. Returns { current: { methodVersion, createdAt }, previous } or null.
+async function loadPreviousRun(report) {
+  const id = report && typeof report.benchmarkId === 'string' ? report.benchmarkId : null;
+  const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_KEY;
+  if (!id || !url || !key) return null;
+  const H = { apikey: key, Authorization: 'Bearer ' + key };
+  try {
+    const r1 = await fetch(url + '/rest/v1/benchmarks?id=eq.' + encodeURIComponent(id) + '&select=id,subject_key,method_version,created_at', { headers: H });
+    const [cur] = await r1.json();
+    if (!cur || !cur.subject_key || !cur.created_at) return null;
+    const r2 = await fetch(url + '/rest/v1/benchmarks?product=eq.rvp&subject_key=eq.' + encodeURIComponent(cur.subject_key)
+      + '&created_at=lt.' + encodeURIComponent(cur.created_at) + '&select=pillar_scores,method_version,created_at,subject_name&order=created_at.desc&limit=1', { headers: H });
+    const [prev] = await r2.json();
+    return { current: { methodVersion: cur.method_version || (report.provenance && report.provenance.methodVersion) || null, createdAt: cur.created_at }, previous: prev || null };
+  } catch (e) {
+    console.log('[/report] previous run lookup failed:', e.message);
+    return null;
+  }
+}
+
 // 2026-10-01 (C1): /report/built serves "How this report was built" alone, on the
 // same token, through the same lookup and the same checks as /report.
 const reportViewer = (proofOnly) => async (req, res) => {
@@ -4056,7 +4081,8 @@ const reportViewer = (proofOnly) => async (req, res) => {
 
     pushLastEngaged(sub.email).catch(() => {});
 
-    const html = renderReportHtml({ subscriber: sub, report, reportLabel, proofOnly });
+    const previousRun = proofOnly ? null : await loadPreviousRun(report);
+    const html = renderReportHtml({ subscriber: sub, report, reportLabel, proofOnly, previousRun });
     res.setHeader('Content-Type', 'text/html');
     return res.send(html);
   } catch(e) {
@@ -4081,7 +4107,7 @@ h1{font-size:24px;margin:0 0 16px}p{font-size:16px;line-height:1.5;color:#6b7280
 <h1>${title}</h1><p>${message}</p></div></body></html>`;
 }
 
-function renderReportHtml({ subscriber, report, reportLabel, proofOnly = false }) {
+function renderReportHtml({ subscriber, report, reportLabel, proofOnly = false, previousRun = null }) {
   const restaurant = subscriber.restaurant_name || 'Your restaurant';
 
   // v8.11.50: THE SCORE IS COMPUTED HERE, FROM THE SIX PILLARS PRINTED BELOW.
@@ -4162,6 +4188,11 @@ function renderReportHtml({ subscriber, report, reportLabel, proofOnly = false }
       if (t) proofRevisionNotes.push(where(p) + '. ' + t);
     }
   }
+  // 2026-10-01 (C2): "Since your last report", only when /report found an earlier
+  // run of the same subject (loadPreviousRun); lib-since-last.js holds the rules.
+  const sinceHtml = previousRun && previousRun.previous
+    ? sinceLastHtml(sinceLastModel({ current: { pillars: report?.pillars, methodVersion: previousRun.current && previousRun.current.methodVersion }, previous: previousRun.previous }))
+    : '';
   const proofHtml = proofPageHtml(proofPageModel(report, { restaurantName: restaurant, revisionNotes: proofRevisionNotes, hasScore }));
   if (proofOnly) {
     // Its own escape: the page-wide `esc` is declared further down this function.
@@ -4898,6 +4929,7 @@ ul.bullet-list li{margin:4px 0}
 .plan-fields{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:12px;color:#555}
 .plan-field b{color:var(--navy);font-weight:700}
 ${PROOF_CSS}
+${SINCE_CSS}
 
 /* Footer */
 .rpt-footer{
@@ -5021,6 +5053,8 @@ ${PROOF_CSS}
           + esc(String(revisedFrom)) + ', which averaged in that 50.' : '')
         + `</div>` : ''}
     ` : ''}
+
+    ${sinceHtml}
 
     ${summaryRevisedNote
       // OUTSIDE the score block on purpose. The block above renders only when
@@ -8450,6 +8484,7 @@ export const __test__ = {
   // Exposed so the ship gate can render a real report page in a real browser
   // rather than asserting on a string this file also builds.
   renderReportHtml,
+  loadPreviousRun,
   serveScoreLib,
   writeOrderRow,
   // The places that RECORD a score outside the page, so a test can read back
