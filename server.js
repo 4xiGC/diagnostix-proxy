@@ -4354,30 +4354,6 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   const onlineOverall = report?.onlinePresence?.overall;
 
 
-  // 2026-10-01 (recommendation 9, B1): ONE RANKED PLAN, FIRST AFTER THE COVER.
-  // It replaces "Commercial Recommendations" and "Recommended Actions", which
-  // rendered last (lib-action-plan.js says the ranking). A field renders only
-  // where the payload has it; nothing is invented.
-  const planItems = buildActionPlan(report);
-  const planPriorityLabel = { urgent: 'Urgent', commercial: 'Tied to your numbers', '30days': 'Next 30 Days', ongoing: 'Ongoing' };
-  const planPriorityClass = { urgent: 'pri-hi', commercial: 'pri-hi', '30days': 'pri-med', ongoing: 'pri-lo' };
-  const planHtml = planItems.map((it, idx) => {
-    const fields = [['Owner', it.owner], ['By when', it.horizon], ['How you will know', it.indicator], ['Follows from', it.finding]]
-      .filter(([, v]) => v).map(([k, v]) => '<span class="plan-field"><b>' + k + ':</b> ' + esc(v) + '</span>').join('');
-    const pri = planPriorityLabel[it.priority] ? '<span class="act-pri ' + (planPriorityClass[it.priority] || 'pri-lo') + '">' + planPriorityLabel[it.priority] + '</span>' : '';
-    return `<div class="act">
-          <div class="act-num">${String(idx + 1).padStart(2, '0')}</div>
-          <div class="act-body">
-            <div class="act-head">
-              <div class="act-title">${esc(it.title)}</div>
-              ${pri}
-            </div>
-            <div class="act-desc">${esc(it.desc)}</div>${revNote(it.source + '.desc')}
-            ${fields ? '<div class="plan-fields">' + fields + '</div>' : ''}
-          </div>
-        </div>`;
-  }).join('');
-
   // Owner perception vs reality
   const ownerSummary = report?.ownerSentimentSummary || '';
   const sentimentGap = report?.sentimentGap || '';
@@ -4405,6 +4381,32 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
   const checkChg  = pickBMC('avgCheckChange',      'avg_check_change',     'avgCheckChange');
   const profitChg = pickBMC('profitabilityChange', 'profitability_change', 'profitabilityChange');
   const hasAnyBM = guestChg !== null || checkChg !== null || profitChg !== null;
+
+  // 2026-10-01 (recommendation 9, B1): ONE RANKED PLAN, FIRST AFTER THE COVER.
+  // It replaces "Commercial Recommendations" and "Recommended Actions", which
+  // rendered last (lib-action-plan.js says the ranking). A field renders only
+  // where the payload has it; nothing is invented. Commercial actions join the
+  // plan only when the row has a business metric, as the old section did (B1a).
+  const planItems = buildActionPlan(report, { commercial: hasAnyBM });
+  const planPriorityLabel = { urgent: 'Urgent', commercial: 'Tied to your numbers', '30days': 'Next 30 Days', ongoing: 'Ongoing' };
+  const planPriorityClass = { urgent: 'pri-hi', commercial: 'pri-hi', '30days': 'pri-med', ongoing: 'pri-lo' };
+  const planHtml = planItems.map((it, idx) => {
+    const fields = [['Owner', it.owner], ['By when', it.horizon], ['How you will know', it.indicator], ['Follows from', it.finding]]
+      .filter(([, v]) => v).map(([k, v]) => '<span class="plan-field"><b>' + k + ':</b> ' + esc(v) + '</span>').join('');
+    const pri = planPriorityLabel[it.priority] ? '<span class="act-pri ' + (planPriorityClass[it.priority] || 'pri-lo') + '">' + planPriorityLabel[it.priority] + '</span>' : '';
+    return `<div class="act">
+          <div class="act-num">${String(idx + 1).padStart(2, '0')}</div>
+          <div class="act-body">
+            <div class="act-head">
+              <div class="act-title">${esc(it.title)}</div>
+              ${pri}
+            </div>
+            <div class="act-desc">${esc(it.desc)}</div>${revNote(it.source + '.desc')}
+            ${fields ? '<div class="plan-fields">' + fields + '</div>' : ''}
+          </div>
+        </div>`;
+  }).join('');
+
   const businessAnalysis = report?.businessRealityAnalysis || '';
   const perceptionGap    = report?.perceptionGap || '';
 

@@ -34,7 +34,9 @@ const report = (extra) => Object.assign({
   ],
   commercialActions: [{ title: 'Menu engineering', desc: 'Rework the menu mix.', evidence: 'Average check -3% YoY' }],
 }, extra || {});
-const render = (r) => __test__.renderReportHtml({ subscriber: { restaurant_name: 'A Restaurant', location: 'Santiago', email: 'x@example.org' }, report: r, reportLabel: 'HealthCheck' });
+// The row carries a business metric, as on 90 of the 112 stored reports: main renders the
+// commercial list only then (hasAnyBM), and the plan keeps that rule (B1a).
+const render = (r, sub) => __test__.renderReportHtml({ subscriber: Object.assign({ restaurant_name: 'A Restaurant', location: 'Santiago', email: 'x@example.org', avg_check_change: -3 }, sub || {}), report: r, reportLabel: 'HealthCheck' });
 
 test('THE RANKING: urgent, then commercial, then 30 days, then ongoing; duplicates merge', () => {
   const plan = buildActionPlan(report());
@@ -81,4 +83,21 @@ test('a report with no actions has no plan section', () => {
 test('CONTROL: the ranking test would catch the old order', () => {
   const old = report().actions.map((a) => a.title);
   assert.notDeepEqual(old, buildActionPlan(report()).map((i) => i.title));
+});
+
+// B1a (2026-10-01, found by the A2 second pass): main showed "Commercial Recommendations"
+// only when the row carries a business metric. The first plan merged them regardless, so on
+// 5 stored reports actions labelled "Tied to your numbers" appeared for an owner who shared
+// no numbers. The plan keeps main's rule.
+test('NO BUSINESS METRIC ON THE ROW: commercial actions stay out of the plan, as on main', () => {
+  const html = render(report(), { avg_check_change: null });
+  assert.ok(html.includes('What to do first') && html.includes('Fix pacing'), 'the plan did not render, so this checks nothing');
+  assert.equal(html.includes('Menu engineering'), false, 'a commercial action rendered with no business metric on the row');
+  assert.equal(html.includes('Tied to your numbers'), false);
+  assert.deepEqual(buildActionPlan(report(), { commercial: false }).map((i) => i.title), ['Fix pacing', 'Warm lighting', 'Keep posting']);
+});
+
+test('CONTROL: with a business metric the commercial action is in the plan', () => {
+  const html = render(report(), { avg_check_change: -3 });
+  assert.ok(html.includes('Menu engineering'));
 });

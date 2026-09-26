@@ -15,13 +15,16 @@
 // "ongoing" say nothing about when), and a commercial action's `evidence` is its
 // finding. A missing field is null and the page prints no label for it.
 // Items whose titles normalise to the same words merge (the first is kept).
+// opts.commercial false leaves the commercial actions out: the page passes the
+// row's business-metric test (hasAnyBM), the rule main used for its commercial
+// section, so no "Tied to your numbers" item shows for an owner who shared none.
 // Pure; never throws.
 // ════════════════════════════════════════════════════════════════════════════
 
 const s = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 const norm = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
-export function buildActionPlan(report) {
+export function buildActionPlan(report, opts = {}) {
   const r = (report && typeof report === 'object') ? report : {};
   if (Array.isArray(r.plan) && r.plan.length) {
     return r.plan.filter((p) => p && typeof p === 'object').map((p, i) => ({
@@ -30,7 +33,7 @@ export function buildActionPlan(report) {
     }));
   }
   const actions = (Array.isArray(r.actions) ? r.actions : []).map((a, i) => ({ a, i }));
-  const commercial = (Array.isArray(r.commercialActions) ? r.commercialActions : []).map((a, i) => ({ a, i }));
+  const commercial = (opts.commercial !== false && Array.isArray(r.commercialActions) ? r.commercialActions : []).map((a, i) => ({ a, i }));
   const pick = (p) => actions.filter(({ a }) => ((a && a.priority) || 'ongoing') === p);
   const ranked = [
     ...pick('urgent').map(({ a, i }) => ({ a, source: 'actions[' + i + ']', kind: 'operational' })),
