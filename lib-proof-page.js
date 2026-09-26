@@ -11,11 +11,24 @@
 // page applies when it is shown (the cover computes the overall from the stored
 // pillars at read time, v8.11.50).
 //
-// Across the 112 stored reports on 2026-10-01 most rows read "not recorded":
-// the subject and coverage blocks exist on 4, the evidence counts on 20, and the
-// 2026-09-30 provenance on none yet (overnight _1001_rvp.md, A4). That is the
-// honest page until new runs arrive. COPY FOR SIMON'S APPROVAL: every label,
-// the intro and the state words below.
+// 2026-09-26 (Simon): A ROW WITH NO STORED VALUE IS LEFT OUT, and a section left
+// with no rows is left out, so the page never prints "not recorded". It ends
+// with PROOF_CLOSING, which names the day from which a run stores every value
+// the page can show: 26 September 2026, when 8.11.60 (provenance) went live at
+// 00:11Z. The other fields were stored earlier (evidence 8.11.24, peers'
+// place ids 8.11.26, the summary gate 2026-09-22, subject and coverage
+// 2026-09-24). No stored report was issued on or after that day (newest
+// 2026-09-24). test/proof-page-omit.test.js runs the CURRENT writer through
+// /diagnose and asserts all seven sections with nothing unrecorded, so the
+// sentence stays true.
+//
+// Two rows were removed because NO writer stores them, so no run could ever
+// fill them and the closing sentence would be false: "The rule applied" (the
+// coverage thresholds a run used) and "Removed before scoring" (the peers or
+// competitors dropped, and why). They return when a writer stores them.
+//
+// COPY FOR SIMON'S APPROVAL: every label, the intro, the closing sentence and
+// the state words below.
 // Pure; never throws.
 // ════════════════════════════════════════════════════════════════════════════
 import { formatCount, splitReviewVolumes } from './lib-evidence.js';
@@ -26,7 +39,8 @@ export const NOT_RECORDED = 'not recorded for this report';
 export const PROOF_HEADINGS = ['What was assessed', 'What we read', 'Coverage', 'How it was scored',
   'What was checked before you saw it', 'Confidence', 'Revision notes'];
 export const PROOF_INTRO = 'Every value on this page is one the assessment stored when it ran, except the scoring method, '
-  + 'which is applied each time the page is shown. Where the run did not store something, the page says so rather than estimating it.';
+  + 'which is applied each time the page is shown. Where the run did not store a value, the page leaves it out rather than estimating it.';
+export const PROOF_CLOSING = 'Reports issued from 26 September 2026 record every value on this page.';
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
@@ -71,17 +85,14 @@ export function proofPageModel(report, opts = {}) {
       ? formatCount(split.peerReviews) + ' across ' + split.peersCounted + ' restaurant' + (split.peersCounted === 1 ? '' : 's') : null) },
     { label: 'Reviews published by all the sources read, together', value: or(count(ev.reviewsTotal)) },
   ];
-  const th = obj(cov.thresholds);
   const coverage = [
     { label: 'Coverage state', value: or(str(cov.state) ? (COVERAGE_WORDS[cov.state] || cov.state) : null) },
     { label: 'What was measured', value: or(count(cov.subjectReviewCount) ? count(cov.subjectReviewCount) + ' Google reviews of this restaurant' : null) },
-    { label: 'The rule applied', value: or(count(th.MIN_SUBJECT_REVIEWS) && count(th.LIMITED_BELOW_REVIEWS)
-      ? 'Under ' + count(th.MIN_SUBJECT_REVIEWS) + ' reviews: not assessed. Under ' + count(th.LIMITED_BELOW_REVIEWS) + ': assessed as limited.' : null) },
-    { label: 'Removed before scoring', value: NOT_RECORDED },
   ];
-  const passes = Array.isArray(prov.passes) ? prov.passes.filter((p) => p && typeof p === 'object') : [];
-  const models = passes.length ? passes.map((p) => (str(p.label) || 'model') + ': ' + (str(p.model) || NOT_RECORDED)
-    + ', prompt ' + (str(p.promptVersion) || NOT_RECORDED)).join('; ') : null;
+  // A pass names only what it stored: no "not recorded" inside a value.
+  const passes = Array.isArray(prov.passes) ? prov.passes.filter((p) => p && typeof p === 'object' && (str(p.model) || str(p.promptVersion))) : [];
+  const models = passes.length ? passes.map((p) => (str(p.label) || 'model') + ': '
+    + [str(p.model), str(p.promptVersion) ? 'prompt ' + str(p.promptVersion) : null].filter(Boolean).join(', ')).join('; ') : null;
   const scored = [
     { label: 'Method recorded when the report was produced', value: or(str(prov.methodVersion)) },
     { label: 'Method used for the score on this page', value: opts.hasScore === false
@@ -109,9 +120,12 @@ export function proofPageModel(report, opts = {}) {
   const notes = (Array.isArray(opts.revisionNotes) ? opts.revisionNotes : []).map(str).filter(Boolean);
   const revisions = notes.length ? notes.map((t, i) => ({ label: 'Change ' + (i + 1), value: t }))
     : [{ label: 'Changes after delivery', value: 'None recorded: no change to this report after delivery is stored' }];
+  // Every row, then only the stored ones: a section with none left is left out.
+  const all = [assessed, read, coverage, scored, checked, confidence, revisions].map((rows, i) => ({ heading: PROOF_HEADINGS[i], rows }));
   return {
-    title: 'How this report was built', intro: PROOF_INTRO,
-    sections: [assessed, read, coverage, scored, checked, confidence, revisions].map((rows, i) => ({ heading: PROOF_HEADINGS[i], rows })),
+    title: 'How this report was built', intro: PROOF_INTRO, closing: PROOF_CLOSING,
+    sections: all.map((s) => ({ heading: s.heading, rows: s.rows.filter((r) => r.value !== NOT_RECORDED) })).filter((s) => s.rows.length),
+    omitted: all.flatMap((s) => s.rows.filter((r) => r.value === NOT_RECORDED).map((r) => s.heading + ' / ' + r.label)),
   };
 }
 
@@ -125,7 +139,7 @@ export const PROOF_CSS = '.proof-page{page-break-before:always;break-before:page
   + '.proof-t{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px;page-break-inside:avoid;break-inside:avoid}'
   + '.proof-t th{width:40%;text-align:left;font-weight:600;color:#444;padding:6px 10px 6px 0;vertical-align:top;border-top:1px solid #eee}'
   + '.proof-t td{padding:6px 0;vertical-align:top;border-top:1px solid #eee;overflow-wrap:anywhere;word-break:break-word}'
-  + '.proof-t td.proof-nr{color:#888;font-style:italic}'
+  + '.proof-closing{font-size:12.5px;line-height:1.6;color:#555;margin:16px 0 0;font-style:italic}'
   + '@media (max-width:600px){.proof-t th,.proof-t td{display:block;width:auto;border-top:0;padding:2px 0}.proof-t tr{display:block;border-top:1px solid #eee;padding:6px 0}}';
 
 export function proofPageHtml(model) {
@@ -135,6 +149,7 @@ export function proofPageHtml(model) {
     + '<p class="proof-intro">' + esc(m.intro) + '</p>'
     + m.sections.map((s, i) => '<h3 class="proof-h-wrap"><span class="proof-n">' + (i + 1) + '. </span><span class="proof-h">' + esc(s.heading) + '</span></h3>'
       + '<table class="proof-t"><tbody>' + s.rows.map((r) => '<tr><th scope="row">' + esc(r.label) + '</th><td'
-        + (r.value === NOT_RECORDED ? ' class="proof-nr"' : '') + '>' + esc(r.value) + '</td></tr>').join('') + '</tbody></table>').join('')
+        + '>' + esc(r.value) + '</td></tr>').join('') + '</tbody></table>').join('')
+    + '<p class="proof-closing">' + esc(m.closing || PROOF_CLOSING) + '</p>'
     + '</section>';
 }

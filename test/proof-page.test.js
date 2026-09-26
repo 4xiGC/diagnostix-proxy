@@ -43,7 +43,9 @@ const valuesOf = (m) => m.sections.flatMap((s) => s.rows.map((r) => r.value));
 test('THE SEVEN SECTIONS, IN THE STANDARD\'S ORDER', () => {
   assert.deepEqual(PROOF_HEADINGS, ['What was assessed', 'What we read', 'Coverage', 'How it was scored', 'What was checked before you saw it', 'Confidence', 'Revision notes']);
   assert.deepEqual(proofPageModel(FULL, {}).sections.map((s) => s.heading), PROOF_HEADINGS);
-  assert.deepEqual(proofPageModel({}, {}).sections.map((s) => s.heading), PROOF_HEADINGS);
+  // 2026-09-26 (Simon): a section with no stored value is left out; the ones shown keep this order.
+  assert.deepEqual(proofPageModel({}, {}).sections.map((s) => s.heading), ['How it was scored', 'Revision notes']);
+  assert.deepEqual(proofPageModel({}, { restaurantName: 'X' }).sections.map((s) => s.heading), ['What was assessed', 'How it was scored', 'Revision notes']);
 });
 
 test('a full payload: every value comes from its stored field', () => {
@@ -54,13 +56,14 @@ test('a full payload: every value comes from its stored field', () => {
   assert.ok(t.includes('9,813'), 'the peers\' reviews are shown apart from the restaurant\'s own (10,461 - 648)');
 });
 
-test('AN EMPTY PAYLOAD: every value reads "not recorded for this report", nothing is estimated', () => {
+test('AN EMPTY PAYLOAD: every unstored row is left out, nothing is estimated (2026-09-26: omitted, no longer printed as "not recorded")', () => {
   const m = proofPageModel({}, { restaurantName: 'X' });
+  assert.ok(m.omitted.length >= 12, 'too few rows omitted to mean anything: ' + m.omitted.length);
+  for (const v of m.sections.flatMap((s) => s.rows).map((r) => r.value)) assert.notEqual(v, NOT_RECORDED);
   // Two rows are not read from the payload and say so: the name on the row, and the
   // scoring method the page applies when shown (labelled as applied, not stored).
   const vals = m.sections.flatMap((s) => s.rows).filter((r) => r.label !== 'Name on this report' && r.label !== 'Method used for the score on this page').map((r) => r.value);
-  assert.ok(vals.length >= 12, 'too few rows to mean anything: ' + vals.length);
-  for (const v of vals) assert.ok(v === NOT_RECORDED || /^None recorded/.test(v), 'estimated or blank value: ' + JSON.stringify(v));
+  for (const v of vals) assert.ok(/^None recorded/.test(v), 'estimated or blank value: ' + JSON.stringify(v));
   const html = proofPageHtml(m);
   assert.doesNotMatch(html, /undefined|NaN|\[object Object\]|>null</);
 });
@@ -88,11 +91,12 @@ test('THE REPORT: "How this report was built" is the LAST section, and it starts
   assert.match(html.slice(at), /The executive summary on this page was rewritten/, 'the page\'s own revision note did not reach the proof page');
 });
 
-test('CONTROL: a report with no payload fields still renders the page, all "not recorded"', () => {
+test('CONTROL: a report with no payload fields still renders the page, with no "not recorded" and the closing sentence', () => {
   const html = render({ pillars: FULL.pillars, executiveSummary: 'A summary.' });
   const at = html.indexOf('class="proof-page"');
   assert.ok(at > 0);
-  assert.ok((html.slice(at).match(/not recorded for this report/g) || []).length >= 10);
+  assert.equal((html.slice(at).match(/not recorded for this report/g) || []).length, 0);
+  assert.match(html.slice(at), /Reports issued from 26 September 2026 record every value on this page./);
 });
 
 // THE STANDALONE ROUTE, through the real app, the store replaced.
