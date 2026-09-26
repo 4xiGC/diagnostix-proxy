@@ -15,6 +15,12 @@
 // not contain on 14 of 18 trial items, and gave them their own time windows.
 // v2 names what to count, allows a number only from the findings or the owner's
 // metrics, and reads the indicator at the end of the horizon.
+//
+// v3 (2026-09-26, Simon Q2 and Q40, after the v2 trial): 2 of 18 v2 findings
+// were conjecture ("may be capturing discretionary spend"), and descriptions
+// carried numbers the findings do not contain ("15-mile radius", "8-20 seats",
+// "600 meters"), copied from the original run's own action prose. v3 forbids
+// both, in one sentence each.
 // ════════════════════════════════════════════════════════════════════════════
 import crypto from 'node:crypto';
 
@@ -26,10 +32,12 @@ export const PLAN_RULE = [
   'indicator: one observable sign that it worked, naming what to count or watch and where, for example "the share of new Google reviews that mention slow service".',
   'Give a target number ONLY when that number appears in the findings or the business metrics above (for example a current rating to hold or beat); otherwise give no number. Never set a target the data does not contain.',
   'finding: the finding in this report the item follows from, named from the web data, the reviews or the owner\'s survey, in under 15 words.',
+  'A finding states what the data shows, never a possibility: no "may", "might" or "could".',
+  'desc: use a number only when it appears in the findings or the business metrics above; describe the action without one otherwise.',
   'Never invent a number the data does not contain. Keep "actions" and "commercialActions" exactly as the schema above asks.',
 ].join(' ');
 
-export const PLAN_PROMPT_VERSION = 'plan-2026-10-01-v2-' + crypto.createHash('sha256').update(PLAN_RULE).digest('hex').slice(0, 12);
+export const PLAN_PROMPT_VERSION = 'plan-2026-10-01-v3-' + crypto.createHash('sha256').update(PLAN_RULE).digest('hex').slice(0, 12);
 
 export function planPromptEnabled(env = process.env) {
   return env.RVP_PLAN_PROMPT === '1';
