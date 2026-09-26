@@ -89,3 +89,18 @@ test('THE PROVENANCE COUNT IS A MEASURED GATE, AND A FAILED CONTROL IS NOT A MEA
   assert.equal(g.counts(out), 'runs with complete provenance: reports 112, with provenance 0, complete 0; benchmarks: the provenance column does not exist yet (migration not applied)');
   assert.equal(parseVerdict('FAIL: the control did not separate complete from incomplete', 1), 'FAIL');
 });
+
+// 2026-10-01 (Part D): the report-structure gate (B1 plan first, C1 proof page last and required,
+// C2 since-last shown exactly when an earlier run exists) and the recommendation 9 measure.
+test('THE HARNESS RUNS THE STRUCTURE GATE, PROOF PAGE REQUIRED, AND MEASURES RECOMMENDATION 9', async () => {
+  const { RVP_GATES } = await load();
+  const s = RVP_GATES.find((x) => x.script === 'rvp-structure-gate.js');
+  assert.ok(s && !s.skip && !s.measure, 'the structure gate is missing or has no pass rule');
+  assert.deepEqual(s.args, ['--require-proof']);
+  assert.equal(s.counts('...\nALL 44 CHECKS PASSED\n'), 'ALL 44 CHECKS PASSED');
+  const r = RVP_GATES.find((x) => x.script === 'rvp-rec9-measure.mjs');
+  assert.ok(r && r.measure, 'the recommendation 9 measure is missing or has a pass rule on stored data');
+  const line = 'recommendation 9: reports 112, plan items 726, all four 2 (0.3%); items from the flagged plan prompt 0; indicators with a number the report lacks 0';
+  assert.equal(r.counts('CONTROL: ...\n' + line + '\n'), line);
+  assert.equal(r.counts('FAIL: CONTROL: the audit does not separate'), '', 'a failed control produced a count');
+});

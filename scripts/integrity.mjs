@@ -99,6 +99,14 @@ export const RVP_GATES = [
     parse: (out) => { const c = suiteCounts(out); return { verdict: c.fail === 0 && c.pass > 0 ? 'PASS' : 'FAIL', counts: c.pass + ' of ' + c.tests + ' pass' }; } },
   { name: 'print at Letter and A4, every report (Chrome)', script: 'print-gate-all.js', counts: line(/ALL \d+ CHECKS PASSED|\d+ CHECK\(S\) FAILED/) },
   { name: 'verdict words match the computed band (Chrome)', script: 'rvp-narrative-gate.js', counts: line(/(PASS|FAIL): [^\n]*/) },
+  // 2026-10-01 (Part D): every stored report, full row, Letter, A4 and 390 px, controls in the run:
+  // "What to do first" first, "How this report was built" last and on every report, and
+  // "Since your last report" shown exactly when an earlier run of the same place exists.
+  { name: 'report structure: plan, proof page, since-last (Chrome)', script: 'rvp-structure-gate.js', args: ['--require-proof'],
+    counts: line(/ALL \d+ CHECKS PASSED|\d+ CHECK\(S\) FAILED/) },
+  // MEASURED until flagged plan-prompt runs arrive; the script's control prints FAIL if the audit is blind.
+  { name: 'recommendation 9: plan items with all four fields', script: 'rvp-rec9-measure.mjs', measure: true,
+    counts: line(/recommendation 9: reports \d+, plan items \d+, all four \d+ \([0-9.]+%\); [^\n]*/) },
   { name: 'benchmark score_verdict is its own band', script: 'rvp-verdict-consistency.mjs',
     counts: line(/rvp rows \d+, scored \d+, null verdicts \d+, verdicts off their own band \d+/) },
   // 2026-09-30 (B5): MEASURED until live runs carry provenance (the first is the
