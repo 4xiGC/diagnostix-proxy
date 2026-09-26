@@ -19,7 +19,9 @@ import { OVERALL_METHOD_VERSION } from './lib-score.js';
 
 export const PROMPT_VERSIONS = Object.freeze({
   'diagnose-p1': 'p1-2026-09-29-0ced20243c98',
-  'diagnose-p2': 'p2-2026-09-29-comparison-rule-564b48e8b3bb',
+  // 2026-10-01: the call gained the flagged plan rule (lib-plan-prompt.js). With the
+  // flag off the text SENT is identical to p2-2026-09-29; the source moved, so the id did.
+  'diagnose-p2': 'p2-2026-10-01-plan-flag-8b25ce616f9e',
   'diagnose-summary': 'summary-2026-09-29-comparison-rule',
 });
 
@@ -41,13 +43,16 @@ const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 // passes: the model calls the request made, as claude() recorded them
 // ({ label, model, input, output, ms }). Two calls under one label (a parse
 // retry, a gate retry) are ONE pass with `calls` > 1 and summed tokens.
-export function buildProvenance({ passes, coverage, durationMs, now = () => new Date().toISOString() }) {
+// promptSuffixes (2026-10-01): an addition a flag appends to a prompt, recorded
+// after that prompt's id (the B1 plan rule: { 'diagnose-p2': '+plan-...' }).
+export function buildProvenance({ passes, coverage, durationMs, promptSuffixes = {}, now = () => new Date().toISOString() }) {
+  const versions = Object.fromEntries(Object.entries(PROMPT_VERSIONS).map(([k, v]) => [k, v + (promptSuffixes[k] || '')]));
   const byLabel = new Map();
   for (const p of Array.isArray(passes) ? passes : []) {
     const k = String(p.label || 'model');
     const was = byLabel.get(k);
     if (!was) {
-      byLabel.set(k, { label: k, model: p.model || null, promptVersion: PROMPT_VERSIONS[k] || null,
+      byLabel.set(k, { label: k, model: p.model || null, promptVersion: versions[k] || null,
         inputTokens: num(p.input), outputTokens: num(p.output), ms: num(p.ms) });
     } else {
       was.calls = (was.calls || 1) + 1;
@@ -59,7 +64,7 @@ export function buildProvenance({ passes, coverage, durationMs, now = () => new 
   return {
     methodVersion: OVERALL_METHOD_VERSION,
     passes: [...byLabel.values()],
-    promptVersions: { ...PROMPT_VERSIONS },
+    promptVersions: versions,
     confidence: rvpConfidence(coverage),
     durationMs: num(durationMs),
     writtenAt: now(),
