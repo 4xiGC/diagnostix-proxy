@@ -40,6 +40,13 @@ test('THE NOTE, for a comparison revision', () => {
   assert.equal(fieldRevisionNote(r, 'actions[0].desc'), '', 'a note for a field that was not revised');
 });
 
+// 2026-10-01 (C1): "How this report was built" lists every revision note again, by design
+// (SUBJECT_INTEGRITY_STANDARD 6.2: each note is the one the page carries beside the changed
+// text). So "once" is about the report body, before the proof page; the proof page is
+// asserted to list each note exactly once.
+const body = (html) => html.slice(0, html.indexOf('class="proof-page"') > 0 ? html.indexOf('class="proof-page"') : html.length);
+const proof = (html) => { const i = html.indexOf('class="proof-page"'); return i > 0 ? html.slice(i) : ''; };
+
 test('THE PAGE PRINTS THE NOTE BESIDE THE REVISED FIELD, and nowhere else', () => {
   const r = base(); r.meta = { fieldRevisions: [rev('competitiveInsight'), rev('actions[1].desc')] };
   const html = render(r);
@@ -51,7 +58,8 @@ test('THE PAGE PRINTS THE NOTE BESIDE THE REVISED FIELD, and nowhere else', () =
   assert.ok(html.slice(second, second + 400).includes(NOTE), 'no note after the revised action');
   const first = html.indexOf('Do the first thing.');
   assert.ok(!html.slice(first, first + 200).includes(NOTE), 'a note beside an action that was not revised');
-  assert.equal(html.split(NOTE).length - 1, 2, 'the note printed a number of times other than the two revisions');
+  assert.equal(body(html).split(NOTE).length - 1, 2, 'the note printed in the body a number of times other than the two revisions');
+  assert.equal(proof(html).split(NOTE).length - 1, 2, 'the proof page did not list each of the two revisions once');
 });
 
 test('no revision, no note', () => {

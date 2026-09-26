@@ -113,8 +113,17 @@ test('the disclosure survives a payload with NO computable overall score', () =>
     'the sentence must not be nested inside the score block');
 });
 
+// 2026-10-01 (C1): "How this report was built" lists every revision note again, by design
+// (SUBJECT_INTEGRITY_STANDARD 6.2: each note is the one the page carries beside the changed
+// text). So "once" is about the report body, before the proof page; the proof page is
+// asserted to list each note exactly once.
+const body = (html) => html.slice(0, html.indexOf('class="proof-page"') > 0 ? html.indexOf('class="proof-page"') : html.length);
+const proof = (html) => { const i = html.indexOf('class="proof-page"'); return i > 0 ? html.slice(i) : ''; };
+
 test('CONTROL: the sentence appears exactly once', () => {
   const html = render(REVISED);
-  const n = (html.match(/executive summary on this page was rewritten/gi) || []).length;
-  assert.strictEqual(n, 1, 'rendered ' + n + ' times');
+  const n = (body(html).match(/executive summary on this page was rewritten/gi) || []).length;
+  assert.strictEqual(n, 1, 'rendered ' + n + ' times in the body');
+  const p = (proof(html).match(/executive summary on this page was rewritten/gi) || []).length;
+  assert.strictEqual(p, 1, 'listed ' + p + ' times on the proof page');
 });

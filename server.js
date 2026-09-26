@@ -37,6 +37,7 @@ import { attachPlaceIdentity, dedupePeersByPlaceId, peerReviewVolumes,
 import { newLedger, noteSearch, noteResults, summarizeEvidence,
          renderEvidenceSentence, formatCount, evidencePanelHtml } from './lib-evidence.js';
 import { buildActionPlan } from './lib-action-plan.js';
+import { proofPageModel, proofPageHtml, PROOF_CSS } from './lib-proof-page.js';
 import { PLAN_RULE, PLAN_PROMPT_VERSION, planPromptEnabled } from './lib-plan-prompt.js';
 import { findContradictions, COMPARISON_RULE } from './lib-comparisons.js';
 import { fetchExternal, createFailureAlerter } from './lib-external.js';
@@ -3978,7 +3979,9 @@ async function sendCustomerReportEmail({ subscriber, report, reportNumber, surve
 }
 
 // ── /report VIEWER ───────────────────────────────────────────
-app.get('/report', async (req, res) => {
+// 2026-10-01 (C1): /report/built serves "How this report was built" alone, on the
+// same token, through the same lookup and the same checks as /report.
+const reportViewer = (proofOnly) => async (req, res) => {
   const token = (req.query.token || '').trim();
   if (!token || token.length < 16) {
     return res.status(400).send(renderErrorPage(
@@ -4053,7 +4056,7 @@ app.get('/report', async (req, res) => {
 
     pushLastEngaged(sub.email).catch(() => {});
 
-    const html = renderReportHtml({ subscriber: sub, report, reportLabel });
+    const html = renderReportHtml({ subscriber: sub, report, reportLabel, proofOnly });
     res.setHeader('Content-Type', 'text/html');
     return res.send(html);
   } catch(e) {
@@ -4063,7 +4066,9 @@ app.get('/report', async (req, res) => {
       'We could not load your report right now. Please try again in a few minutes.'
     ));
   }
-});
+};
+app.get('/report', reportViewer(false));
+app.get('/report/built', reportViewer(true));
 
 function renderErrorPage(title, message) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>${title}, DiagnostiX</title>
@@ -4076,7 +4081,7 @@ h1{font-size:24px;margin:0 0 16px}p{font-size:16px;line-height:1.5;color:#6b7280
 <h1>${title}</h1><p>${message}</p></div></body></html>`;
 }
 
-function renderReportHtml({ subscriber, report, reportLabel }) {
+function renderReportHtml({ subscriber, report, reportLabel, proofOnly = false }) {
   const restaurant = subscriber.restaurant_name || 'Your restaurant';
 
   // v8.11.50: THE SCORE IS COMPUTED HERE, FROM THE SIX PILLARS PRINTED BELOW.
@@ -4136,6 +4141,41 @@ function renderReportHtml({ subscriber, report, reportLabel }) {
       + ' to agree with the computed overall score. The wording first issued '
       + 'with this report is retained in our records.'
     : '';
+  // 2026-10-01 (recommendation 10, C1): "HOW THIS REPORT WAS BUILT", the last
+  // section, from stored values only (lib-proof-page.js). Its revision notes are
+  // the ones this page prints beside the changed text, gathered in one place.
+  // COPY FOR SIMON'S APPROVAL: the score-revision and passage-label wording.
+  const proofRevisionNotes = [];
+  if (revisedFrom !== null) proofRevisionNotes.push('Revised 25 September 2026: the overall score now leaves out the Employee Sentiment 50 that stands for no employee signal. This report first showed an overall score of ' + revisedFrom + '.');
+  if (summaryRevisedNote) proofRevisionNotes.push(summaryRevisedNote);
+  {
+    const revs = report && report.meta && Array.isArray(report.meta.fieldRevisions) ? report.meta.fieldRevisions : [];
+    const where = (p) => {
+      const m = String(p).match(/^(actions|commercialActions|competitors)\[(\d+)\]/);
+      if (String(p) === 'competitiveInsight') return 'Competitive Landscape';
+      if (!m) return String(p);
+      const item = (report[m[1]] || [])[Number(m[2])] || {};
+      return (m[1] === 'competitors' ? 'Competitor note: ' : 'Action: ') + (item.title || item.name || 'item ' + (Number(m[2]) + 1));
+    };
+    for (const p of [...new Set(revs.map((x) => x && x.path).filter(Boolean))]) {
+      const t = fieldRevisionNote(report, p);
+      if (t) proofRevisionNotes.push(where(p) + '. ' + t);
+    }
+  }
+  const proofHtml = proofPageHtml(proofPageModel(report, { restaurantName: restaurant, revisionNotes: proofRevisionNotes, hasScore }));
+  if (proofOnly) {
+    // Its own escape: the page-wide `esc` is declared further down this function.
+    const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const back = subscriber && subscriber.report_token ? '<p class="proof-back"><a href="/report?token=' + encodeURIComponent(subscriber.report_token) + '">Back to the report</a></p>' : '';
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+      + '<title>How this report was built, ' + esc(restaurant) + '</title><style>'
+      + 'body{font-family:-apple-system,Segoe UI,Arial,sans-serif;background:#fff;color:#1a2b4a;margin:0}'
+      + '.proof-wrap{max-width:760px;margin:0 auto;padding:24px 16px}'
+      + '.rpt-h{font-size:22px;font-weight:900;margin:0 0 10px}.proof-back{font-size:13px;margin:0 0 8px}.proof-back a{color:#1a2b4a}'
+      + '.proof-name{font-size:15px;font-weight:700;margin:0 0 14px}'
+      + PROOF_CSS + '.proof-page{margin-top:0;page-break-before:auto;break-before:auto}'
+      + '</style></head><body><div class="proof-wrap">' + back + '<p class="proof-name">' + esc(restaurant) + '</p>' + proofHtml + '</div></body></html>';
+  }
   const cuisine    = report?.cuisineDetected || '';
   const price      = report?.priceDetected || '';
   const location   = subscriber.location || '';
@@ -4857,6 +4897,7 @@ ul.bullet-list li{margin:4px 0}
 .act-desc{font-size:13.5px;line-height:1.65;color:#444}
 .plan-fields{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:12px;color:#555}
 .plan-field b{color:var(--navy);font-weight:700}
+${PROOF_CSS}
 
 /* Footer */
 .rpt-footer{
@@ -5037,6 +5078,8 @@ ul.bullet-list li{margin:4px 0}
     ` : ''}
 
     ${ownerBlock}
+
+    ${proofHtml}
 
   </div>
 
