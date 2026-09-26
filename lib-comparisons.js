@@ -54,10 +54,80 @@ function nearestWord(prefix) {
   return best;
 }
 
-export function findContradictionsInText(text) {
+// ── 2026-10-02, THE REWRITE ROUTE'S SECOND PASS (Simon, 2026-09-26) ──────────
+//
+// (1) A rank "on" or "in" a NAMED list ("#2 in Santiago dining", "#62 of 3,523
+//     on the Tripadvisor Santiago list") says which list it is on. Two ranks on
+//     two DIFFERENT named lists in one sentence are not a contradiction. A rank
+//     with no list name ("#62 of 3,523 restaurants") still counts as unnamed.
+// (2) A rating comparison word ("higher-rated", "lower-rated") against the
+//     ratings it refers to, when the SUBJECT'S OWN RATING is given. No stored
+//     report carries it (checked 2026-10-02 on the three flagged rows), so the
+//     render-time check never runs this part; the rewrite route passes it.
+// (3) A rank on a list of known size reads as a percentile.
+// Still pure, never throws, never edits.
+const LIST_NAME = /^\s*(?:of\s+[\d,]+\s+)?(?:on|in)\s+(?:the\s+)?([A-Z][\w'&.-]*(?:\s+[\w'&.-]+){0,4})/;
+function rankListName(s, at, len) {
+  const m = s.slice(at + len).match(LIST_NAME);
+  if (!m) return null;
+  // The name ends at a conjunction or at punctuation: "on Tripadvisor and #5 ..." is "tripadvisor".
+  const name = m[1].split(/\s+(?:and|or|but|while|with|where|whereas)\b/i)[0].replace(/[.,;:!?)]+$/, '');
+  return name.toLowerCase().replace(/\s+(?:list|ranking|rankings|guide)$/, '').trim() || null;
+}
+const RATED_WORD = /\b(higher|better|more highly|lower|worse)[- ]rated\b/gi;
+const RATING_NUM = /(?<![\d.,#])([0-5]\.\d)(?:\s*\/\s*5)?(?![\d%])/g;
+function ratingScope(s, at, end) {
+  const open = s.lastIndexOf('(', at), close = s.lastIndexOf(')', at);
+  if (open > close) { const c = s.indexOf(')', at); return s.slice(open, c < 0 ? s.length : c); }
+  const next = s.indexOf('(', end);
+  if (next >= 0 && next - end <= 60) { const c = s.indexOf(')', next); return s.slice(next, c < 0 ? s.length : c); }
+  const comma = s.indexOf(',', end);
+  return s.slice(end, comma < 0 ? s.length : comma);
+}
+function ratingFlags(s, subjectRating) {
+  const out = [];
+  if (!(typeof subjectRating === 'number' && Number.isFinite(subjectRating))) return out;
+  RATED_WORD.lastIndex = 0;
+  let m;
+  while ((m = RATED_WORD.exec(s))) {
+    const up = /^(higher|better|more highly)$/i.test(m[1]);
+    const ratings = [...ratingScope(s, m.index, m.index + m[0].length).matchAll(RATING_NUM)].map((x) => Number(x[1]));
+    if (!ratings.length) continue;
+    const wrong = up ? ratings.every((r) => r <= subjectRating) : ratings.every((r) => r >= subjectRating);
+    if (wrong) out.push({ kind: 'rating', detail: '"' + m[0] + '" beside ' + ratings.join(', ') + ' against the subject\'s ' + subjectRating, sentence: s.trim() });
+  }
+  return out;
+}
+
+export function rankPercentile(n, m) {
+  const r = Number(n), size = Number(String(m).replace(/,/g, ''));
+  if (!(Number.isInteger(r) && Number.isInteger(size)) || size < 2 || r < 1 || r > size) return null;
+  const frac = r / size;
+  if (frac <= 0.5) { const pct = Math.max(1, Math.ceil(100 * frac)); return { side: 'top', pct, words: 'the top ' + pct + ' percent' }; }
+  const pct = Math.max(1, Math.ceil(100 * (size - r) / size));
+  return { side: 'bottom', pct, words: 'the bottom ' + pct + ' percent' };
+}
+export function rankFacts(text) {
+  return [...String(text || '').matchAll(/#(\d+)\s+(?:of|out of)\s+(\d[\d,]*)/g)]
+    .map((x) => ({ rank: x[0], n: Number(x[1]), size: Number(x[2].replace(/,/g, '')), ...(rankPercentile(x[1], x[2]) || {}) }))
+    .filter((f) => f.words);
+}
+
+// The two prompt lines of the second pass. NOT part of COMPARISON_RULE: the
+// delivery prompts (diagnose-p2, the summary) are unchanged. Only the offline
+// rewrite route sends them, and only with --second-pass.
+export const RATING_RULE = 'RATINGS, HARD RULE: call a competitor "higher-rated" or "better-rated" only when its rating is above the '
+  + 'restaurant\'s own rating given below; for an equal rating say "equally rated", for a lower one "lower-rated", '
+  + 'or state both ratings with no comparison word.';
+export const RANK_RULE = 'RANKINGS, HARD RULE: never compare two rankings from lists of different sizes, and never put two rankings in '
+  + 'one sentence unless each names its own list. Where a ranking gives its list size, restate it as the percentile given '
+  + 'below; otherwise keep one ranking and drop the other. Add no list name the passage does not contain.';
+
+export function findContradictionsInText(text, opts = {}) {
   const out = [];
   if (typeof text !== 'string' || !text.trim()) return out;
   for (const s of sentences(text)) {
+    for (const f of ratingFlags(s, opts && opts.subjectRating)) out.push(f);
     PAIR.lastIndex = 0;
     let m;
     while ((m = PAIR.exec(s))) {
@@ -73,8 +143,12 @@ export function findContradictionsInText(text) {
     // A range ("#443-#900", "#2462 to #2501") is ONE ranking: its two ends are
     // removed before counting (measured 2026-09-29, 2 of 5 stored flags).
     const unranged = s.replace(/#\d+\s*(?:[-–—]|to)\s*#\d+/gi, ' ');
-    const ranks = [...unranged.matchAll(/#(\d+)\b/g)].map((x) => x[1]);
-    if (new Set(ranks).size >= 2) {
+    const rankHits = [...unranged.matchAll(/#(\d+)\b/g)];
+    const ranks = rankHits.map((x) => x[1]);
+    // (1) Every distinct rank on its own NAMED list, and the names all differ: accepted.
+    const names = rankHits.map((x) => rankListName(unranged, x.index, x[0].length));
+    const namedApart = names.every(Boolean) && new Set(names).size === names.length;
+    if (new Set(ranks).size >= 2 && !namedApart) {
       out.push({ kind: 'two-ranks', detail: 'ranks ' + [...new Set(ranks)].map((r) => '#' + r).join(' and ') + ' in one sentence', sentence: s.trim() });
     }
   }
@@ -83,11 +157,11 @@ export function findContradictionsInText(text) {
 
 const SKIP = new Set(['_debug', 'meta', 'evidence', 'pillars', 'coverage', 'subject']);
 
-export function findContradictions(report) {
+export function findContradictions(report, opts = {}) {
   const out = [];
   try {
     (function walk(o, p) {
-      if (typeof o === 'string') { for (const f of findContradictionsInText(o)) out.push({ path: p, ...f }); return; }
+      if (typeof o === 'string') { for (const f of findContradictionsInText(o, opts)) out.push({ path: p, ...f }); return; }
       if (Array.isArray(o)) { o.forEach((v, i) => walk(v, p + '[' + i + ']')); return; }
       if (!o || typeof o !== 'object') return;
       for (const [k, v] of Object.entries(o)) {
