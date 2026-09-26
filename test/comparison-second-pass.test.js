@@ -37,6 +37,13 @@ const ORCHID = 'Risk: tier-matched upscale-casual restaurants like Yorkshire Tap
 test('(2) "higher-rated" against an equal or lower rating is flagged, given the subject\'s own rating', () => {
   assert.deepEqual(kinds(ORCHID, { subjectRating: 4.7 }), ['rating']);
 });
+test('(2) EVERY rating a "higher-rated" refers to must be above the subject\'s: padding the list with a truly higher one does not pass', () => {
+  // The exact sentence the 2026-10-02 dry run returned for Orchid: DOMO 4.8 and Illam 4.9 moved into the
+  // list, and Bettys 4.6 and Ascot House 4.7 are still called higher-rated than Orchid's 4.7.
+  const GAMED = 'Risk: tier-matched upscale-casual restaurants like Yorkshire Tapas and Gianni\'s Brio (both 4.6/5) offer alternative occasions in the same price band, and higher-rated neighborhood competitors (DOMO 4.8, Illam 4.9, Bettys 4.6 with 7112 reviews, Ascot House 4.7 with 354) may dilute share of the upscale leisure dinner occasion.';
+  assert.deepEqual(kinds(GAMED, { subjectRating: 4.7 }), ['rating']);
+});
+
 test('(2, controls) a true "higher-rated" is not flagged; with no subject rating the rating check does not run', () => {
   assert.deepEqual(kinds('Direct conceptual competitors include Le Due Torri (4.6 rating, 1,042 reviews, higher-rated but smaller review base), Casaluz Restaurant (4.5 rating, 2,793 reviews, hospitality-forward).', { subjectRating: 4.5 }), []);
   assert.deepEqual(kinds(ORCHID), [], 'the render-time check has no stored subject rating and must not guess one');

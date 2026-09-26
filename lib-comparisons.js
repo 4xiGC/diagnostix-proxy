@@ -93,7 +93,9 @@ function ratingFlags(s, subjectRating) {
     const up = /^(higher|better|more highly)$/i.test(m[1]);
     const ratings = [...ratingScope(s, m.index, m.index + m[0].length).matchAll(RATING_NUM)].map((x) => Number(x[1]));
     if (!ratings.length) continue;
-    const wrong = up ? ratings.every((r) => r <= subjectRating) : ratings.every((r) => r >= subjectRating);
+    // EVERY rating the word refers to must agree: "higher-rated (DOMO 4.8, Bettys 4.6)" against 4.7 is
+    // still false for Bettys (the 2026-10-02 dry run padded the list exactly this way).
+    const wrong = up ? ratings.some((r) => r <= subjectRating) : ratings.some((r) => r >= subjectRating);
     if (wrong) out.push({ kind: 'rating', detail: '"' + m[0] + '" beside ' + ratings.join(', ') + ' against the subject\'s ' + subjectRating, sentence: s.trim() });
   }
   return out;
@@ -118,7 +120,8 @@ export function rankFacts(text) {
 // rewrite route sends them, and only with --second-pass.
 export const RATING_RULE = 'RATINGS, HARD RULE: call a competitor "higher-rated" or "better-rated" only when its rating is above the '
   + 'restaurant\'s own rating given below; for an equal rating say "equally rated", for a lower one "lower-rated", '
-  + 'or state both ratings with no comparison word.';
+  + 'or state both ratings with no comparison word. When one word would cover a list whose ratings are not all on the '
+  + 'same side (some lower and some equal, or some higher and some equal), use no comparison word and state the ratings.';
 export const RANK_RULE = 'RANKINGS, HARD RULE: never compare two rankings from lists of different sizes, and never put two rankings in '
   + 'one sentence unless each names its own list. Where a ranking gives its list size, restate it as the percentile given '
   + 'below; otherwise keep one ranking and drop the other. Add no list name the passage does not contain.';
