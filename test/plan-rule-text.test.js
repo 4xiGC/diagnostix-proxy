@@ -19,6 +19,8 @@ test('v2: a target number only when the findings or the business metrics contain
 test('v2: the indicator is read at the end of the horizon, not on its own clock', () => {
   assert.match(PLAN_RULE, /checked at the end of the horizon/);
 });
-test('v2: the version id changes with the text', () => {
-  assert.match(PLAN_PROMPT_VERSION, /^plan-2026-10-01-v2-[0-9a-f]{12}$/);
+// 2026-09-26: v3 (Simon Q2, Q40) kept every v2 sentence above and added two, so the id moved to v3;
+// test/plan-rule-v3.test.js pins the new sentences.
+test('the version id changes with the text (v3 since 2026-09-26)', () => {
+  assert.match(PLAN_PROMPT_VERSION, /^plan-2026-10-01-v3-[0-9a-f]{12}$/);
 });
