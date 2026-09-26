@@ -110,3 +110,19 @@ test('THE ROUTE: a report with no benchmark row makes no benchmark query', async
   assert.equal(r.calls.filter((u) => u.includes('/benchmarks')).length, 0);
   assert.doesNotMatch(r.body, /Since your last report/);
 });
+
+// 2026-10-01, FOUND BY THE PRINT: One Aldwych's two runs two minutes apart moved every pillar 4 to 7
+// points (all within the noise) and the band column still read "Good to Excellent" three times. A band
+// change inside the noise asserts a change the data does not support. The band column names a change
+// only when the reading is movement; otherwise it names the band now.
+test('A BAND CHANGE INSIDE THE NOISE IS NOT PRINTED AS A CHANGE', () => {
+  const m = sinceLastModel({ current: { ...CUR, pillars: { ...PILLARS, sm: P(81, 'Social Media Impact') } }, previous: { ...PREV, pillar_scores: { ...PREV.pillar_scores, sm: 75 } } });
+  const html = sinceLastHtml(m);
+  const row = html.slice(html.indexOf('Social Media Impact'), html.indexOf('</tr>', html.indexOf('Social Media Impact')));
+  assert.match(row, /Within run-to-run range/);
+  assert.doesNotMatch(row, / to /, 'a band change printed inside the noise: ' + row.replace(/<[^>]+>/g, ' '));
+  assert.match(row, />Excellent</);
+  // CONTROL: beyond the noise the band change is printed.
+  const cs = html.slice(html.indexOf('Customer Sentiment'), html.indexOf('</tr>', html.indexOf('Customer Sentiment')));
+  assert.match(cs, />Good to Excellent</);
+});

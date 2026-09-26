@@ -70,7 +70,10 @@ export function sinceLastHtml(model) {
     + model.noise + ' points or less with nothing changing.</p>'
     + '<table class="since-t"><thead><tr><th>Pillar</th><th class="n">Then</th><th class="n">Now</th><th class="n">Change</th><th class="band">Band</th><th>Reading</th></tr></thead><tbody>'
     + model.rows.map((r) => '<tr><td>' + esc(r.label) + '</td><td class="n">' + r.then + '</td><td class="n">' + r.now + '</td><td class="n">'
-      + (r.delta > 0 ? '+' : '') + r.delta + '</td><td class="band">' + esc(r.bandThen === r.bandNow ? (r.bandNow || '') : (r.bandThen || '') + ' to ' + (r.bandNow || '')) + '</td>'
+      + (r.delta > 0 ? '+' : '') + r.delta + '</td><td class="band">'
+      // A band change is printed only as part of movement: inside the noise it would assert a change
+      // the data does not support (One Aldwych, two runs two minutes apart, "Good to Excellent" x3).
+      + esc(r.bandThen !== r.bandNow && r.reading !== 'within run-to-run range' ? (r.bandThen || '') + ' to ' + (r.bandNow || '') : (r.bandNow || '')) + '</td>'
       + '<td class="' + (r.reading === 'up' ? 'since-up' : r.reading === 'down' ? 'since-down' : 'since-in') + '">' + READING[r.reading] + '</td></tr>').join('')
     + '</tbody></table>';
 }
