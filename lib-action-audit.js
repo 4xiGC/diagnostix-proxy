@@ -46,4 +46,58 @@ export function auditReportActions(report) {
   return { items: out, total: n, owner: count('owner'), horizon: count('horizon'), indicator: count('indicator'), reason: count('reason'), all4: count('all4') };
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// EVERY NUMBER IN A PLAN ITEM COMES FROM THE REPORT (2026-10-01, Simon Q40).
+// The A3 rule above reads whether a field is PRESENT; this reads whether its
+// numbers are TRUE to the report. Every field of a plan item is checked: a
+// number (thousands separators removed, decimals kept whole) must appear in
+// `source` (the stored report and the business metrics, as text) as a number
+// in its own right, so 4 is not sourced by 4.6 and 19 is not sourced by 1933.
+// The one exemption is the horizon periods PLAN_RULE itself names, in the
+// horizon field only. A small number (2, 5) is often somewhere in a long
+// report, so a pass on it is weak; a miss is always real. Pure; never throws.
+// ────────────────────────────────────────────────────────────────────────────
+export const PLAN_FIELDS = ['title', 'desc', 'owner', 'horizon', 'indicator', 'finding'];
+const RULE_HORIZONS = /^\s*(2 weeks|30 days|90 days)\s*$/i;
+// A number starts where no letter, digit or underscore precedes it, so the
+// digits inside an identifier ("p20W", "v2") are not numbers; a unit may follow
+// ("600m", "15-mile").
+const NUM = /(?<![A-Za-z0-9_])\d+(?:,\d{3})*(?:\.\d+)?/g;
+const norm = (n) => n.replace(/,/g, '');
+
+function numbersIn(s) { return (str(s).match(NUM) || []).map(norm); }
+
+export function unsourcedNumbers(item, source) {
+  const a = (item && typeof item === 'object') ? item : {};
+  const have = new Set(numbersIn(typeof source === 'string' ? source : ''));
+  const out = [];
+  for (const field of PLAN_FIELDS) {
+    const text = str(a[field]);
+    if (field === 'horizon' && RULE_HORIZONS.test(text)) continue;
+    for (const n of numbersIn(text)) if (!have.has(n)) out.push({ field, number: n });
+  }
+  return out;
+}
+
+// THE SOURCE a plan's numbers must come from: the report's findings and the
+// owner's metrics. It leaves out `actions`, `commercialActions` and `plan` (the
+// lists a plan merges or is: the model's own prose cannot vouch for its own
+// numbers) and `_debug` (timings, not findings). On The Spinnaker the v2 plan's
+// "15-mile", "8-20 seats", "600m" and "2-5 dollars per cover" were in the stored
+// report only inside its stored actions, written by the same model.
+const metric = (v) => (typeof v === 'number' ? (v > 0 ? '+' : '') + v + '%' : 'not tracked');
+export function planSource(report, row) {
+  const r = (report && typeof report === 'object') ? report : {};
+  const m = (row && typeof row === 'object') ? row : {};
+  return JSON.stringify({ ...r, actions: undefined, commercialActions: undefined, plan: undefined, _debug: undefined })
+    // identifiers are not findings: uuids, ISO timestamps, model ids, place ids, long hex
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ' ')
+    .replace(/\d{4}-\d{2}-\d{2}T[0-9:.]+Z?/g, ' ')
+    .replace(/claude-[a-z0-9.-]+/gi, ' ')
+    .replace(/ChIJ[\w-]+/g, ' ')
+    .replace(/\b[0-9a-f]{12,}\b/gi, ' ')
+    + ' Guest count change: ' + metric(m.guest_count_change) + ' Average check change: ' + metric(m.avg_check_change)
+    + ' Profitability change: ' + metric(m.profitability_change);
+}
+
 export const _patterns = { ROLE, TIME, MEASURE, CITES };
