@@ -44,7 +44,7 @@ const headingsOf = (proof) => [...proof.matchAll(/<span class="proof-h">([^<]*)<
 const textOf = (h) => h.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/\s+/g, ' ').trim();
 
 test('COMPLETE_FROM is one constant, and the closing sentence is built from it (set at the push to the go-live day)', () => {
-  assert.equal(PP.COMPLETE_FROM, '27 September 2026', 'PROVISIONAL: the push step sets this to the day the release goes live');
+  assert.equal(PP.COMPLETE_FROM, '26 September 2026', 'the go-live day of 8.11.62 (UTC), set at the push; a GET found 0 subscribers, benchmarks or rvp_outcomes rows created on or after 2026-09-26 before it');
   assert.equal(PROOF_CLOSING, 'Reports issued from ' + PP.COMPLETE_FROM + ' record every value on this page.');
 });
 

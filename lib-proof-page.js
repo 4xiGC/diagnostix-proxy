@@ -45,7 +45,7 @@ export const PROOF_HEADINGS = ['What was assessed', 'What we read', 'Coverage', 
 export const PROOF_INTRO = 'Every value on this page is one the assessment stored when it ran, except the scoring method, '
   + 'which is applied each time the page is shown. Where the run did not store a value, the page leaves it out rather than estimating it.';
 // PROVISIONAL until the push: set to the day the release carrying Q7 goes live.
-export const COMPLETE_FROM = '27 September 2026';
+export const COMPLETE_FROM = '26 September 2026';
 export const PROOF_CLOSING = 'Reports issued from ' + COMPLETE_FROM + ' record every value on this page.';
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
