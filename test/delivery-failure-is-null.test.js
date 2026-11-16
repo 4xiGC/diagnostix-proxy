@@ -42,7 +42,7 @@ async function deliver({ insertOk }) {
     const u = String(url); const i = init || {};
     const method = String(i.method || 'GET').toUpperCase();
     let body = null; try { body = i.body ? JSON.parse(i.body) : null; } catch (_) { body = null; }
-    if (u.startsWith('https://api.resend.com')) sent.push(u);
+    if (u.startsWith('https://api.resend.com')) sent.push(body || {});
     if (u.startsWith('https://db.invalid/rest/v1/subscribers') && method === 'POST' && !insertOk) {
       return { ok: false, status: 500, headers: { get: () => null }, json: async () => ({ message: 'refused' }), text: async () => '{"message":"refused"}' };
     }
@@ -68,12 +68,20 @@ test('THE ORDER ROW DID NOT SAVE: deliverPaidReport returns null, so no caller c
   const r = await deliver({ insertOk: false });
   assert.equal(r.result, null, 'the failure must be falsy: got ' + JSON.stringify(r.result));
   assert.ok(r.logs.some((l) => /\[deliver\] REFUSED: the order row did not save/.test(l)), 'the refusal is logged');
-  assert.equal(r.sent.length, 0, 'no report email was sent for a delivery that did not happen');
+  // Ruling 8 (2026-11-16): exactly one email, the internal alert; none to the customer.
+  assert.equal(r.sent.length, 1, 'expected one email, the alert: got ' + r.sent.length);
+  assert.deepEqual([].concat(r.sent[0].to), ['hello@4xiconsulting.com']);
+  assert.match(r.sent[0].subject, /^(\[TEST RUN\] )?DELIVERY FAILED: a paid report was not sent$/, 'the suite runner prefixes [TEST RUN]');
+  assert.match(r.sent[0].html, /Test Kitchen/);
+  assert.match(r.sent[0].html, /why the row did not save: insert-http=500/);
+  assert.doesNotMatch(JSON.stringify(r.sent), /owner@example\.test/, 'the full paying address is never in the alert');
+  assert.ok(r.logs.some((l) => /^DELIVERY_FAILED \[deliver\] alert source=test reason=insert-http=500/.test(l)));
 });
 
 test('CONTROL: the row saved, so the delivery is returned and is truthy', async () => {
   const r = await deliver({ insertOk: true });
   assert.ok(r.result && r.result.subscriber, 'a real delivery returns its subscriber');
+  assert.ok(!r.sent.some((m) => /DELIVERY FAILED/.test(String(m.subject || ''))), 'no failure alert on a delivery that worked');
 });
 
 test('BOTH CALLERS test the result for truthiness before reading it (source)', () => {
