@@ -5871,7 +5871,15 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
   if (!written.ok) {
     console.log('[deliver] REFUSED: the order row did not save, reason=' + written.reason
       + ' source=' + source + ' addr=' + addrLabel(destEmail));
-    return { delivered: false, rowFailed: true, reason: written.reason };
+    // 2026-11-16 (Simon, ruling 8): a paying customer has received nothing, so a
+    // person is told, every time (not throttled). Covers the webhook and
+    // /recover, whose failure page already says "We have been alerted".
+    await alertDeliveryFailed({ payingEmail: destEmail, restaurantName: restaurant, product, source, reason: written.reason });
+    // 2026-11-16 (Simon): NULL, never an object. { delivered: false, ... } was
+    // truthy, so both callers (the webhook and /recover) read a failed order
+    // write as a delivery: rvp_outcomes.delivered = true, the survey claim not
+    // released, and the success path taken. The reason is in the log line above.
+    return null;
   }
   const subscriber = written.subscriber;
 
@@ -6845,6 +6853,31 @@ async function alertStrandedRows({ payingEmail, stranded }) {
         + stranded.map(r => '  row ' + r.id + '  ' + (r.restaurantName || '(unnamed)')).join('\n'),
     });
   } catch (e) { console.log('[alert] stranded failed: ' + (e && e.message)); }
+}
+
+// A PAID DELIVERY FAILED (Simon, 2026-11-16, ruling 8). The order row did not
+// save, so no report was sent and no row records the sale. Before this the only
+// trace was a log line. One email per failure, never throttled, never thrown:
+// the caller's failure path (release the claim, record delivered=false) runs
+// whatever happens here.
+async function alertDeliveryFailed({ payingEmail, restaurantName, product, source, reason }) {
+  try {
+    console.log('DELIVERY_FAILED [deliver] alert source=' + source + ' reason=' + reason + ' addr=' + addrLabel(payingEmail));
+    await sendEmailViaResend({
+      to: 'hello@4xiconsulting.com',
+      subject: 'DELIVERY FAILED: a paid report was not sent',
+      fromName: 'DiagnostiX Alerts',
+      html: '<p><strong>A customer paid and received nothing.</strong> The order row did not save, '
+        + 'so no report was sent and no subscriber row records the sale.</p>'
+        + '<ul><li>paying address: ' + recoveryEsc(addrLabel(payingEmail)) + '</li>'
+        + '<li>restaurant: ' + recoveryEsc(restaurantName || '(not supplied)') + '</li>'
+        + '<li>product: ' + recoveryEsc(product || '(not supplied)') + '</li>'
+        + '<li>path: ' + recoveryEsc(source || '(unknown)') + '</li>'
+        + '<li>why the row did not save: ' + recoveryEsc(reason || '(not recorded)') + '</li></ul>'
+        + '<p>The survey claim was released, so the survey can still be delivered. '
+        + 'Send the report by hand or ask the customer to use their recovery link.</p>',
+    });
+  } catch (e) { console.log('[alert] delivery-failed failed: ' + (e && e.message)); }
 }
 
 // 3. A swap was used. Distinct from alertRecoveryUsed: recovery means the
