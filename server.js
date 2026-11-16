@@ -5871,7 +5871,11 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
   if (!written.ok) {
     console.log('[deliver] REFUSED: the order row did not save, reason=' + written.reason
       + ' source=' + source + ' addr=' + addrLabel(destEmail));
-    return { delivered: false, rowFailed: true, reason: written.reason };
+    // 2026-11-16 (Simon): NULL, never an object. { delivered: false, ... } was
+    // truthy, so both callers (the webhook and /recover) read a failed order
+    // write as a delivery: rvp_outcomes.delivered = true, the survey claim not
+    // released, and the success path taken. The reason is in the log line above.
+    return null;
   }
   const subscriber = written.subscriber;
 
