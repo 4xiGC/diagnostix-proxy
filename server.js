@@ -6016,13 +6016,23 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
   const reportUrl = (process.env.APP_BASE_URL || 'https://diagnostix-proxy-production.up.railway.app')
                    + '/report?token=' + subscriber.reportToken;
 
-  await Promise.all([
+  // 2026-11-17 (Simon): THE SEND IS CHECKED. Until 8.11.65 its result was thrown away here, so a
+  // failed send (no key, Resend refused it, a non-JSON reply, the network) still returned success:
+  // the recovery page said "Sent. Your report is on its way", rvp_outcomes recorded delivered:true
+  // and nobody was alerted. sendEmailViaResend never throws; it returns { ok:false, reason }.
+  const [customerResult] = await Promise.all([
     sendCustomerReportEmail({ subscriber: supaShaped, report, reportNumber: 1, survey,
       // v8.11.30: the buyer is told which survey this answers, and whether any
       // of their own are still waiting.
       provenance: { restaurantName: restaurant, surveySavedAt, otherWaitingCount }, swapUrl }),
     pushReportContextToHubSpot({ subscriber: supaShaped, report, reportNumber: 1, reportUrl, baseline: report })
   ]);
+  if (!customerResult || !customerResult.ok) {
+    const why = (customerResult && customerResult.reason) || 'no result from the send';
+    console.log('DELIVERY_FAILED [deliver] email not sent to ' + maskAddr(destEmail) + ': ' + why);
+    await alertDeliveryFailed({ payingEmail: destEmail, restaurantName: restaurant, product, source, reason: why, stage: 'email', reportUrl });
+    return null;
+  }
 
   // v8.11.34: WHAT THE BUYER WAS ACTUALLY TOLD, in the log.
   //
@@ -6042,19 +6052,26 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
 
   // Recovery delivers to BOTH addresses: the payer, who is the customer of
   // record, and the survey address they named, which is where they expected it.
+  // The second copy's result is read too (it never throws, so the old catch could not fire). The
+  // order is delivered once the paying address has it; a failed second copy is alerted, and the
+  // caller says only what was sent.
+  let alsoToSent = null;
   if (alsoTo && normalizeEmail(alsoTo) !== normalizeEmail(destEmail)) {
-    try {
-      await sendCustomerReportEmail({
-        subscriber: Object.assign({}, supaShaped, { email: alsoTo }),
-        report, reportNumber: 1, survey,
-      });
-      safeLog(() => '[deliver] second copy sent to ' + maskAddr(alsoTo));
-    } catch (e) {
-      console.log('[deliver] second copy failed: ' + (e && e.message));
+    const second = await sendCustomerReportEmail({
+      subscriber: Object.assign({}, supaShaped, { email: alsoTo }),
+      report, reportNumber: 1, survey,
+    }).catch((e) => ({ ok: false, reason: (e && e.message) || String(e) }));
+    alsoToSent = !!(second && second.ok);
+    if (alsoToSent) safeLog(() => '[deliver] second copy sent to ' + maskAddr(alsoTo));
+    else {
+      console.log('DELIVERY_FAILED [deliver] second copy not sent to ' + maskAddr(alsoTo) + ': ' + ((second && second.reason) || 'no result'));
+      await alertDeliveryFailed({ payingEmail: alsoTo, restaurantName: restaurant, product, source, reason: (second && second.reason) || 'no result from the send', stage: 'second-copy', reportUrl });
     }
   }
 
-  return { subscriber, supaShaped, reportUrl };
+  // The addresses actually tried, so the page names where the report went (sentMessage).
+  return { subscriber, supaShaped, reportUrl, alsoToSent, sentTo: destEmail,
+    alsoTo: alsoTo && normalizeEmail(alsoTo) !== normalizeEmail(destEmail) ? alsoTo : null };
 }
 
 // ── Pending report lookup and claiming (v8.11.12) ───────────────────────────
@@ -6809,8 +6826,7 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
     await alertSwapUsed({ payingEmail, surveyEmail: typed, restaurantName: restaurant, product });
     RECOVERY_ATTEMPTS.delete(payingEmail);
     return res.status(200).send(renderRecoveryPage({ token, done: true, mode: pageMode, restaurant: pageRestaurant,
-      message: 'Sent. Your report for ' + restaurant + ' is on its way to both addresses. '
-        + 'You can close this page.' }));
+      message: sentMessage(delivered, restaurant) }));
   } else if (elig.mode === 'swap') {
     // v8.11.41: A SWAP THAT SKIPS THE WRITE SAYS WHICH GUARD STOPPED IT.
     //
@@ -6857,7 +6873,7 @@ app.post('/recover', express.urlencoded({ extended: false }), async (req, res) =
   RECOVERY_ATTEMPTS.delete(payingEmail);
 
   return res.status(200).send(renderRecoveryPage({ token, done: true, mode: pageMode, restaurant: pageRestaurant,
-    message: 'Sent. Your report is on its way to both addresses. You can close this page.' }));
+    message: sentMessage(delivered, null) }));
 });
 
 async function alertRecoveryLocked({ payingEmail, attempts }) {
@@ -6936,23 +6952,54 @@ async function alertStrandedRows({ payingEmail, stranded }) {
 // trace was a log line. One email per failure, never throttled, never thrown:
 // the caller's failure path (release the claim, record delivered=false) runs
 // whatever happens here.
-async function alertDeliveryFailed({ payingEmail, restaurantName, product, source, reason }) {
+// stage: 'row' (the order row did not save, nothing was sent), 'email' (the row saved, the email to
+// the paying address did not send), 'second-copy' (the paying address has it; the copy to the survey
+// address did not send). Unthrottled: every failed delivery is its own alert.
+// 2026-11-18 (Simon, the approved wording): the recovery page says "Sent to <address>", naming each
+// address the report went to, and when the second copy failed it SAYS so rather than quietly
+// describing one address. The page is reached by whoever typed the survey address, which can be a
+// different person from the payer, so each address is shown masked: its first character, then the
+// domain ("s•••@4xiconsulting.com"), never in full.
+function pageAddr(email) {
+  const s = String(email == null ? '' : email).trim();
+  const i = s.lastIndexOf('@');
+  if (i < 1 || i === s.length - 1) return 'your address';
+  return s.charAt(0) + '\u2022\u2022\u2022' + s.slice(i);
+}
+function sentMessage(delivered, restaurant) {
+  const d = delivered || {};
+  let m = 'Sent to ' + pageAddr(d.sentTo) + (d.alsoTo && d.alsoToSent === true ? ' and ' + pageAddr(d.alsoTo) : '') + '.';
+  if (d.alsoTo && d.alsoToSent === false) m += ' The copy to ' + pageAddr(d.alsoTo) + ' did not send, and our team has been told.';
+  return m + ' Your report' + (restaurant ? ' for ' + restaurant : '') + ' is on its way. You can close this page.';
+}
+
+async function alertDeliveryFailed({ payingEmail, restaurantName, product, source, reason, stage = 'row', reportUrl = null }) {
+  const lead = stage === 'email'
+    ? '<p><strong>A customer paid and received nothing.</strong> The order row saved, but the email with the report did not send, '
+      + 'so the customer has no link.' + (reportUrl ? ' The report: <a href="' + recoveryEsc(reportUrl) + '">' + recoveryEsc(reportUrl) + '</a>.' : '') + '</p>'
+    : stage === 'second-copy'
+    ? '<p><strong>The second copy of a paid report did not send.</strong> The paying address has it; the copy to the survey address did not go.</p>'
+    : '<p><strong>A customer paid and received nothing.</strong> The order row did not save, '
+      + 'so no report was sent and no subscriber row records the sale.</p>';
   try {
-    console.log('DELIVERY_FAILED [deliver] alert source=' + source + ' reason=' + reason + ' addr=' + addrLabel(payingEmail));
-    await sendEmailViaResend({
+    console.log('DELIVERY_FAILED [deliver] alert source=' + source + ' reason=' + reason + ' addr=' + addrLabel(payingEmail) + ' stage=' + stage);
+    const sent = await sendEmailViaResend({
       to: 'hello@4xiconsulting.com',
-      subject: 'DELIVERY FAILED: a paid report was not sent',
+      subject: stage === 'second-copy' ? 'DELIVERY PARTLY FAILED: a second copy was not sent' : 'DELIVERY FAILED: a paid report was not sent',
       fromName: 'DiagnostiX Alerts',
-      html: '<p><strong>A customer paid and received nothing.</strong> The order row did not save, '
-        + 'so no report was sent and no subscriber row records the sale.</p>'
+      html: lead
         + '<ul><li>paying address: ' + recoveryEsc(addrLabel(payingEmail)) + '</li>'
         + '<li>restaurant: ' + recoveryEsc(restaurantName || '(not supplied)') + '</li>'
         + '<li>product: ' + recoveryEsc(product || '(not supplied)') + '</li>'
         + '<li>path: ' + recoveryEsc(source || '(unknown)') + '</li>'
-        + '<li>why the row did not save: ' + recoveryEsc(reason || '(not recorded)') + '</li></ul>'
-        + '<p>The survey claim was released, so the survey can still be delivered. '
-        + 'Send the report by hand or ask the customer to use their recovery link.</p>',
+        + '<li>' + (stage === 'row' ? 'why the row did not save: ' : 'why the email did not send: ') + recoveryEsc(reason || '(not recorded)') + '</li></ul>'
+        + (stage === 'second-copy'
+          ? '<p>The order is delivered. Send the survey address the report link by hand if they need it.</p>'
+          : '<p>The survey claim was released, so the survey can still be delivered. '
+            + 'Send the report by hand or ask the customer to use their recovery link.</p>'),
     });
+    // sendEmailViaResend never throws, so its own result says whether the alert went.
+    if (!sent || sent.ok === false) console.log('ALERT_UNSENT [alert] delivery-failed alert did not send: ' + ((sent && sent.reason) || 'no result'));
   } catch (e) { console.log('[alert] delivery-failed failed: ' + (e && e.message)); }
 }
 
@@ -8633,6 +8680,8 @@ export const __test__ = {
   pushReportContextToHubSpot,
   // The delivery path and the sentence it writes when there is no comparison.
   deliverPaidReport,
+  // 2026-11-18: the recovery page's sentence, tested on its words.
+  sentMessage,
   PEER_COMPARISON_ABSENT,
   handlePaymentWebhook,
   buildBenchmarkRow,
