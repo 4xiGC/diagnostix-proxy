@@ -137,7 +137,9 @@ test('a "No" with a bad token is still recorded, with the reason', async () => {
 
 // ── 2026-11-18 (Simon, fix 2): the search is biased to where the restaurant is ──────────────────
 const ORLANDO_GEO = { status: 'OK', results: [{ geometry: { location: { lat: 28.54, lng: -81.38 },
-  viewport: { northeast: { lat: 28.62, lng: -81.22 }, southwest: { lat: 28.35, lng: -81.51 } } } }] };
+  viewport: { northeast: { lat: 28.62, lng: -81.22 }, southwest: { lat: 28.35, lng: -81.51 } } },
+  address_components: [{ long_name: 'Orlando', short_name: 'Orlando', types: ['locality', 'political'] },
+    { long_name: 'United States', short_name: 'US', types: ['country', 'political'] }] }] };
 const ATACAMA_GEO = { status: 'OK', results: [{ geometry: { location: { lat: -27.37, lng: -70.33 },
   viewport: { northeast: { lat: -26.0, lng: -68.0 }, southwest: { lat: -29.0, lng: -71.0 } } } }] };
 const okJson = (j) => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => j, text: async () => JSON.stringify(j) });
@@ -154,7 +156,7 @@ test('NO CITY OR NO COUNTRY: asked for, and nothing is searched', async () => {
   }
 });
 
-test('STATE INSIDE THE CITY: City, State and Country place a circle, and the input is the name and City', async () => {
+test('STATE NAMES THE TYPED CITY: City, State and Country place a circle, and the input is the name and City', async () => {
   const { body, seen } = await post('/resolve-place', { name: 'Olive Garden', city: 'Orlando', state: 'Florida', country: 'United States' },
     { status: 'OK', candidates: [CANDIDATE] }, ORLANDO_GEO);
   assert.equal(body.status, 'found');
@@ -165,7 +167,7 @@ test('STATE INSIDE THE CITY: City, State and Country place a circle, and the inp
   assert.match(call, /input=Olive Garden, Orlando&/);
 });
 
-test('STATE FROM AUTOFILL, OUTSIDE THE CITY: ignored, and City and Country place the circle', async () => {
+test('STATE FROM AUTOFILL, AN ANSWER THAT IS NOT THE CITY: ignored, and City and Country place the circle', async () => {
   const { seen } = await post('/resolve-place', { name: 'Texas Roadhouse', city: 'Orlando', state: 'Atacama', country: 'United States' },
     { status: 'OK', candidates: [CANDIDATE] },
     (u) => okJson(decodeURIComponent(u).includes('Atacama') ? ATACAMA_GEO : ORLANDO_GEO));
