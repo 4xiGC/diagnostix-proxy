@@ -17,6 +17,8 @@ import { contradictsBand, retryInstruction } from './lib-narrative.js';
 import { googleRecordBlock, applyPresenceRules, cleanText as presenceClean } from './lib-presence.js';
 // 2026-11-18 (Simon, fix 2): the place search is biased to where the restaurant is (lib-place-bias.js).
 import { locationParts, biasForLocation, readGeocode } from './lib-place-bias.js';
+// 2026-11-18 (Simon, fix 3): the confirmation screen says when the listing's name or country differs.
+import { placeNotices } from './lib-place-check.js';
 // 2026-11-18 (Simon): a HubSpot property with no value is left out of the write, so the
 // contact keeps its last value rather than receiving a 0 that reads as a measurement.
 function hubspotPresent(props) {
@@ -2054,10 +2056,13 @@ app.post('/resolve-place', async (req, res) => {
       lng: top.geometry && top.geometry.location && typeof top.geometry.location.lng === 'number' ? top.geometry.location.lng : null,
     };
     const placeToken = signPlaceToken({ place, secret: placeTokenSecret(), issuedAt: Date.now() });
-    console.log('PLACE [confirm] shown reviews=' + place.reviewCount + ' address=' + (place.address ? 'yes' : 'no'));
+    const notices = placeNotices({ typedName: name, googleName: place.name, formattedAddress: place.address,
+      geoCountry: bias.ok ? bias.country : null });
+    console.log('PLACE [confirm] shown reviews=' + place.reviewCount + ' address=' + (place.address ? 'yes' : 'no')
+      + ' notices=' + (notices.map((n) => n.kind).join(',') || 'none'));
     return res.json({ status: 'found', placeToken, place: {
       name: place.name, address: place.address, rating: place.rating, reviewCount: place.reviewCount,
-      closed: top.business_status === 'CLOSED_PERMANENTLY' } });
+      closed: top.business_status === 'CLOSED_PERMANENTLY' }, notices: notices.map((n) => n.text) });
   } catch (e) {
     console.log('PLACE [confirm] error ' + (e && e.message));
     // 2026-09-30 (B2): C4 found this path wrote no row and told nobody.
@@ -6993,14 +6998,16 @@ async function alertStrandedRows({ payingEmail, stranded }) {
 // address did not send). Unthrottled: every failed delivery is its own alert.
 // 2026-11-18 (Simon, the approved wording): the recovery page says "Sent to <address>", naming each
 // address the report went to, and when the second copy failed it SAYS so rather than quietly
-// describing one address. The page is reached by whoever typed the survey address, which can be a
-// different person from the payer, so each address is shown masked: its first character, then the
-// domain ("s•••@4xiconsulting.com"), never in full.
+// describing one address.
+// 8.11.75 (Simon, 2026-11-18): IN FULL, both the paying address and the second copy. Naming the
+// address is so the customer can see whether it is the right one, and "o•••@example.test" cannot
+// tell oliver@ from olivia@. It is their own post-purchase page showing addresses they typed.
+// renderRecoveryPage escapes the message.
 function pageAddr(email) {
   const s = String(email == null ? '' : email).trim();
   const i = s.lastIndexOf('@');
   if (i < 1 || i === s.length - 1) return 'your address';
-  return s.charAt(0) + '\u2022\u2022\u2022' + s.slice(i);
+  return s;
 }
 function sentMessage(delivered, restaurant) {
   const d = delivered || {};

@@ -137,7 +137,9 @@ test('a "No" with a bad token is still recorded, with the reason', async () => {
 
 // ── 2026-11-18 (Simon, fix 2): the search is biased to where the restaurant is ──────────────────
 const ORLANDO_GEO = { status: 'OK', results: [{ geometry: { location: { lat: 28.54, lng: -81.38 },
-  viewport: { northeast: { lat: 28.62, lng: -81.22 }, southwest: { lat: 28.35, lng: -81.51 } } } }] };
+  viewport: { northeast: { lat: 28.62, lng: -81.22 }, southwest: { lat: 28.35, lng: -81.51 } } },
+  address_components: [{ long_name: 'Orlando', short_name: 'Orlando', types: ['locality', 'political'] },
+    { long_name: 'United States', short_name: 'US', types: ['country', 'political'] }] }] };
 const ATACAMA_GEO = { status: 'OK', results: [{ geometry: { location: { lat: -27.37, lng: -70.33 },
   viewport: { northeast: { lat: -26.0, lng: -68.0 }, southwest: { lat: -29.0, lng: -71.0 } } } }] };
 const okJson = (j) => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => j, text: async () => JSON.stringify(j) });
@@ -154,7 +156,7 @@ test('NO CITY OR NO COUNTRY: asked for, and nothing is searched', async () => {
   }
 });
 
-test('STATE INSIDE THE CITY: City, State and Country place a circle, and the input is the name and City', async () => {
+test('STATE NAMES THE TYPED CITY: City, State and Country place a circle, and the input is the name and City', async () => {
   const { body, seen } = await post('/resolve-place', { name: 'Olive Garden', city: 'Orlando', state: 'Florida', country: 'United States' },
     { status: 'OK', candidates: [CANDIDATE] }, ORLANDO_GEO);
   assert.equal(body.status, 'found');
@@ -165,7 +167,7 @@ test('STATE INSIDE THE CITY: City, State and Country place a circle, and the inp
   assert.match(call, /input=Olive Garden, Orlando&/);
 });
 
-test('STATE FROM AUTOFILL, OUTSIDE THE CITY: ignored, and City and Country place the circle', async () => {
+test('STATE FROM AUTOFILL, AN ANSWER THAT IS NOT THE CITY: ignored, and City and Country place the circle', async () => {
   const { seen } = await post('/resolve-place', { name: 'Texas Roadhouse', city: 'Orlando', state: 'Atacama', country: 'United States' },
     { status: 'OK', candidates: [CANDIDATE] },
     (u) => okJson(decodeURIComponent(u).includes('Atacama') ? ATACAMA_GEO : ORLANDO_GEO));
@@ -189,6 +191,33 @@ test('THE CITY IS NOT ON THE MAP: the requester is asked to check it, and no pla
   assert.equal(body.code, 'location-not-found');
   assert.equal(body.error, 'We could not find Nowhereville, Atlantis on the map. Please check the city and country.');
   assert.equal(seen.placesCalls.length + seen.outcomes.length + seen.emails.length, 0);
+});
+
+// ── 2026-11-18 (Simon, fix 3): the notices reach the page ──────────────────────────────────────
+test('NOTICES: a listing with another name, in another country, carries both approved notices', async () => {
+  const { body } = await post('/resolve-place', { name: 'Olive Garden', city: 'Orlando', country: 'United States' },
+    { status: 'OK', candidates: [CANDIDATE] }, ORLANDO_GEO);
+  assert.equal(body.status, 'found');
+  assert.deepEqual(body.notices, [
+    "Google's listing has a different name from what you typed (Olive Garden). Check the address below before you continue.",
+    "Google's listing is in a different country from the one in your survey. Check the address below before you continue.",
+  ]);
+});
+
+test('NOTICES: none when the listing matches; none for country when the geocode is unavailable', async () => {
+  const clean = await post('/resolve-place', { name: 'Teclados', location: 'Santiago, Chile' }, { status: 'OK', candidates: [CANDIDATE] });
+  assert.deepEqual(clean.body.notices, []);
+  const outage = await post('/resolve-place', { name: 'Teclados', city: 'Orlando', country: 'United States' },
+    { status: 'OK', candidates: [CANDIDATE] }, { status: 'REQUEST_DENIED' });
+  assert.deepEqual(outage.body.notices, []);
+});
+
+test('the page shows the notices as text, above the card, and hides the box when there are none', async () => {
+  const fs = await import('node:fs');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.ok(html.indexOf('id="pc-notice"') > 0 && html.indexOf('id="pc-notice"') < html.indexOf('id="pc-card"'), 'above the card');
+  assert.match(html, /p\.textContent = String\(t\)/);
+  assert.match(html, /pcNotice\.style\.display = pcNotice\.childNodes\.length \? 'block' : 'none'/);
 });
 
 test('A GEOCODING OUTAGE never blocks a confirmation: the text search runs as before, unbiased', async () => {

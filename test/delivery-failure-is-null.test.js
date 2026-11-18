@@ -162,7 +162,8 @@ test('THE SECOND COPY DID NOT SEND: the order is delivered, the second copy is a
   const src = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
   assert.equal((src.match(/is on its way to both addresses/g) || []).length, 0, 'no fixed "both addresses" claim remains');
   // 2026-11-18 (the approved wording): the page names where it went and says the second copy failed.
-  assert.equal(sentMessage(r.result, 'La Mesa'), 'Sent to o\u2022\u2022\u2022@example.test. The copy to s\u2022\u2022\u2022@example.test did not send, and our team has been told. Your report for La Mesa is on its way. You can close this page.');
+  // 8.11.75: in full.
+  assert.equal(sentMessage(r.result, 'La Mesa'), 'Sent to owner@example.test. The copy to survey@example.test did not send, and our team has been told. Your report for La Mesa is on its way. You can close this page.');
 });
 
 test('CONTROL: both sends work, the delivery says both, and no alert', async () => {
@@ -170,6 +171,9 @@ test('CONTROL: both sends work, the delivery says both, and no alert', async () 
   assert.ok(r.result && r.result.subscriber);
   assert.equal(r.result.alsoToSent, true);
   assert.ok(!r.sent.some((m) => /DELIVERY (PARTLY )?FAILED/.test(String(m.subject || ''))));
-  assert.equal(sentMessage(r.result, null), 'Sent to o\u2022\u2022\u2022@example.test and s\u2022\u2022\u2022@example.test. Your report is on its way. You can close this page.');
-  assert.equal(sentMessage({ sentTo: 'owner@example.test', alsoTo: null, alsoToSent: null }, null), 'Sent to o\u2022\u2022\u2022@example.test. Your report is on its way. You can close this page.');
+  assert.equal(sentMessage(r.result, null), 'Sent to owner@example.test and survey@example.test. Your report is on its way. You can close this page.');
+  assert.equal(sentMessage({ sentTo: 'owner@example.test', alsoTo: null, alsoToSent: null }, null), 'Sent to owner@example.test. Your report is on its way. You can close this page.');
+  // Two addresses one masked character apart are now told apart.
+  assert.notEqual(sentMessage({ sentTo: 'oliver@example.test' }, null), sentMessage({ sentTo: 'olivia@example.test' }, null));
+  assert.equal(sentMessage({ sentTo: '' }, null), 'Sent to your address. Your report is on its way. You can close this page.');
 });

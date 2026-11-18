@@ -63,6 +63,8 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
 .pc-name{font-size:1.15rem;font-weight:800;color:var(--navy)}
 .pc-addr{font-size:13px;color:#555;margin-top:4px;line-height:1.5}
 .pc-rev{font-size:13px;color:#333;margin-top:8px;font-weight:600}
+.pc-notice{border:1.5px solid #e0b44a;background:#fdf6e3;border-radius:8px;padding:.75rem 1rem;margin:1.2rem 0 0;font-size:13px;line-height:1.5;color:#5a4410;overflow-wrap:anywhere}
+.pc-notice p{margin:0}.pc-notice p+p{margin-top:6px}
 .pc-closed{font-size:12px;color:var(--red);margin-top:8px;font-weight:700}
 .pc-btns button{white-space:normal;max-width:100%}
 .pc-btns .btn-next{flex:1}
@@ -566,6 +568,8 @@ html,body{font-family:'League Spartan',sans-serif;background:#F5F4FC;color:var(-
   <div class="s-eyebrow">Before we run your HealthCheck</div>
   <div class="s-title">Is this your restaurant?</div>
   <div class="s-sub">We found this business on Google. We will assess exactly this one.</div>
+  <!-- 2026-11-18 (fix 3): the name or country differs from the survey. Text from the server, set as text. -->
+  <div class="pc-notice" id="pc-notice" role="status" style="display:none"></div>
   <div class="pc-card" id="pc-card">
     <div class="pc-name" id="pc-name"></div>
     <div class="pc-addr" id="pc-addr"></div>
@@ -1043,6 +1047,12 @@ async function startConfirmation() {
     document.getElementById('pc-addr').textContent = j.place.address || 'No address listed on Google';
     document.getElementById('pc-rev').textContent = placeReviewLine(j.place);
     document.getElementById('pc-closed').style.display = j.place.closed ? 'block' : 'none';
+    var pcNotice = document.getElementById('pc-notice');
+    pcNotice.textContent = '';
+    (Array.isArray(j.notices) ? j.notices : []).forEach(function (t) {
+      var p = document.createElement('p'); p.textContent = String(t); pcNotice.appendChild(p);
+    });
+    pcNotice.style.display = pcNotice.childNodes.length ? 'block' : 'none';
     goStep(5);
     document.getElementById('step-lbl').textContent = 'Confirm your restaurant';
   } catch (err) {
