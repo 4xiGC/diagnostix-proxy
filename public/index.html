@@ -1194,7 +1194,8 @@ function renderReport(r, d) {
         +'<div class="rpt-title">'+d.name+'</div>'
         +'<div class="rpt-sub">Performance Intelligence Report</div>'
         +'<div class="rpt-meta">'
-          +'<span class="rpt-m">Location: <b>'+d.location+'</b></span>'
+          // 2026-11-18 (Simon): the Google listing actually assessed, which can differ from the survey's location field.
+          +((r.subject && r.subject.address) ? '<span class="rpt-m">Google listing assessed: <b>'+String(r.subject.address).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];})+'</b></span>' : '<span class="rpt-m">Location: <b>'+d.location+'</b></span>')
           +metaCuisine+metaPrice
           +'<span class="rpt-m">Date: <b>'+date+'</b></span>'
         +'</div>'

@@ -52,7 +52,9 @@ const REVIEW_COUNT = /\b(\d[\d,.]*)\s*(?:google\s+)?reviews?\b/gi;
 // A sentence that states a count the prompt never supplied, or contradicts the record.
 function offending(sentence, rec, aboutGoogle) {
   const s = String(sentence);
-  if (FOLLOWERS.test(s)) return 'follower-count';
+  // A follower range in advice about influencers or creators is not a claim about the subject
+  // ("partner with micro-influencers (10k-100k followers)", removed in error on 2026-11-18).
+  if (FOLLOWERS.test(s) && !/\b(?:influencers?|creators?|bloggers?)\b/i.test(s)) return 'follower-count';
   if (aboutGoogle || /google/i.test(s)) {
     const count = num(rec && rec.reviewCount);
     if (GOOGLE_ZERO.test(s) && count !== 0) return 'google-zero';

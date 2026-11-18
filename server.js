@@ -3214,7 +3214,10 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     // The confirmed place's two names, so the page can print Google's and save
     // the typed one beside it for the purchase's peer query. Absent on an
     // Analytics call (no confirmed place).
-    if (confirmedPlace) report.subject = { name: displayName, typedName: name, placeId: confirmedPlace.placeId };
+    // 2026-11-18 (Simon): the confirmed listing's ADDRESS rides with the subject, so the cover can say
+    // which branch was assessed (several stored Orlando chains could not be told apart by name).
+    if (confirmedPlace) report.subject = { name: displayName, typedName: name, placeId: confirmedPlace.placeId,
+      address: typeof confirmedPlace.address === 'string' && confirmedPlace.address.trim() ? confirmedPlace.address.trim() : null };
 
     console.log('[diagnose] SUCCESS score:', report.healthCheckScore,
       benchmarkSkip ? `benchmark=skipped(${benchmarkSkip})` : `benchmarkId=${benchmarkRow.id}`);
@@ -5089,6 +5092,7 @@ ${SINCE_CSS}
         <div class="cover-tag">Restaurant HealthCheck · by 4xi</div>
         <div class="cover-sub">${esc(reportLabel)}</div>
         <div class="cover-title">${esc(restaurant)}</div>
+        ${report?.subject?.address ? '<div class="cover-address" style="font-size:13px;opacity:.85;margin:-4px 0 8px">Google listing assessed: ' + esc(report.subject.address) + '</div>' : ''}
         ${metaRow ? '<div class="cover-meta">' + metaRow + '</div>' : ''}
       </div>
       <div>${hasScore

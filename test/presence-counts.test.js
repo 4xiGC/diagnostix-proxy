@@ -63,6 +63,14 @@ test('no follower count survives: RVP holds no official social account', () => {
   assert.equal(r.competitiveInsight, 'Strong pub.');
 });
 
+test('advice about influencers keeps its follower range; a claim about the subject does not', () => {
+  const r = { actions: [{ desc: 'Partner with 3-5 Santiago food/lifestyle micro-influencers (10k-100k followers) for hosted dinners.' }],
+    risks: ['Limited social media footprint (873 Instagram followers) underutilizes brand equity.'] };
+  applyPresenceRules(r, LA_MESA);
+  assert.equal(r.actions[0].desc, 'Partner with 3-5 Santiago food/lifestyle micro-influencers (10k-100k followers) for hosted dinners.');
+  assert.deepEqual(r.risks, []);
+});
+
 test('absent channel data is Not available, outside the overall, never a low score', () => {
   const r = { onlinePresence: { overall: 54, channels: [
     { name: 'Google Business', score: 78, note: 'Rating of 4.5 is strong.' },

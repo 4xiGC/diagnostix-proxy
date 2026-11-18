@@ -60,6 +60,20 @@ test('the server makes v3 reports: the prompt allows null, the pillars are marke
   assert.match(src, /const esAbsent = \/\^\\s\*\(\?:no\|not\|none\)\\b\/i\.test\(String\(report\.employeeSentiment/);
 });
 
+test('the cover names the Google listing assessed, so a chain branch can be told apart', async () => {
+  process.env.RVP_IMPORT_ONLY = '1';
+  const { __test__ } = await import('../server.js');
+  const rep = { pillars: pillars({ cs: 80, pa: 70, es: null, sm: 66, cp: 60, bg: 90 }, true), executiveSummary: 'x', strengths: [], risks: [],
+    subject: { name: 'TGI Fridays', typedName: 'TGI Fridays', placeId: 'x', address: '10811 International Dr, Orlando, FL 32821, USA' } };
+  const h = __test__.renderReportHtml({ subscriber: { restaurant_name: 'TGI Fridays' }, report: rep, reportLabel: 'Report' });
+  assert.ok(h.includes('Google listing assessed: 10811 International Dr, Orlando, FL 32821, USA'));
+  const old = Object.assign({}, rep, { subject: { name: 'TGI Fridays', placeId: 'x' } });
+  assert.ok(!__test__.renderReportHtml({ subscriber: { restaurant_name: 'TGI Fridays' }, report: old, reportLabel: 'Report' }).includes('Google listing assessed'));
+  const page = read('public/index.html');
+  assert.match(page, /Google listing assessed: <b>'\+String\(r\.subject\.address\)/);
+  assert.match(read('server.js'), /address: typeof confirmedPlace\.address === 'string'/);
+});
+
 test('the sweep: no score, pillar or overall is coerced to 0 anywhere', () => {
   const files = ['server.js', 'public/index.html', ...fs.readdirSync(ROOT).filter((f) => /^lib-.*\.js$/.test(f))];
   const shapes = [/score\s*\|\|\s*0\b/, /score\s*\?\?\s*0\b/, /\.score\s*:\s*0\b/, /overall\)?\s*\|\|\s*0\b/, /baseline_score:\s*0\b/];
