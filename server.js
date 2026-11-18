@@ -15,6 +15,8 @@ import { computeOverall, computeOverallV1, ES_NOT_AVERAGED_SENTENCE, overallForm
 import { contradictsBand, retryInstruction } from './lib-narrative.js';
 // 2026-11-18 (Simon): a count is a measurement and absence is not zero (lib-presence.js).
 import { googleRecordBlock, applyPresenceRules, cleanText as presenceClean } from './lib-presence.js';
+// 2026-11-18 (Simon, fix 2): the place search is biased to where the restaurant is (lib-place-bias.js).
+import { locationParts, biasForLocation, readGeocode } from './lib-place-bias.js';
 // 2026-11-18 (Simon): a HubSpot property with no value is left out of the write, so the
 // contact keeps its last value rather than receiving a 0 that reads as a measurement.
 function hubspotPresent(props) {
@@ -1545,10 +1547,10 @@ const ALERT_TO = 'hello@4xiconsulting.com';
 // its existing empty or thin path; this is so the business knows.
 let externalAlerter = null;
 function makeExternalAlerter() {
-  return createFailureAlerter({ send: ({ service, label, reason }) => sendEmailViaResend({
+  return createFailureAlerter({ send: ({ service, label, reason, attempts }) => sendEmailViaResend({
     to: ALERT_TO, fromName: 'DiagnostiX Alerts',
     subject: 'ALERT: ' + service + ' calls are failing (' + label + ', ' + reason + ')',
-    html: '<p><strong>An external call failed twice and the assessment went on without it.</strong></p>'
+    html: '<p><strong>An external call failed ' + (attempts === 1 ? 'on its only attempt' : 'twice') + ' and the assessment went on without it.</strong></p>'
       + '<ul><li>service: ' + service + '</li><li>call: ' + label + '</li><li>reason: ' + reason + '</li></ul>'
       + '<p>Further failures of this service are logged, not emailed, for ten minutes.</p>',
   }) });
@@ -1981,6 +1983,12 @@ app.post('/resolve-place', async (req, res) => {
   const name = typeof b.name === 'string' ? b.name.trim() : '';
   const location = typeof b.location === 'string' ? b.location.trim() : '';
   if (!name) return res.status(400).json({ error: 'Restaurant name is required' });
+  // 2026-11-18 (Simon, fix 2): City and Country are required. No search is sent without a City,
+  // because a search without a place is ranked by where this server happens to be.
+  const parts = locationParts(b);
+  if (!parts.city || !parts.country) {
+    return res.status(400).json({ code: 'location-required', error: 'Please add the city and country so we can find the right restaurant.' });
+  }
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey || !placeTokenSecret()) {
     // Without Places there is nothing to confirm; without a secret the
@@ -1989,8 +1997,36 @@ app.post('/resolve-place', async (req, res) => {
     return res.status(503).json({ error: 'Confirmation is unavailable right now. Please try again in a moment.' });
   }
   try {
+    // Geocode City, State and Country; fall back to City and Country when State misplaces it.
+    // One 5 s attempt per geocode, both at once: a geocode failure costs only the bias, so it must
+    // not add the full Places timeout and retry in front of the confirmation. Alerted on its own
+    // service, so losing the bias is never silent.
+    let geocodeFailure = null;
+    const bias = await biasForLocation(parts, async (address) => {
+      try {
+        const g = await (await fetchExternal('https://maps.googleapis.com/maps/api/geocode/json?address=' + encodeURIComponent(address)
+          + '&key=' + apiKey, undefined, { fetchFn: fetch, service: 'geocoding', label: 'resolve-geocode', attempts: 1, timeoutMs: Math.min(5000, Number(process.env.RVP_EXTERNAL_TIMEOUT_MS) || 5000) })).json();
+        const read = readGeocode(g);
+        if (read.status === 'error' && !geocodeFailure) geocodeFailure = 'status-' + String((g && g.status) || 'unknown');
+        return read;
+      } catch (e) { if (!geocodeFailure) geocodeFailure = (e && e.reason) || 'error'; return { status: 'error' }; }
+    });
+    if (!bias.ok && bias.reason === 'geocode-error') {
+      await externalFailed({ service: 'geocoding', label: 'resolve-geocode', reason: geocodeFailure || 'error', attempts: 1 });
+    }
+    console.log('PLACE [bias] ' + (bias.ok
+      ? 'used=' + bias.used + ' stateIgnored=' + bias.stateIgnored + ' radius_m=' + bias.radiusM
+      : 'none reason=' + bias.reason));
+    if (!bias.ok && bias.reason === 'location-not-found') {
+      return res.status(400).json({ code: 'location-not-found',
+        error: 'We could not find ' + parts.city + ', ' + parts.country + ' on the map. Please check the city and country.' });
+    }
+    // Biased: the name and the City, inside a circle around the geocode. A geocoding outage falls
+    // back to the text search as it was, so an outage never blocks a confirmation.
+    const input = bias.ok ? name + ', ' + parts.city : (location ? name + ', ' + location : name);
     const url = 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input='
-      + encodeURIComponent(location ? name + ', ' + location : name)
+      + encodeURIComponent(input)
+      + (bias.ok ? '&locationbias=' + encodeURIComponent('circle:' + bias.radiusM + '@' + bias.center.lat + ',' + bias.center.lng) : '')
       + '&inputtype=textquery&fields=' + PLACE_FIELDS + '&key=' + apiKey;
     const d = await (await fetchExternal(url, undefined, { fetchFn: fetch, service: 'places', label: 'resolve-place' })).json();
     const top = d && d.status === 'OK' && Array.isArray(d.candidates) && d.candidates[0];

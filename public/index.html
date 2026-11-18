@@ -1016,9 +1016,25 @@ async function startConfirmation() {
   btn.disabled = true;
   var was = btn.innerHTML; btn.textContent = 'Finding your restaurant…';
   try {
+    // 2026-11-18 (Simon, fix 2): City and Country are required, and the three parts go separately so
+    // the server can tell a State autofill filled in from one that locates the restaurant.
+    var locCity = document.getElementById('f-loc-city').value.trim();
+    var locState = document.getElementById('f-loc-state').value.trim();
+    var locCountry = document.getElementById('f-loc-country').value.trim();
+    if (!locCity || !locCountry) {
+      var e0 = document.getElementById('e0');
+      e0.textContent = 'Please add the city and country so we can find the right restaurant.';
+      e0.style.display = 'block';
+      goStep(0);
+      return;
+    }
     var res = await fetch('/resolve-place', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: data.name, location: data.location, email: data.email }) });
+      body: JSON.stringify({ name: data.name, location: data.location, city: locCity, state: locState, country: locCountry, email: data.email }) });
     var j = null; try { j = await res.json(); } catch (_) { j = null; }
+    // 2026-11-18: a location the server could not use goes back to the step with the location fields.
+    if (j && (j.code === 'location-required' || j.code === 'location-not-found')) {
+      var e0b = document.getElementById('e0'); e0b.textContent = j.error; e0b.style.display = 'block'; goStep(0); return;
+    }
     if (!res.ok || !j) { showStepError((j && j.error) || 'We could not check the restaurant just now. Please try again in a moment.'); return; }
     if (j.status === 'no-match' && j.copy) { currentPlaceToken = null; showRefusal(j.copy); return; }
     if (j.status !== 'found' || !j.placeToken || !j.place) { showStepError('We could not check the restaurant just now. Please try again in a moment.'); return; }
