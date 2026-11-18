@@ -44,11 +44,33 @@ export const PILLAR_KEYS = ['cs', 'pa', 'es', 'sm', 'cp', 'bg'];
 // stored reports: 19 at exactly 50; 2 bands move, both Fair to Good and both
 // the own test restaurant; 17 rise 1 to 2 points within band. A measured 50
 // is indistinguishable from the placeholder; the product's own rule decides.
-export const OVERALL_METHOD_VERSION = 'rvp-overall-mean-v2';
+// v3 (Simon, 2026-11-18): A PILLAR WITH NO DATA IS NOT AVAILABLE, NEVER A NUMBER.
+// v2 relied on the model writing exactly 50 for "no employee signal", and no
+// prompt ever asked it to: on the 2026-11-18 comparison Oma had no employee data
+// and was scored 62 by one model and 40 by the other, both averaged in. Under v3
+// a pillar the public data says nothing about is null ("Not available"), any of
+// the six can be, and the overall is the mean of the pillars with data, stating
+// how many; with fewer than MIN_PILLARS_FOR_OVERALL there is no overall. A v3
+// report marks every pillar `scoreRule: 'v3'`, so a measured 50 stays a
+// measurement there; a report without the mark is read under v2 exactly as before.
+export const OVERALL_METHOD_VERSION = 'rvp-overall-mean-v3';
+export const OVERALL_METHOD_VERSION_V2 = 'rvp-overall-mean-v2';
 export const OVERALL_METHOD_VERSION_V1 = 'rvp-overall-mean-v1';
+export const SCORE_RULE_V3 = 'v3';
+export const MIN_PILLARS_FOR_OVERALL = 3;
+export const PILLAR_NOT_AVAILABLE = 'Not available';
 export const ES_NO_SIGNAL = 50;
 export const ES_NOT_AVERAGED_SENTENCE = 'Employee Sentiment is not averaged in: no public employee '
   + 'signal was found, and 50 is the value given when there is none.';
+
+// One note for both changes that moved scores in November 2026 (Simon,
+// 2026-11-18): a newer model, and no-data pillars left out. Shown on every v3
+// report, so a client who saw 68 in October and 63 now does not read the
+// difference as a decline.
+export const METHOD_CHANGE_NOTE = 'How this score is made changed in November 2026: the analysis now '
+  + 'uses a newer AI model, and a pillar with no public data is shown as Not available and left out '
+  + 'of the overall instead of being given a score. Scores from before this change and after it are not '
+  + 'directly comparable, so a different number does not by itself mean the restaurant changed.';
 
 export const NO_SCORE_SENTENCE =
   'This report does not carry an overall score, because one or more of the six '
@@ -113,15 +135,63 @@ function roundHalfUp(x) {
 // v2. Returns { ok, score, mean, sum, values, averaged, excluded, reason }.
 // The six must all be present and in range, exactly as v1 requires; only
 // then is a no-signal Employee Sentiment left out of the mean.
+export function isV3(pillars) {
+  return !!pillars && typeof pillars === 'object'
+    && PILLAR_KEYS.some((k) => pillars[k] && pillars[k].scoreRule === SCORE_RULE_V3);
+}
+
+// The method a stored report's score is read under: its own, never today's.
+export function scoreMethodOf(pillars) {
+  return isV3(pillars) ? OVERALL_METHOD_VERSION : OVERALL_METHOD_VERSION_V2;
+}
+
 export function computeOverall(pillars, _reportIgnoredOnPurpose) {
+  if (isV3(pillars)) return computeOverallV3(pillars);
   const v1 = computeOverallV1(pillars);
-  if (!v1.ok) return { ...v1, averaged: [], excluded: [] };
+  if (!v1.ok) return { ...v1, averaged: [], excluded: [], method: OVERALL_METHOD_VERSION_V2 };
   const excluded = pillars.es.score === ES_NO_SIGNAL ? ['es'] : [];
   const averaged = PILLAR_KEYS.filter((k) => !excluded.includes(k));
   const values = averaged.map((k) => pillars[k].score);
   const sum = values.reduce((a, b) => a + b, 0);
   const mean = sum / values.length;
-  return { ok: true, score: roundHalfUp(mean), mean, sum, values, averaged, excluded, reason: 'computed' };
+  return { ok: true, score: roundHalfUp(mean), mean, sum, values, averaged, excluded, reason: 'computed', method: OVERALL_METHOD_VERSION_V2 };
+}
+
+// v3. A null pillar is EXCLUDED, never counted as zero; anything else that is not
+// a number in range is a malformed pillar and there is no score.
+export function computeOverallV3(pillars) {
+  const fail = (reason, excluded = []) => ({ ok: false, score: null, mean: null, sum: null, values: [], averaged: [], excluded, reason, method: OVERALL_METHOD_VERSION });
+  const averaged = [], excluded = [], values = [];
+  for (const key of PILLAR_KEYS) {
+    const p = pillars[key];
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return fail('pillar-missing:' + key);
+    const v = p.score;
+    if (v === null) { excluded.push(key); continue; }
+    if (typeof v !== 'number' || !Number.isFinite(v)) return fail('pillar-not-a-number:' + key);
+    if (v < 0 || v > 100) return fail('pillar-out-of-range:' + key);
+    averaged.push(key); values.push(v);
+  }
+  if (averaged.length < MIN_PILLARS_FOR_OVERALL) return Object.assign(fail('too-few-pillars-with-data', excluded), { averaged });
+  const sum = values.reduce((a, b) => a + b, 0);
+  const mean = sum / values.length;
+  return { ok: true, score: roundHalfUp(mean), mean, sum, values, averaged, excluded, reason: 'computed', method: OVERALL_METHOD_VERSION };
+}
+
+// What the overall rests on, in words. v3 only: v2 keeps its own sentence.
+export function overallBasisSentence(result, pillars) {
+  const r = result || {};
+  if (r.method !== OVERALL_METHOD_VERSION) return '';
+  const label = (k) => (pillars && pillars[k] && pillars[k].label) || k;
+  const n = (r.averaged || []).length;
+  if (!r.ok) {
+    return r.reason === 'too-few-pillars-with-data'
+      ? 'There is no overall score: only ' + n + ' of the six pillars had public data, and an overall needs at least ' + MIN_PILLARS_FOR_OVERALL + '.'
+      : '';
+  }
+  const out = (r.excluded || []).map(label);
+  const list = out.length < 2 ? out.join('') : out.slice(0, -1).join(', ') + ' and ' + out[out.length - 1];
+  return 'The overall is the mean of the ' + n + ' pillars with public data'
+    + (out.length ? '; ' + list + ' had none and ' + (out.length === 1 ? 'is' : 'are') + ' not counted.' : '.');
 }
 
 // v1, the mean of all six. Kept so a stored report whose delivered number
@@ -160,7 +230,9 @@ export function computeOverallV1(pillars, _reportIgnoredOnPurpose) {
 export function overallFormula(result) {
   const r = (result && typeof result === 'object') ? result : null;
   // v2: the pillars actually averaged, five when Employee Sentiment is left out.
-  if (!r || r.ok !== true || !Array.isArray(r.values) || r.values.length < PILLAR_KEYS.length - 1) {
+  // v3: as few as MIN_PILLARS_FOR_OVERALL.
+  const least = r && r.method === OVERALL_METHOD_VERSION ? MIN_PILLARS_FOR_OVERALL : PILLAR_KEYS.length - 1;
+  if (!r || r.ok !== true || !Array.isArray(r.values) || r.values.length < least) {
     return '';
   }
   const meanText = Number.isInteger(r.mean) ? String(r.mean) : r.mean.toFixed(1);

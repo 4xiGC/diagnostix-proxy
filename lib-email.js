@@ -15,7 +15,7 @@
 // of being read from process.env, which is what makes these pure.
 // ═════════════════════════════════════════════════════════════════════════════
 
-import { computeOverall, verdictFor } from './lib-score.js';
+import { computeOverall, verdictFor, OVERALL_METHOD_VERSION, METHOD_CHANGE_NOTE } from './lib-score.js';
 import {
   deliveryProvenanceLines, swapLinkSentence, renderEmailButton, buttonPlainText,
   SWAP_BUTTON_LABEL, RECOVERY_BUTTON_LABEL, BUTTON_FALLBACK_LINE,
@@ -136,6 +136,7 @@ export function buildCustomerReportEmail(argsIn) {
           <div style="font-family:'League Spartan',Arial,sans-serif;font-size:10px;letter-spacing:2px;color:#1B1464;text-transform:uppercase;font-weight:700;opacity:.7">Overall HealthCheck Score</div>
           <div style="font-family:'League Spartan',Arial,sans-serif;font-size:54px;font-weight:900;color:${scoreColor};line-height:1;margin:10px 0 4px">${score}<span style="font-size:20px;color:#999;font-weight:500">/100</span></div>
           <div style="font-family:'League Spartan',Arial,sans-serif;font-size:13px;color:#1B1464;font-weight:700;letter-spacing:1px;text-transform:uppercase">${escE(verdict)}</div>
+          ${overall.method === OVERALL_METHOD_VERSION ? `<div style="font-family:'League Spartan',Arial,sans-serif;font-size:11px;color:#666;line-height:1.5;margin:12px 0 0;max-width:460px">${escE(METHOD_CHANGE_NOTE)}</div>` : ''}
         </td></tr>
       </table>` : ''}
 

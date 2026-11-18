@@ -1,6 +1,6 @@
 {
   "contract": "rvp-diagnose-response",
-  "version": 1,
+  "version": 2,
   "why": "diagnostix-analytics calls RVP POST /diagnose for every peer assessment and reads the response. 8.11.52 removed healthCheckScore from it, Analytics rejected every peer, and the delivered report said 'against 0 comparable businesses'. No test on either side pinned the response. This file is that pin. An IDENTICAL copy lives in diagnostix-analytics/test/fixtures/, and each repo tests its own side against it: RVP that the real response satisfies it, Analytics that its real acceptance check accepts the example and rejects the example without the score. A change to what either side needs must change this file in BOTH repos.",
   "producer": "diagnostix-proxy server.js POST /diagnose",
   "consumers": [
@@ -17,8 +17,8 @@
     "bg"
   ],
   "required": {
-    "healthCheckScore": "integer 0 to 100, the overall under rvp-overall-mean-v2: the mean of the six pillar scores rounded half up, except that Employee Sentiment at exactly 50 (the no-public-signal value) is left out and the other five are averaged; null only when the six are not all present, and Analytics then refuses the peer",
-    "pillars": "object carrying every key in pillarKeys, each with an integer score 0 to 100",
+    "healthCheckScore": "integer 0 to 100, the overall under the report's own method. rvp-overall-mean-v3 (pillars marked scoreRule 'v3', from 2026-11-18): the mean of the pillars whose score is a number, rounded half up; a null pillar has no public data and is left out, and with fewer than 3 numeric pillars the overall is null. rvp-overall-mean-v2 (no mark): the mean of the six, except that Employee Sentiment at exactly 50 is left out. null when there is no overall, and Analytics then refuses the peer",
+    "pillars": "object carrying every key in pillarKeys, each with an integer score 0 to 100; on a response whose pillars are marked scoreRule 'v3' a score may be null (Not available: no public data), and is never to be read as 0",
     "benchmarkId": "string, or null when the benchmark write was skipped; the key must be present"
   },
   "example": {
@@ -53,5 +53,6 @@
   },
   "optional": {
     "provenance": "object, from 2026-09-30 (RVP B5, lib-provenance.js buildProvenance): methodVersion, passes (label, model, promptVersion, tokens), promptVersions, confidence, durationMs, writtenAt. Additive: Analytics does not read it, and a response without it is still valid."
-  }
+  },
+  "v3Consumers": "2026-11-18: diagnostix-analytics lib/score.js overallFromPillars applies the v2 Employee Sentiment 50 rule to every peer and returns null for any null pillar; it must read v3 (numeric pillars only, a measured 50 kept) before RVP 8.11.67 ships"
 }

@@ -19,12 +19,13 @@ import { OVERALL_METHOD_VERSION } from './lib-score.js';
 
 export const PROMPT_VERSIONS = Object.freeze({
   // 2026-11-18 (Simon): the Google record and the count rules (lib-presence.js); a channel score may be null.
-  'diagnose-p1': 'p1-2026-11-18-presence-2a8e0c38db74',
+  // 2026-11-18 (Simon): scoring v3, any pillar may be null with no data.
+  'diagnose-p1': 'p1-2026-11-18-v3-1c0bb136e672',
   // 2026-10-01: the call gained the flagged plan rule (lib-plan-prompt.js). With the
   // flag off the text SENT is identical to p2-2026-09-29; the source moved, so the id did.
   'diagnose-p2': 'p2-2026-10-01-plan-flag-8b25ce616f9e',
   // 2026-11-18 (Simon): the summary is given the Google record and the count rules.
-  'diagnose-summary': 'summary-2026-11-18-google-record',
+  'diagnose-summary': 'summary-2026-11-18-v3-google-record',
 });
 
 // RVP HAS NO MODEL-RATED CONFIDENCE. Its only measure of how much the reading

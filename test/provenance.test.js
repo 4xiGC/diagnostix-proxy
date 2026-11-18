@@ -5,7 +5,7 @@
 // (_debug.totalMs) and, on the benchmark row, the overall method, and nothing
 // about which models wrote it, with which prompt, at what cost, or how sure
 // the product is. Now every /diagnose report carries `provenance`:
-//   methodVersion     rvp-overall-mean-v2
+//   methodVersion     rvp-overall-mean-v3 (v2 before 2026-11-18)
 //   passes[]          one per model pass: label, model, prompt version,
 //                     input and output tokens (as the API returns them), ms
 //   promptVersions    { 'diagnose-p1': ..., 'diagnose-p2': ..., 'diagnose-summary': ... }
@@ -33,7 +33,7 @@ const PASSES = [
 
 test('THE PROVENANCE NAMES THE METHOD, EVERY PASS WITH ITS MODEL, PROMPT AND TOKENS, THE CONFIDENCE AND THE WAIT', () => {
   const p = buildProvenance({ passes: PASSES, coverage: { state: 'pass', subjectReviewCount: 648 }, durationMs: 39000, now: () => '2026-09-30T00:00:00.000Z' });
-  assert.equal(p.methodVersion, 'rvp-overall-mean-v2');
+  assert.equal(p.methodVersion, 'rvp-overall-mean-v3');   // v3 from 2026-11-18: a no-data pillar is null and left out (Simon)
   assert.equal(p.passes.length, 3);
   assert.deepEqual(p.passes[0], { label: 'diagnose-p1', model: 'claude-sonnet-4-5-20250929', promptVersion: PROMPT_VERSIONS['diagnose-p1'], inputTokens: 3100, outputTokens: 920, ms: 20700 });
   assert.deepEqual(Object.keys(p.promptVersions).sort(), ['diagnose-p1', 'diagnose-p2', 'diagnose-summary']);

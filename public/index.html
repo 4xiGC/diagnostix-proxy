@@ -879,6 +879,8 @@ function buildProgressSection(r, d) {
     var col = change > 0 ? '#00A651' : change < 0 ? '#ED1C24' : '#888';
     var arrow = change > 0 ? '&#8593;' : change < 0 ? '&#8595;' : '&#8594;';
     var changeStr = change > 0 ? '+' + change : String(change);
+    // 2026-11-18: retired plan, never rendered; a no-data pillar still never computes from null.
+    if (typeof pillar.score !== 'number') return '';
     var baseScore = pillar.score - change;
     return '<tr style="border-bottom:1px solid #f0ede8">'
       + '<td style="padding:8px 10px;font-size:13px;color:#333;font-weight:600">' + pillar.label + '</td>'
@@ -958,16 +960,17 @@ function trackSubmission(d, r) {
       // as benchmarks.method_version does.
       health_check_score: scoreOf(r).ok ? scoreOf(r).score : null,
       score_verdict: scoreOf(r).verdict || null,
-      score_method: (window.RVPScore && window.RVPScore.OVERALL_METHOD_VERSION) || null,
+      // 2026-11-18: the report's own method, not today's constant.
+      score_method: (window.RVPScore && window.RVPScore.scoreMethodOf && window.RVPScore.scoreMethodOf(r.pillars)) || null,
       cuisine: r.cuisineDetected || '',
       price_tier: r.priceDetected || '',
       online_presence_overall: r.onlinePresence && typeof r.onlinePresence.overall === 'number' ? r.onlinePresence.overall : null,
-      pillar_cs: r.pillars && r.pillars.cs ? r.pillars.cs.score : 0,
-      pillar_pa: r.pillars && r.pillars.pa ? r.pillars.pa.score : 0,
-      pillar_es: r.pillars && r.pillars.es ? r.pillars.es.score : 0,
-      pillar_sm: r.pillars && r.pillars.sm ? r.pillars.sm.score : 0,
-      pillar_cp: r.pillars && r.pillars.cp ? r.pillars.cp.score : 0,
-      pillar_bg: r.pillars && r.pillars.bg ? r.pillars.bg.score : 0,
+      pillar_cs: r.pillars && r.pillars.cs && typeof r.pillars.cs.score === 'number' ? r.pillars.cs.score : null,
+      pillar_pa: r.pillars && r.pillars.pa && typeof r.pillars.pa.score === 'number' ? r.pillars.pa.score : null,
+      pillar_es: r.pillars && r.pillars.es && typeof r.pillars.es.score === 'number' ? r.pillars.es.score : null,
+      pillar_sm: r.pillars && r.pillars.sm && typeof r.pillars.sm.score === 'number' ? r.pillars.sm.score : null,
+      pillar_cp: r.pillars && r.pillars.cp && typeof r.pillars.cp.score === 'number' ? r.pillars.cp.score : null,
+      pillar_bg: r.pillars && r.pillars.bg && typeof r.pillars.bg.score === 'number' ? r.pillars.bg.score : null,
       sentiment_perf: d.sentiment && d.sentiment.perf ? d.sentiment.perf : 0,
       sentiment_ret: d.sentiment && d.sentiment.ret ? d.sentiment.ret : 0,
       sentiment_online: d.sentiment && d.sentiment.online ? d.sentiment.online : 0,
@@ -1148,6 +1151,11 @@ function scoreOf(r) {
     score: res.score,
     text: res.ok ? String(res.score) : '',
     verdict: res.ok ? (window.RVPScore.verdictFor(res.score) || '') : '',
+    // 2026-11-18 (Simon): the report's own method, what the overall rests on, and the
+    // one note for the November 2026 change, shown only on reports made under it.
+    method: res.method || null,
+    basis: window.RVPScore.overallBasisSentence ? window.RVPScore.overallBasisSentence(res, r && r.pillars) : '',
+    note: res.method === window.RVPScore.OVERALL_METHOD_VERSION ? window.RVPScore.METHOD_CHANGE_NOTE : '',
   };
 }
 
@@ -1327,6 +1335,10 @@ function renderReport(r, d) {
 
   // ── FULL REPORT (rendered but locked) ──
   var pillarRows = Object.values(r.pillars||{}).map(function(p){
+    // 2026-11-18 (Simon): a pillar with no data says so; it is never a bar at zero.
+    if (typeof p.score !== 'number') return '<div class="sc-row">'
+      +'<div class="sc-lbl">'+p.label+'</div>'
+      +'<div class="sc-num" style="color:#888;font-style:italic;width:auto">Not available</div></div>';
     return '<div class="sc-row">'
       +'<div class="sc-lbl">'+p.label+'</div>'
       +'<div class="sc-bg"><div class="sc-bar '+sc(p.score)+'" style="width:'+p.score+'%"></div></div>'
@@ -1560,7 +1572,8 @@ function renderReport(r, d) {
   var fullHTML =
     '<div class="rpt-h">Full HealthCheck Scorecard</div>'+pillarRows
     +'<div class="sc-total"><div class="sc-total-lbl">Overall HealthCheck Score</div>'
-    +'<div class="sc-total-v" style="color:'+overallCol+'">'+SC.text+' / 100</div></div>'
+    +'<div class="sc-total-v" style="color:'+overallCol+'">'+(SC.ok ? SC.text+' / 100' : 'No overall')+'</div></div>'
+    +((SC.basis || SC.note) ? '<div style="font-size:11px;color:#666;line-height:1.5;margin:6px 0 14px">'+[SC.basis, SC.note].filter(Boolean).join(' ')+'</div>' : '')
 
     +'<div class="rpt-h">Online Presence &amp; Strength Score</div>'
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'

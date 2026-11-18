@@ -36,7 +36,9 @@ const render = (report) => __test__.renderReportHtml({
 const formulaBlock = (html) => (html.match(/<div class="score-formula">([\s\S]*?)<\/div>/) || [])[1] || '';
 
 test('THE METHOD IS v2', () => {
-  assert.equal(OVERALL_METHOD_VERSION, 'rvp-overall-mean-v2');
+  // 2026-11-18: v3 is current for new reports; v2 still governs every report without the v3 mark.
+  assert.equal(OVERALL_METHOD_VERSION, 'rvp-overall-mean-v3');
+  assert.equal(computeOverall({ cs: { score: 1 }, pa: { score: 1 }, es: { score: 50 }, sm: { score: 1 }, cp: { score: 1 }, bg: { score: 1 } }).method, 'rvp-overall-mean-v2');
   assert.equal(ES_NO_SIGNAL, 50);
 });
 

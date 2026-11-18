@@ -76,7 +76,7 @@ test('A DIAGNOSE RUN CARRIES ITS PROVENANCE, AND THE BENCHMARK ROW SURVIVES A DA
 
   const p = report.provenance;
   assert.ok(p, 'the report carries no provenance');
-  assert.equal(p.methodVersion, 'rvp-overall-mean-v2');
+  assert.equal(p.methodVersion, 'rvp-overall-mean-v3');   // v3 from 2026-11-18: a no-data pillar is null and left out (Simon)
   const by = Object.fromEntries(p.passes.map((x) => [x.label, x]));
   assert.deepEqual(Object.keys(by).sort(), ['diagnose-p1', 'diagnose-p2', 'diagnose-summary']);
   assert.equal(by['diagnose-p1'].model, 'claude-sonnet-4-5-20250929');

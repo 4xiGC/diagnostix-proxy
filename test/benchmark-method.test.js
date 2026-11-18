@@ -70,10 +70,15 @@ test('THE ROW CARRIES THE COMPUTED SCORE, not the typed one', () => {
   assert.equal(row.overall_score, 59, 'the cohort would have taken the typed 68');
 });
 
-test('and it NAMES the method', () => {
+test('and it NAMES the method: the report\'s own, never today\'s constant (2026-11-18)', () => {
+  // An unmarked report was scored under v2, and its row says so.
   const row = build({ healthCheckScore: 68, pillars: pillars(66, 70, 42, 48, 58, 72) });
-  assert.equal(row.method_version, OVERALL_METHOD_VERSION);
-  assert.equal(row.method_version, 'rvp-overall-mean-v2');   // v2 from 2026-09-25 (Q20)
+  assert.equal(row.method_version, 'rvp-overall-mean-v2');
+  // A v3 report (every pillar marked) says v3, current for new reports.
+  const p3 = pillars(66, 70, 42, 48, 58, 72); for (const k of Object.keys(p3)) p3[k].scoreRule = 'v3';
+  const row3 = build({ pillars: p3 });
+  assert.equal(row3.method_version, OVERALL_METHOD_VERSION);
+  assert.equal(row3.method_version, 'rvp-overall-mean-v3');
 });
 
 test('the method version is not the one SVP uses', () => {
