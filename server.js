@@ -3727,7 +3727,7 @@ async function saveToHubSpot(email, firstName, restaurantName, location, report)
 // next person does not discover it during an incident.
 const PEER_COMPARISON_TIMEOUT_MS = 280000;
 
-async function fetchPeerComparison({ subjectName, displayName, subjectLocation, subjectPillars, peerNames }) {
+async function fetchPeerComparison({ subjectName, displayName, subjectLocation, subjectPillars, subjectMethod, peerNames }) {
   const base = process.env.ANALYTICS_URL;
   const pass = process.env.ANALYTICS_TEAM_PASSWORD;
   if (!base || !pass) return { ok: false, reason: 'not_configured' };
@@ -3745,8 +3745,11 @@ async function fetchPeerComparison({ subjectName, displayName, subjectLocation, 
       },
       // displayName (contract/peer-comparison-request.contract.json): the name the
       // customer sees, for the heading; subjectName stays Analytics' Places query.
+      // subjectMethod (contract version 2, 2026-11-18): the method of this report, so
+      // Analytics states "the same method as your own report" only when it checked it.
       body: JSON.stringify(Object.assign({ subjectName, subjectLocation, subjectPillars, peerNames },
-        displayName && displayName !== subjectName ? { displayName } : {})),
+        displayName && displayName !== subjectName ? { displayName } : {},
+        subjectMethod ? { subjectMethod } : {})),
       signal: ctl.signal,
     });
     const text = await res.text();
@@ -6031,6 +6034,8 @@ async function deliverPaidReport({ destEmail, firstName, restaurant, location,
     subjectPillars: Object.fromEntries(
       Object.entries(report.pillars || {}).map(([k, v]) => [k, v && typeof v.score === 'number' ? v.score : null])
     ),
+    // The report's own method, the value writeBenchmark records as method_version.
+    subjectMethod: scoreMethodOf(report.pillars),
     peerNames,
   });
   if (cmp.ok) {
