@@ -8700,6 +8700,8 @@ if (process.env.RVP_IMPORT_ONLY === '1') {
 export const __test__ = {
   // 2026-09-30 (B2): the external-call paths, and a reset for the alert window.
   search, searchStructured, fetchPlacesNearby, findPlaceForCompetitor,
+  // 2026-11-18: the peer comparison request, so its zero_assessed refusal is pinned by a test.
+  fetchPeerComparison,
   resetExternalAlerts() { externalAlerter = null; },
   // Replaces the module's fetch and hands back a restore function, so a test
   // cannot leave the real one swapped out for the files that run after it.
