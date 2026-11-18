@@ -46,7 +46,11 @@ function googleRecordBlock(rec) {
 const SPLIT = /(?<=[.!?])\s+(?=[A-Z0-9"'(])/;
 // "5 followers", "1.9k followers", "5 social media followers", "63K Instagram followers".
 const FOLLOWERS = /\b\d[\d,.]*\s*[kKmM]?\+?\s*(?:[A-Za-z]+\s+){0,3}(?:followers|seguidores|fans|subscribers|likes)\b/i;
-const GOOGLE_ZERO = /\b(?:0|zero|no)\s+(?:\w+\s+){0,3}(?:google\s+)?reviews?\b|\breviews?\b[^.]{0,30}\b(?:0|zero)\b/i;
+// A zero is a whole number, not the end of a decimal ("4.0 with only 55 reviews" was removed in
+// error on 2026-11-18), and no other number stands between it and "reviews".
+// "0 on Google Maps" counts too (kept in error by the first tightening, caught by re-checking the
+// logged removals).
+const GOOGLE_ZERO = /(?<![\d.,])\b(?:0|zero|no)\s+(?:(?![\d])\w+\s+){0,3}(?:google\s+)?reviews?\b|\breviews?\b[^.\d]{0,30}(?<![\d.,])\b(?:0|zero)\b(?![.,]\d)|(?<![\d.,])\b(?:0|zero|no)\s+(?:reviews?\s+)?(?:on|in|from|at)\s+google\b/i;
 const REVIEW_COUNT = /\b(\d[\d,.]*)\s*(?:google\s+)?reviews?\b/gi;
 
 // A sentence that states a count the prompt never supplied, or contradicts the record.

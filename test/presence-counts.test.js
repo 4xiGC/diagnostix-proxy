@@ -64,6 +64,14 @@ test('no follower count survives: RVP holds no official social account', () => {
   assert.equal(r.competitiveInsight, 'Strong pub.');
 });
 
+test('a decimal rating is not a zero count (removed in error on the 2026-11-18 smoke run)', () => {
+  const keep = 'TripAdvisor rating of 4.0 with only 55 reviews shows lower visibility or engagement on that platform compared to Google presence.';
+  const r = { risks: [keep, 'Google shows 0 reviews despite a 4.5 rating.', 'Google: reviews 0 so far.',
+    'Limited review volume (55 on TripAdvisor, 0 on Google Maps) relative to nearby competitors.'] };
+  applyPresenceRules(r, LA_MESA);
+  assert.deepEqual(r.risks, [keep]);
+});
+
 test('advice about influencers keeps its follower range; a claim about the subject does not', () => {
   const r = { actions: [{ desc: 'Partner with 3-5 Santiago food/lifestyle micro-influencers (10k-100k followers) for hosted dinners.' }],
     risks: ['Limited social media footprint (873 Instagram followers) underutilizes brand equity.'] };
