@@ -132,10 +132,14 @@ test('/resolve-place on a hung Places: a 503 the page can say, two attempts, and
   process.env.RVP_IDENTITY_SECRET = process.env.RVP_IDENTITY_SECRET || "test-identity-secret";
   // The route is driven with the real Node fetch; the stub replaces only the
   // module fetch, so it sees the outbound Places and Resend calls.
-  const calls = { places: 0, emails: [] };
+  // 2026-11-18 (fix 2): the route geocodes the City first, on the same host. The geocode is
+  // counted apart: ONE attempt (its failure costs only the bias), then the Find Place call keeps
+  // its two attempts and its 503.
+  const calls = { places: 0, geocode: 0, emails: [] };
   const fake = async (url, init) => {
     const u = String(url);
     if (u.includes('api.resend.com')) { calls.emails.push(JSON.parse(init.body)); return ok({ id: 'e' }); }
+    if (u.includes('/geocode/json')) { calls.geocode++; return hang(init); }
     if (u.includes('maps.googleapis.com')) { calls.places++; return hang(init); }
     return ok({});
   };
@@ -149,6 +153,39 @@ test('/resolve-place on a hung Places: a 503 the page can say, two attempts, and
       body: JSON.stringify({ name: 'Teclados', location: 'Santiago, Chile', email: 'owner@example.org' }) });
     assert.equal(r.status, 503);
     assert.equal(calls.places, 2, 'one retry expected');
+    assert.equal(calls.geocode, 1, 'the geocode is tried once, not retried');
     assert.equal(alerts(calls, 'places').length, 1, 'no internal alert for the failed confirmation');
+    const geo = alerts(calls, 'geocoding');
+    assert.equal(geo.length, 1, 'the lost bias is alerted on its own service');
+    assert.match(geo[0].html, /failed on its only attempt/);
+    assert.match(alerts(calls, 'places')[0].html, /failed twice/);
+  } finally { restore(); server.close(); }
+});
+
+test('/resolve-place with a hung geocoder and a healthy Places: found, unbiased, after one geocode wait', { timeout: 8000 }, async () => {
+  process.env.RVP_IDENTITY_SECRET = process.env.RVP_IDENTITY_SECRET || "test-identity-secret";
+  const calls = { places: [], geocode: 0, emails: [] };
+  const fake = async (url, init) => {
+    const u = String(url);
+    if (u.includes('api.resend.com')) { calls.emails.push(JSON.parse(init.body)); return ok({ id: 'e' }); }
+    if (u.includes('/geocode/json')) { calls.geocode++; return hang(init); }
+    if (u.includes('maps.googleapis.com')) { calls.places.push(u); return ok({ status: 'OK', candidates: [{ place_id: 'p1', name: 'Teclados',
+      formatted_address: 'Av. Italia 1234, Santiago, Chile', rating: 4.4, user_ratings_total: 765, business_status: 'OPERATIONAL' }] }); }
+    return ok({});
+  };
+  const restore = setFetch(fake);
+  __test__.resetExternalAlerts();
+  const server = __test__.app.listen(0);
+  try {
+    await new Promise((r) => server.once('listening', r));
+    const r = await fetch('http://127.0.0.1:' + server.address().port + '/resolve-place', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      // State present: both geocodes run at once, so the wait is one timeout, not two.
+      body: JSON.stringify({ name: 'Teclados', city: 'Santiago', state: 'RM', country: 'Chile' }) });
+    const j = await r.json();
+    assert.equal(j.status, 'found');
+    assert.equal(calls.geocode, 2, 'City and Country, and City, State and Country: one attempt each');
+    assert.equal(calls.places.length, 1);
+    assert.doesNotMatch(calls.places[0], /locationbias/);
   } finally { restore(); server.close(); }
 });

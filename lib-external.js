@@ -42,19 +42,23 @@ async function attempt(url, init, fetchFn, ms) {
   }
 }
 
+// 2026-11-18: `attempts` and `timeoutMs` may be lowered for a call whose failure costs only an
+// optional input (the /resolve-place geocode: one 5 s attempt). Defaults are unchanged.
 export async function fetchExternal(url, init, opts) {
   const { fetchFn, service = 'external', label = service } = opts || {};
-  const ms = timeoutMs();
+  const ms = Number(opts && opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : timeoutMs();
+  const tries = opts && opts.attempts === 1 ? 1 : 2;
   let last = null;
-  for (let n = 1; n <= 2; n++) {
+  for (let n = 1; n <= tries; n++) {
     try {
       return await attempt(url, init, fetchFn, ms);
     } catch (e) {
       last = e;
-      console.log('[' + service + '] ' + label + ' attempt ' + n + ' failed: ' + e.reason + (n === 1 ? ', retrying once' : ', giving up'));
+      console.log('[' + service + '] ' + label + ' attempt ' + n + ' failed: ' + e.reason + (n < tries ? ', retrying once' : ', giving up'));
     }
   }
-  const err = new Error(service + ' ' + label + ' failed twice: ' + last.reason);
+  const err = new Error(service + ' ' + label + ' failed ' + (tries === 1 ? 'on its only attempt' : 'twice') + ': ' + last.reason);
+  err.attempts = tries;
   err.reason = last.reason;
   err.service = service;
   throw err;
@@ -62,13 +66,14 @@ export async function fetchExternal(url, init, opts) {
 
 export function createFailureAlerter({ send, windowMs = 10 * 60 * 1000, now = () => Date.now() }) {
   const lastSent = new Map();
-  return async function alertFailure({ service, label, reason }) {
+  return async function alertFailure(x) {
+    const { service, label, reason } = x;
     console.log('EXTERNAL_FAILED [' + service + '] ' + label + ' reason=' + reason);
     const t = now();
     const was = lastSent.get(service);
     if (was !== undefined && t - was < windowMs) return false;
     lastSent.set(service, t);
-    try { await send({ service, label, reason }); } catch (e) { console.log('[' + service + '] failure alert not sent: ' + (e && e.message)); }
+    try { await send(Object.assign({}, x, { service, label, reason })); } catch (e) { console.log('[' + service + '] failure alert not sent: ' + (e && e.message)); }
     return true;
   };
 }
