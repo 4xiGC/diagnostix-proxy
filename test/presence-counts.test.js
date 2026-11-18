@@ -31,6 +31,7 @@ test('the prompt carries the Google record, or says not available, and forbids u
   const src = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
   assert.match(src, /\$\{googleRecordBlock\(googleRecord\)\}/);
   assert.match(src, /googleRecordBlock\(googleRecord \|\| \{\}\)/);
+  assert.equal((src.match(/\$\{googleRecordBlock\(googleRecord\)\}/g) || []).length, 2, 'the scoring pass AND the second pass (strengths, risks, actions)');
   assert.equal((src.match(/"score":<integer 0-100, or null when the data says nothing about this channel>/g) || []).length, 6);
   assert.match(src, /applyPresenceRules\(report, googleRecord\)/);
 });

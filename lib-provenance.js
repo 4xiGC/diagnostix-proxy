@@ -23,7 +23,8 @@ export const PROMPT_VERSIONS = Object.freeze({
   'diagnose-p1': 'p1-2026-11-18-v3-1c0bb136e672',
   // 2026-10-01: the call gained the flagged plan rule (lib-plan-prompt.js). With the
   // flag off the text SENT is identical to p2-2026-09-29; the source moved, so the id did.
-  'diagnose-p2': 'p2-2026-10-01-plan-flag-8b25ce616f9e',
+  // 2026-11-18 (Simon): the second pass gets the Google record and the count rules too.
+  'diagnose-p2': 'p2-2026-11-18-google-record-c12134d20702',
   // 2026-11-18 (Simon): the summary is given the Google record and the count rules.
   'diagnose-summary': 'summary-2026-11-18-v3-google-record',
 });
