@@ -1285,7 +1285,9 @@ let claude = async function claudeImpl(prompt, opts) {
   const maxTokens         = opts.maxTokens         || 8000;
   const retryOnParseFail  = opts.retryOnParseFail  !== false; // default true
   const label             = opts.label             || 'claude';
-  const model             = opts.model             || 'claude-sonnet-4-5-20250929';
+  // 2026-11-18 (Simon): claude-sonnet-4-5-20250929 retires 2026-11-30; claude-sonnet-5-5 replaces it.
+  // claude() sends no temperature, so the new model needs nothing else changed.
+  const model             = opts.model             || 'claude-sonnet-5-5';
 
   const ak = process.env.ANTHROPIC_API_KEY;
   if (!ak) throw new Error('ANTHROPIC_API_KEY missing');
@@ -1884,7 +1886,9 @@ async function writeExecutiveSummary({ name, location, report, score, band, goog
       // Sonnet for everything delivered before this release, Haiku for
       // everything after. ONE MODEL FOR THE CORPUS.
       out = await claude(basePrompt + extra, {
-        label: 'diagnose-summary', maxTokens: 700,
+        // 2026-11-18: claude-sonnet-5-5 thinks before it writes; at 700 the summary truncated on 3 of 6
+        // comparison subjects (stop_reason max_tokens) and only the 16000 retry recovered it.
+        label: 'diagnose-summary', maxTokens: 4000,
       });
     } catch (e) {
       console.log('[summary] attempt ' + attempt + ' threw: ' + (e && e.message));
@@ -8148,7 +8152,8 @@ Return ONLY valid JSON in this exact schema (no preamble, no markdown):
 }`;
 
   const t0 = Date.now();
-  const raw = await claude(prompt, { label: 'evp-analyze', model: 'claude-sonnet-4-5-20250929' });
+  // 2026-11-18: the legacy route moves with the default (0 calls since 2026-11-16; it would fail after 2026-11-30).
+  const raw = await claude(prompt, { label: 'evp-analyze', model: 'claude-sonnet-5-5' });
   console.log(`[evp] Claude synthesis: ${Date.now() - t0}ms`);
 
   // Parse JSON — Claude sometimes wraps responses in markdown code fences,
