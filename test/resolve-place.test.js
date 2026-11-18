@@ -193,6 +193,33 @@ test('THE CITY IS NOT ON THE MAP: the requester is asked to check it, and no pla
   assert.equal(seen.placesCalls.length + seen.outcomes.length + seen.emails.length, 0);
 });
 
+// ── 2026-11-18 (Simon, fix 3): the notices reach the page ──────────────────────────────────────
+test('NOTICES: a listing with another name, in another country, carries both approved notices', async () => {
+  const { body } = await post('/resolve-place', { name: 'Olive Garden', city: 'Orlando', country: 'United States' },
+    { status: 'OK', candidates: [CANDIDATE] }, ORLANDO_GEO);
+  assert.equal(body.status, 'found');
+  assert.deepEqual(body.notices, [
+    "Google's listing has a different name from what you typed (Olive Garden). Check the address below before you continue.",
+    "Google's listing is in a different country from the one in your survey. Check the address below before you continue.",
+  ]);
+});
+
+test('NOTICES: none when the listing matches; none for country when the geocode is unavailable', async () => {
+  const clean = await post('/resolve-place', { name: 'Teclados', location: 'Santiago, Chile' }, { status: 'OK', candidates: [CANDIDATE] });
+  assert.deepEqual(clean.body.notices, []);
+  const outage = await post('/resolve-place', { name: 'Teclados', city: 'Orlando', country: 'United States' },
+    { status: 'OK', candidates: [CANDIDATE] }, { status: 'REQUEST_DENIED' });
+  assert.deepEqual(outage.body.notices, []);
+});
+
+test('the page shows the notices as text, above the card, and hides the box when there are none', async () => {
+  const fs = await import('node:fs');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.ok(html.indexOf('id="pc-notice"') > 0 && html.indexOf('id="pc-notice"') < html.indexOf('id="pc-card"'), 'above the card');
+  assert.match(html, /p\.textContent = String\(t\)/);
+  assert.match(html, /pcNotice\.style\.display = pcNotice\.childNodes\.length \? 'block' : 'none'/);
+});
+
 test('A GEOCODING OUTAGE never blocks a confirmation: the text search runs as before, unbiased', async () => {
   const { body, seen } = await post('/resolve-place', { name: 'Teclados', location: 'Santiago, Chile' },
     { status: 'OK', candidates: [CANDIDATE] }, { status: 'REQUEST_DENIED', error_message: 'x' });

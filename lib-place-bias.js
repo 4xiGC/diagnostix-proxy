@@ -91,7 +91,9 @@ export async function biasForLocation({ city, state, country }, geocode) {
     if (cityOnly.status === 'ok') chosen = cityOnly;
     else return { ok: false, reason: cityOnly.status === 'error' ? 'geocode-error' : 'location-not-found' };
   }
-  return { ok: true, center: chosen.point, radiusM: radiusFor(chosen.viewport), used, stateIgnored };
+  // The country Google gives for the survey's own City and Country (fix 3 compares the listing to it).
+  const geoCountry = (cityOnly.status === 'ok' && cityOnly.country) || chosen.country || null;
+  return { ok: true, center: chosen.point, radiusM: radiusFor(chosen.viewport), used, stateIgnored, country: geoCountry };
 }
 
 const LOCALITY_TYPES = ['locality', 'postal_town', 'sublocality', 'sublocality_level_1', 'administrative_area_level_3', 'colloquial_area'];

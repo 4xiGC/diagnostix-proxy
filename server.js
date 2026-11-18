@@ -17,6 +17,8 @@ import { contradictsBand, retryInstruction } from './lib-narrative.js';
 import { googleRecordBlock, applyPresenceRules, cleanText as presenceClean } from './lib-presence.js';
 // 2026-11-18 (Simon, fix 2): the place search is biased to where the restaurant is (lib-place-bias.js).
 import { locationParts, biasForLocation, readGeocode } from './lib-place-bias.js';
+// 2026-11-18 (Simon, fix 3): the confirmation screen says when the listing's name or country differs.
+import { placeNotices } from './lib-place-check.js';
 // 2026-11-18 (Simon): a HubSpot property with no value is left out of the write, so the
 // contact keeps its last value rather than receiving a 0 that reads as a measurement.
 function hubspotPresent(props) {
@@ -2054,10 +2056,13 @@ app.post('/resolve-place', async (req, res) => {
       lng: top.geometry && top.geometry.location && typeof top.geometry.location.lng === 'number' ? top.geometry.location.lng : null,
     };
     const placeToken = signPlaceToken({ place, secret: placeTokenSecret(), issuedAt: Date.now() });
-    console.log('PLACE [confirm] shown reviews=' + place.reviewCount + ' address=' + (place.address ? 'yes' : 'no'));
+    const notices = placeNotices({ typedName: name, googleName: place.name, formattedAddress: place.address,
+      geoCountry: bias.ok ? bias.country : null });
+    console.log('PLACE [confirm] shown reviews=' + place.reviewCount + ' address=' + (place.address ? 'yes' : 'no')
+      + ' notices=' + (notices.map((n) => n.kind).join(',') || 'none'));
     return res.json({ status: 'found', placeToken, place: {
       name: place.name, address: place.address, rating: place.rating, reviewCount: place.reviewCount,
-      closed: top.business_status === 'CLOSED_PERMANENTLY' } });
+      closed: top.business_status === 'CLOSED_PERMANENTLY' }, notices: notices.map((n) => n.text) });
   } catch (e) {
     console.log('PLACE [confirm] error ' + (e && e.message));
     // 2026-09-30 (B2): C4 found this path wrote no row and told nobody.
