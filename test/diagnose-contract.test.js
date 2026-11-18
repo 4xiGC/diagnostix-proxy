@@ -40,7 +40,9 @@ function breaches(resp) {
   const out = [];
   const isInt = (v) => Number.isInteger(v) && v >= 0 && v <= 100;
   for (const k of CONTRACT.pillarKeys) {
-    if (!resp.pillars || !resp.pillars[k] || !isInt(resp.pillars[k].score)) out.push('pillars.' + k + '.score');
+    // v3 (2026-11-18): a pillar on a v3-marked response may be null (Not available); never any other non-integer.
+    const pl = resp.pillars && resp.pillars[k];
+    if (!pl || !(isInt(pl.score) || (pl.score === null && pl.scoreRule === 'v3'))) out.push('pillars.' + k + '.score');
   }
   if (!isInt(resp.healthCheckScore)) out.push('healthCheckScore is ' + JSON.stringify(resp.healthCheckScore));
   else if (resp.healthCheckScore !== computeOverall(resp.pillars).score) out.push('healthCheckScore is not the mean of the pillars');
@@ -75,5 +77,5 @@ test('THE REAL RESPONSE CARRIES THE OPTIONAL PROVENANCE THE CONTRACT NAMES', asy
   const { status, body } = await postDiagnose(CONTRACT.example.pillars);
   assert.equal(status, 200);
   assert.equal(typeof body.provenance, 'object');
-  assert.equal(body.provenance && body.provenance.methodVersion, 'rvp-overall-mean-v2');
+  assert.equal(body.provenance && body.provenance.methodVersion, 'rvp-overall-mean-v3');   // v3 from 2026-11-18: a no-data pillar is null and left out (Simon)
 });

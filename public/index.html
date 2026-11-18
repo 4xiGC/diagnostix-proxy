@@ -879,6 +879,8 @@ function buildProgressSection(r, d) {
     var col = change > 0 ? '#00A651' : change < 0 ? '#ED1C24' : '#888';
     var arrow = change > 0 ? '&#8593;' : change < 0 ? '&#8595;' : '&#8594;';
     var changeStr = change > 0 ? '+' + change : String(change);
+    // 2026-11-18: retired plan, never rendered; a no-data pillar still never computes from null.
+    if (typeof pillar.score !== 'number') return '';
     var baseScore = pillar.score - change;
     return '<tr style="border-bottom:1px solid #f0ede8">'
       + '<td style="padding:8px 10px;font-size:13px;color:#333;font-weight:600">' + pillar.label + '</td>'
@@ -958,16 +960,17 @@ function trackSubmission(d, r) {
       // as benchmarks.method_version does.
       health_check_score: scoreOf(r).ok ? scoreOf(r).score : null,
       score_verdict: scoreOf(r).verdict || null,
-      score_method: (window.RVPScore && window.RVPScore.OVERALL_METHOD_VERSION) || null,
+      // 2026-11-18: the report's own method, not today's constant.
+      score_method: (window.RVPScore && window.RVPScore.scoreMethodOf && window.RVPScore.scoreMethodOf(r.pillars)) || null,
       cuisine: r.cuisineDetected || '',
       price_tier: r.priceDetected || '',
-      online_presence_overall: r.onlinePresence && r.onlinePresence.overall ? r.onlinePresence.overall : 0,
-      pillar_cs: r.pillars && r.pillars.cs ? r.pillars.cs.score : 0,
-      pillar_pa: r.pillars && r.pillars.pa ? r.pillars.pa.score : 0,
-      pillar_es: r.pillars && r.pillars.es ? r.pillars.es.score : 0,
-      pillar_sm: r.pillars && r.pillars.sm ? r.pillars.sm.score : 0,
-      pillar_cp: r.pillars && r.pillars.cp ? r.pillars.cp.score : 0,
-      pillar_bg: r.pillars && r.pillars.bg ? r.pillars.bg.score : 0,
+      online_presence_overall: r.onlinePresence && typeof r.onlinePresence.overall === 'number' ? r.onlinePresence.overall : null,
+      pillar_cs: r.pillars && r.pillars.cs && typeof r.pillars.cs.score === 'number' ? r.pillars.cs.score : null,
+      pillar_pa: r.pillars && r.pillars.pa && typeof r.pillars.pa.score === 'number' ? r.pillars.pa.score : null,
+      pillar_es: r.pillars && r.pillars.es && typeof r.pillars.es.score === 'number' ? r.pillars.es.score : null,
+      pillar_sm: r.pillars && r.pillars.sm && typeof r.pillars.sm.score === 'number' ? r.pillars.sm.score : null,
+      pillar_cp: r.pillars && r.pillars.cp && typeof r.pillars.cp.score === 'number' ? r.pillars.cp.score : null,
+      pillar_bg: r.pillars && r.pillars.bg && typeof r.pillars.bg.score === 'number' ? r.pillars.bg.score : null,
       sentiment_perf: d.sentiment && d.sentiment.perf ? d.sentiment.perf : 0,
       sentiment_ret: d.sentiment && d.sentiment.ret ? d.sentiment.ret : 0,
       sentiment_online: d.sentiment && d.sentiment.online ? d.sentiment.online : 0,
@@ -1148,6 +1151,11 @@ function scoreOf(r) {
     score: res.score,
     text: res.ok ? String(res.score) : '',
     verdict: res.ok ? (window.RVPScore.verdictFor(res.score) || '') : '',
+    // 2026-11-18 (Simon): the report's own method, what the overall rests on, and the
+    // one note for the November 2026 change, shown only on reports made under it.
+    method: res.method || null,
+    basis: window.RVPScore.overallBasisSentence ? window.RVPScore.overallBasisSentence(res, r && r.pillars) : '',
+    note: res.method === window.RVPScore.OVERALL_METHOD_VERSION ? window.RVPScore.METHOD_CHANGE_NOTE : '',
   };
 }
 
@@ -1186,7 +1194,8 @@ function renderReport(r, d) {
         +'<div class="rpt-title">'+d.name+'</div>'
         +'<div class="rpt-sub">Performance Intelligence Report</div>'
         +'<div class="rpt-meta">'
-          +'<span class="rpt-m">Location: <b>'+d.location+'</b></span>'
+          // 2026-11-18 (Simon): the Google listing actually assessed, which can differ from the survey's location field.
+          +((r.subject && r.subject.address) ? '<span class="rpt-m">Google listing assessed: <b>'+String(r.subject.address).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];})+'</b></span>' : '<span class="rpt-m">Location: <b>'+d.location+'</b></span>')
           +metaCuisine+metaPrice
           +'<span class="rpt-m">Date: <b>'+date+'</b></span>'
         +'</div>'
@@ -1238,11 +1247,12 @@ function renderReport(r, d) {
   var numVerbatims  = (r.reviewVerbatims||[]).length;
   var numChannels   = (r.onlinePresence&&r.onlinePresence.channels||[]).length;
   var numCompetitors= (r.competitors||[]).length;
-  var onlineScore   = (r.onlinePresence&&r.onlinePresence.overall)||0;
+  // 2026-11-18 (Simon): an absent overall is "Not available", never 0 and never "Below average".
+  var onlineScore   = (r.onlinePresence&&typeof r.onlinePresence.overall==='number')?r.onlinePresence.overall:null;
 
   // Online presence teaser, show the number but blur the detail
-  var presenceColor = onlineScore>=65?'#2E7D52':onlineScore>=45?'#C17D11':'#C0392B';
-  var presenceLabel = onlineScore>=65?'Good':'Below average';
+  var presenceColor = onlineScore===null?'#888':onlineScore>=65?'#2E7D52':onlineScore>=45?'#C17D11':'#C0392B';
+  var presenceLabel = onlineScore===null?'Not available':onlineScore>=65?'Good':'Below average';
 
   document.getElementById('rpt-summary').innerHTML =
 
@@ -1317,7 +1327,7 @@ function renderReport(r, d) {
       +'<div style="margin-top:12px;padding-top:12px;border-top:1px solid #f0ede6;display:flex;align-items:center;justify-content:space-between">'
         +'<div style="font-size:12px;color:#777">Your online presence score</div>'
         +'<div style="display:flex;align-items:center;gap:8px">'
-          +'<span style="font-family:\'Playfair Display\',serif;font-size:1.4rem;color:'+presenceColor+'">'+onlineScore+'</span>'
+          +(onlineScore===null?'':'<span style="font-family:\'Playfair Display\',serif;font-size:1.4rem;color:'+presenceColor+'">'+onlineScore+'</span>')
           +'<span style="font-size:11px;color:'+presenceColor+';font-weight:700">'+presenceLabel+'</span>'
           +'<span style="font-size:11px;color:#bbb">/ 6 platforms audited in full report</span>'
         +'</div>'
@@ -1326,6 +1336,10 @@ function renderReport(r, d) {
 
   // ── FULL REPORT (rendered but locked) ──
   var pillarRows = Object.values(r.pillars||{}).map(function(p){
+    // 2026-11-18 (Simon): a pillar with no data says so; it is never a bar at zero.
+    if (typeof p.score !== 'number') return '<div class="sc-row">'
+      +'<div class="sc-lbl">'+p.label+'</div>'
+      +'<div class="sc-num" style="color:#888;font-style:italic;width:auto">Not available</div></div>';
     return '<div class="sc-row">'
       +'<div class="sc-lbl">'+p.label+'</div>'
       +'<div class="sc-bg"><div class="sc-bar '+sc(p.score)+'" style="width:'+p.score+'%"></div></div>'
@@ -1333,6 +1347,10 @@ function renderReport(r, d) {
   }).join('');
 
   var presRows = ((r.onlinePresence&&r.onlinePresence.channels)||[]).map(function(c){
+    // 2026-11-18 (Simon): a channel with no data says so; it is never a bar at zero.
+    if (typeof c.score !== 'number') return '<div class="pres-row">'
+      +'<div class="pres-lbl">'+c.name+'</div>'
+      +'<div class="pres-v" style="color:#888;font-style:italic;width:auto">Not available</div></div>';
     return '<div class="pres-row">'
       +'<div class="pres-lbl">'+c.name+'</div>'
       +'<div class="pres-bg"><div class="pres-fill" style="width:'+c.score+'%;background:'+presColor(c.score)+'"></div></div>'
@@ -1555,12 +1573,16 @@ function renderReport(r, d) {
   var fullHTML =
     '<div class="rpt-h">Full HealthCheck Scorecard</div>'+pillarRows
     +'<div class="sc-total"><div class="sc-total-lbl">Overall HealthCheck Score</div>'
-    +'<div class="sc-total-v" style="color:'+overallCol+'">'+SC.text+' / 100</div></div>'
+    +'<div class="sc-total-v" style="color:'+overallCol+'">'+(SC.ok ? SC.text+' / 100' : 'No overall')+'</div></div>'
+    +((SC.basis || SC.note) ? '<div style="font-size:11px;color:#666;line-height:1.5;margin:6px 0 14px">'+[SC.basis, SC.note].filter(Boolean).join(' ')+'</div>' : '')
 
     +'<div class="rpt-h">Online Presence &amp; Strength Score</div>'
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
-      +'<span style="font-family:\'Playfair Display\',serif;font-size:1.5rem;color:'+presColor(r.onlinePresence?.overall||0)+'">'+((r.onlinePresence&&r.onlinePresence.overall)||0)+'</span>'
-      +'<span style="font-size:11px;color:#888">/ 100 overall online presence score</span></div>'
+      +(onlineScore===null
+        ? '<span style="font-size:13px;color:#888;font-style:italic">Not available: no channel had data to score</span>'
+        : '<span style="font-family:\'Playfair Display\',serif;font-size:1.5rem;color:'+presColor(onlineScore)+'">'+onlineScore+'</span>'
+          +'<span style="font-size:11px;color:#888">/ 100 overall online presence score, from the channels with data</span>')
+      +'</div>'
     +presRows
 
     +'<div class="rpt-h">Reviewer Self-Assessment</div>'

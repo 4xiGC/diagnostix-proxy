@@ -86,7 +86,8 @@ test('CONFIRMED PLACE: the prose prompts name the restaurant by its Places name'
     assert.ok(seen.prompts[label], label + ' was never called, so this proves nothing');
     assert.equal(restaurantLine(seen.prompts[label]), GOOGLE, label + ' names the restaurant as typed');
   }
-  assert.deepEqual(body.subject, { name: GOOGLE, typedName: TYPED, placeId: 'ChIJ-teclados' });
+  // 2026-11-18 (Simon): the confirmed listing's address rides with the subject, for the cover.
+  assert.deepEqual(body.subject, { name: GOOGLE, typedName: TYPED, placeId: 'ChIJ-teclados', address: 'Av. Italia 1234' });
 });
 
 test('CONFIRMED PLACE: every search still uses the TYPED name, never the Places name', async () => {

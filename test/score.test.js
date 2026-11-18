@@ -174,7 +174,7 @@ test('NO SCORE MEANS NO VERDICT', () => {
 });
 
 test('the method version names the rule and the product', () => {
-  assert.equal(OVERALL_METHOD_VERSION, 'rvp-overall-mean-v2');   // v2 from 2026-09-25 (Q20)
+  assert.equal(OVERALL_METHOD_VERSION, 'rvp-overall-mean-v3');   // v3 from 2026-11-18: a no-data pillar is null and left out (Simon)
 });
 
 // ── Controls ──────────────────────────────────────────────────────────────
