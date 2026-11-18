@@ -6993,14 +6993,16 @@ async function alertStrandedRows({ payingEmail, stranded }) {
 // address did not send). Unthrottled: every failed delivery is its own alert.
 // 2026-11-18 (Simon, the approved wording): the recovery page says "Sent to <address>", naming each
 // address the report went to, and when the second copy failed it SAYS so rather than quietly
-// describing one address. The page is reached by whoever typed the survey address, which can be a
-// different person from the payer, so each address is shown masked: its first character, then the
-// domain ("s•••@4xiconsulting.com"), never in full.
+// describing one address.
+// 8.11.75 (Simon, 2026-11-18): IN FULL, both the paying address and the second copy. Naming the
+// address is so the customer can see whether it is the right one, and "o•••@example.test" cannot
+// tell oliver@ from olivia@. It is their own post-purchase page showing addresses they typed.
+// renderRecoveryPage escapes the message.
 function pageAddr(email) {
   const s = String(email == null ? '' : email).trim();
   const i = s.lastIndexOf('@');
   if (i < 1 || i === s.length - 1) return 'your address';
-  return s.charAt(0) + '\u2022\u2022\u2022' + s.slice(i);
+  return s;
 }
 function sentMessage(delivered, restaurant) {
   const d = delivered || {};
