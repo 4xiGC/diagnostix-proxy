@@ -961,7 +961,7 @@ function trackSubmission(d, r) {
       score_method: (window.RVPScore && window.RVPScore.OVERALL_METHOD_VERSION) || null,
       cuisine: r.cuisineDetected || '',
       price_tier: r.priceDetected || '',
-      online_presence_overall: r.onlinePresence && r.onlinePresence.overall ? r.onlinePresence.overall : 0,
+      online_presence_overall: r.onlinePresence && typeof r.onlinePresence.overall === 'number' ? r.onlinePresence.overall : null,
       pillar_cs: r.pillars && r.pillars.cs ? r.pillars.cs.score : 0,
       pillar_pa: r.pillars && r.pillars.pa ? r.pillars.pa.score : 0,
       pillar_es: r.pillars && r.pillars.es ? r.pillars.es.score : 0,
@@ -1238,11 +1238,12 @@ function renderReport(r, d) {
   var numVerbatims  = (r.reviewVerbatims||[]).length;
   var numChannels   = (r.onlinePresence&&r.onlinePresence.channels||[]).length;
   var numCompetitors= (r.competitors||[]).length;
-  var onlineScore   = (r.onlinePresence&&r.onlinePresence.overall)||0;
+  // 2026-11-18 (Simon): an absent overall is "Not available", never 0 and never "Below average".
+  var onlineScore   = (r.onlinePresence&&typeof r.onlinePresence.overall==='number')?r.onlinePresence.overall:null;
 
   // Online presence teaser, show the number but blur the detail
-  var presenceColor = onlineScore>=65?'#2E7D52':onlineScore>=45?'#C17D11':'#C0392B';
-  var presenceLabel = onlineScore>=65?'Good':'Below average';
+  var presenceColor = onlineScore===null?'#888':onlineScore>=65?'#2E7D52':onlineScore>=45?'#C17D11':'#C0392B';
+  var presenceLabel = onlineScore===null?'Not available':onlineScore>=65?'Good':'Below average';
 
   document.getElementById('rpt-summary').innerHTML =
 
@@ -1317,7 +1318,7 @@ function renderReport(r, d) {
       +'<div style="margin-top:12px;padding-top:12px;border-top:1px solid #f0ede6;display:flex;align-items:center;justify-content:space-between">'
         +'<div style="font-size:12px;color:#777">Your online presence score</div>'
         +'<div style="display:flex;align-items:center;gap:8px">'
-          +'<span style="font-family:\'Playfair Display\',serif;font-size:1.4rem;color:'+presenceColor+'">'+onlineScore+'</span>'
+          +(onlineScore===null?'':'<span style="font-family:\'Playfair Display\',serif;font-size:1.4rem;color:'+presenceColor+'">'+onlineScore+'</span>')
           +'<span style="font-size:11px;color:'+presenceColor+';font-weight:700">'+presenceLabel+'</span>'
           +'<span style="font-size:11px;color:#bbb">/ 6 platforms audited in full report</span>'
         +'</div>'
@@ -1333,6 +1334,10 @@ function renderReport(r, d) {
   }).join('');
 
   var presRows = ((r.onlinePresence&&r.onlinePresence.channels)||[]).map(function(c){
+    // 2026-11-18 (Simon): a channel with no data says so; it is never a bar at zero.
+    if (typeof c.score !== 'number') return '<div class="pres-row">'
+      +'<div class="pres-lbl">'+c.name+'</div>'
+      +'<div class="pres-v" style="color:#888;font-style:italic;width:auto">Not available</div></div>';
     return '<div class="pres-row">'
       +'<div class="pres-lbl">'+c.name+'</div>'
       +'<div class="pres-bg"><div class="pres-fill" style="width:'+c.score+'%;background:'+presColor(c.score)+'"></div></div>'
@@ -1559,8 +1564,11 @@ function renderReport(r, d) {
 
     +'<div class="rpt-h">Online Presence &amp; Strength Score</div>'
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
-      +'<span style="font-family:\'Playfair Display\',serif;font-size:1.5rem;color:'+presColor(r.onlinePresence?.overall||0)+'">'+((r.onlinePresence&&r.onlinePresence.overall)||0)+'</span>'
-      +'<span style="font-size:11px;color:#888">/ 100 overall online presence score</span></div>'
+      +(onlineScore===null
+        ? '<span style="font-size:13px;color:#888;font-style:italic">Not available: no channel had data to score</span>'
+        : '<span style="font-family:\'Playfair Display\',serif;font-size:1.5rem;color:'+presColor(onlineScore)+'">'+onlineScore+'</span>'
+          +'<span style="font-size:11px;color:#888">/ 100 overall online presence score, from the channels with data</span>')
+      +'</div>'
     +presRows
 
     +'<div class="rpt-h">Reviewer Self-Assessment</div>'

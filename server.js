@@ -12,6 +12,8 @@ let fetch = nodeFetch;
 import { computeOverall, computeOverallV1, ES_NOT_AVERAGED_SENTENCE, overallFormula, verdictFor, NO_SCORE_SENTENCE,
          OVERALL_METHOD_VERSION, recordedScore } from './lib-score.js';
 import { contradictsBand, retryInstruction } from './lib-narrative.js';
+// 2026-11-18 (Simon): a count is a measurement and absence is not zero (lib-presence.js).
+import { googleRecordBlock, applyPresenceRules, cleanText as presenceClean } from './lib-presence.js';
 import crypto from 'crypto';
 import { describeShape, emailDomainOnly, addrLabel } from './lib-webhook-log.js';
 import { buildCustomerReportEmail, buildCacheMissEmail } from './lib-email.js';
@@ -1790,7 +1792,7 @@ app.get('/health', (req, res) => {
 const SUMMARY_TARGET_WORDS = 70;
 const SUMMARY_MAX_WORDS = 80;
 
-async function writeExecutiveSummary({ name, location, report, score, band }) {
+async function writeExecutiveSummary({ name, location, report, score, band, googleRecord }) {
   if (!band || typeof score !== 'number') {
     return { text: '', reason: 'no-band' };
   }
@@ -1805,6 +1807,8 @@ async function writeExecutiveSummary({ name, location, report, score, band }) {
 
   const basePrompt = [
     'Write the executive summary for a restaurant health report.',
+    // 2026-11-18 (Simon): the record, and no count it does not supply.
+    googleRecordBlock(googleRecord || {}),
     '',
     'Restaurant: ' + name,
     'Location: ' + location,
@@ -2104,6 +2108,13 @@ app.post('/diagnose', async (req, res) => EVIDENCE.run(newLedger(), async () => 
     //                subject the purchase sends to Analytics' peer comparison.
     // Analytics' own call has no confirmed place, so both are its name.
     const displayName = confirmedPlace && confirmedPlace.name ? String(confirmedPlace.name) : name;
+    // 2026-11-18 (Simon): THE GOOGLE RECORD THE OWNER CONFIRMED is the one authoritative
+    // count, passed to the model and used to check what it writes. A caller with no
+    // confirmed place (an Analytics peer) has none, and the prompt says not available.
+    const googleRecord = confirmedPlace
+      ? { rating: typeof confirmedPlace.rating === 'number' ? confirmedPlace.rating : null,
+          reviewCount: typeof confirmedPlace.reviewCount === 'number' ? confirmedPlace.reviewCount : null }
+      : { rating: null, reviewCount: null };
 
     // ── THE REVIEW GATE (lib-review-gate.js), before ANY spend ──
     //
@@ -2317,7 +2328,7 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     console.log('[diagnose] claude part1 + part2 in parallel (p2 uses Haiku for speed)...');
     const tClaude = Date.now();
     const [p1, p2] = await Promise.all([
-      claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${displayName}\nLocation:${location}\nWebData:\n${webScoring}\n\n${sv}\n\n${bmBlock}\n\nReturn JSON. Use WebData for scores. Use Reviewer Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what the reviewer thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between reviewer perception and reality). businessRealityAnalysis and perceptionGap follow the rules above. When business metrics are provided, ALSO populate pillarGapNarratives with one short sentence per relevant pairing (guest count ↔ Customer Sentiment pillar; average check ↔ Pricing & Accessibility pillar; profitability ↔ Brand Experience & Growth pillar). Each narrative should be 1 punchy sentence interpreting the gap or alignment between the financial metric and the qualitative pillar score. If a metric is not provided, return empty string "" for its narrative.\n{"cuisineDetected":"from data","priceDetected":"$$","pillars":{"cs":{"score":<integer 0-100>,"label":"Customer Sentiment","status":"good"},"pa":{"score":<integer 0-100>,"label":"Pricing & Accessibility","status":"good"},"es":{"score":<integer 0-100>,"label":"Employee Sentiment","status":"warn"},"sm":{"score":<integer 0-100>,"label":"Social Media Impact","status":"warn"},"cp":{"score":<integer 0-100>,"label":"Competitive Positioning","status":"good"},"bg":{"score":<integer 0-100>,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":<integer 0-100>,"channels":[{"name":"Google Business","score":<integer 0-100>,"note":"real"},{"name":"Yelp","score":<integer 0-100>,"note":"real"},{"name":"TripAdvisor","score":<integer 0-100>,"note":"real"},{"name":"OpenTable","score":<integer 0-100>,"note":"real"},{"name":"Social Media","score":<integer 0-100>,"note":"real"},{"name":"Delivery Platforms","score":<integer 0-100>,"note":"real"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence","businessRealityAnalysis":"","perceptionGap":"","pillarGapNarratives":{"guest":"","check":"","profit":""}}\nRules:good>=65 warn=45-64 bad<45 for each pillar status. DO NOT return an overall score, an overall verdict or an executive summary. The overall score is COMPUTED from the six pillar scores by the application, not written here. NOTE: Do NOT change the pillar scores based on businessMetrics. The pillar scores remain qualitative+web-data driven. Financial metrics are reported separately via businessRealityAnalysis, perceptionGap, and pillarGapNarratives.\n\nPUNCTUATION, HARD RULE: never use an em-dash (—) or an en-dash (–) in any string you return, and never use their HTML entity forms. This is 4xi house style and it is absolute. It applies to every field without exception: pillar labels, owner sentiment summary, sentiment gap, business reality analysis, perception gap, pillar gap narratives and online presence notes. Where you would reach for one, use a comma, a colon, parentheses, or a full stop and a second sentence, chosen to suit that sentence rather than substituted mechanically. For a numeric range use a plain hyphen ("10-20", never "10–20").`, { label: 'diagnose-p1' }),
+      claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language.\n\nRestaurant:${displayName}\nLocation:${location}\nWebData:\n${webScoring}\n\n${googleRecordBlock(googleRecord)}\n\n${sv}\n\n${bmBlock}\n\nReturn JSON. Use WebData for scores. Use Reviewer Self-Assessment to write ownerSentimentSummary (2 sentences interpreting what the reviewer thinks vs what data shows) and sentimentGap (1 sentence on biggest gap between reviewer perception and reality). businessRealityAnalysis and perceptionGap follow the rules above. When business metrics are provided, ALSO populate pillarGapNarratives with one short sentence per relevant pairing (guest count ↔ Customer Sentiment pillar; average check ↔ Pricing & Accessibility pillar; profitability ↔ Brand Experience & Growth pillar). Each narrative should be 1 punchy sentence interpreting the gap or alignment between the financial metric and the qualitative pillar score. If a metric is not provided, return empty string "" for its narrative.\n{"cuisineDetected":"from data","priceDetected":"$$","pillars":{"cs":{"score":<integer 0-100>,"label":"Customer Sentiment","status":"good"},"pa":{"score":<integer 0-100>,"label":"Pricing & Accessibility","status":"good"},"es":{"score":<integer 0-100>,"label":"Employee Sentiment","status":"warn"},"sm":{"score":<integer 0-100>,"label":"Social Media Impact","status":"warn"},"cp":{"score":<integer 0-100>,"label":"Competitive Positioning","status":"good"},"bg":{"score":<integer 0-100>,"label":"Brand Experience & Growth","status":"good"}},"onlinePresence":{"overall":<integer 0-100>,"channels":[{"name":"Google Business","score":<integer 0-100, or null when the data says nothing about this channel>,"note":"real, or Not available"},{"name":"Yelp","score":<integer 0-100, or null when the data says nothing about this channel>,"note":"real, or Not available"},{"name":"TripAdvisor","score":<integer 0-100, or null when the data says nothing about this channel>,"note":"real, or Not available"},{"name":"OpenTable","score":<integer 0-100, or null when the data says nothing about this channel>,"note":"real, or Not available"},{"name":"Social Media","score":<integer 0-100, or null when the data says nothing about this channel>,"note":"real, or Not available"},{"name":"Delivery Platforms","score":<integer 0-100, or null when the data says nothing about this channel>,"note":"real, or Not available"}]},"ownerSentimentSummary":"2 sentences","sentimentGap":"1 sentence","businessRealityAnalysis":"","perceptionGap":"","pillarGapNarratives":{"guest":"","check":"","profit":""}}\nRules:good>=65 warn=45-64 bad<45 for each pillar status. DO NOT return an overall score, an overall verdict or an executive summary. The overall score is COMPUTED from the six pillar scores by the application, not written here. NOTE: Do NOT change the pillar scores based on businessMetrics. The pillar scores remain qualitative+web-data driven. Financial metrics are reported separately via businessRealityAnalysis, perceptionGap, and pillarGapNarratives.\n\nPUNCTUATION, HARD RULE: never use an em-dash (—) or an en-dash (–) in any string you return, and never use their HTML entity forms. This is 4xi house style and it is absolute. It applies to every field without exception: pillar labels, owner sentiment summary, sentiment gap, business reality analysis, perception gap, pillar gap narratives and online presence notes. Where you would reach for one, use a comma, a colon, parentheses, or a full stop and a second sentence, chosen to suit that sentence rather than substituted mechanically. For a numeric range use a plain hyphen ("10-20", never "10–20").`, { label: 'diagnose-p1' }),
       claude(`IMPORTANT: Write ALL text values in English only, even if web data is in another language. Translate any non-English review quotes into English.\n\nRestaurant:${displayName}\nLocation:${location}\nWebData:\n${webProse}\n\n${bmBlock}\n\n${userCompBlock}\n\n${focalProfileBlock}\n\nReturn JSON with real data.\n\nIMPORTANT, TWO DISTINCT ACTION LISTS:\n1. "actions": 5 OPERATIONAL recommendations driven by the qualitative pillars and web data (customer experience, staff, social media, brand, competitive positioning). These exist regardless of whether financial metrics were provided. Do NOT mention specific financial numbers in these actions.\n2. "commercialActions": 2-3 COMMERCIAL/FINANCIAL recommendations driven SPECIFICALLY by the business metrics the user SHARED. Rules: (a) If the businessMetrics block says all metrics are "Not tracked (user opted out)", return empty array []. (b) Each item MUST reference only a metric the user actually shared, never reference a "Not tracked" metric or speculate about one. (c) Each item must include "title", "desc", and "evidence" (a short phrase referencing the specific shared financial metric, e.g. "Guest count -12% YoY" or "Profitability -8% YoY").\n\nCommercial action guidance (only for shared metrics): declining guest count → acquisition/awareness/traffic actions; declining average check → menu mix, pricing strategy, upselling actions; declining profitability with stable revenue → cost control, prime cost management, supplier/labor optimization. Strong growth → reinvestment/expansion suggestions.\n\nIMPORTANT, COMPETITORS schema: list 3 TO 5 actual competing restaurants (minimum 3, maximum 5) from the COMPETITORS web data (NOT the focal restaurant itself). The COMPETITORS web data is organised into LABELED SECTIONS. Their order reflects source reliability, not importance: a user-named competitor is top priority wherever its section appears. [USER-NAMED: X] (the restaurant owner identified X as a direct competitor. TOP PRIORITY, always include each user-named competitor if any data exists); [GOOGLE-PLACES] (nearby restaurants from Google Maps within 2km. AUTHORITATIVE source for auto-discovered competitors, ratings/reviewCounts here come directly from Google so use them VERBATIM and do not modify the numbers); [SIMILAR-TO] (concept overlap surfaced via \"restaurants like X\" queries); [NEIGHBORHOOD] (neighborhood/district results); [TOP-IN-CITY] (broad city-level fallback). RULES: (1) Only include competitors whose NAMES appear VERBATIM in the web data, never invent names like \"Restaurant Market\" or generic placeholders. (2) Fewer real competitors is better than padded fakes. If you only have 3 strong, return 3. Do not pad to 5 with weak matches. (3) Skip restaurants that are clearly a different tier (fast-food, hotel restaurants, chain fast-food when focal is fine-dining). Different cuisine is fine when tier matches and proximity is close, an Italian fine-dining restaurant next door IS a competitor to an Asian-fusion fine-dining restaurant. (4) For each named competitor, ACTIVELY SEARCH the web data for star ratings (Google, TripAdvisor, Yelp ratings typically appear as \"4.5\", \"4.5/5\", \"4.5 stars\", or similar). Convert to a number 0-5. Only use null if you genuinely cannot find any rating signal, do not default to null out of excessive caution. (5) Same for reviewCount: look for \"850 reviews\", \"1.2k reviews\", \"(642)\" patterns. Convert k-suffixed numbers (1.2k → 1200). Only null if truly absent. (6) Do NOT include the focal restaurant in this list, it will be added by the renderer.\n\n{"reviewVerbatims":[{"text":"real quote","source":"Google","stars":<integer 1-5>,"sentiment":"positive"},{"text":"real quote","source":"TripAdvisor","stars":<integer 1-5>,"sentiment":"positive"},{"text":"real quote","source":"Yelp","stars":<integer 1-5>,"sentiment":"negative"},{"text":"real quote","source":"Google","stars":<integer 1-5>,"sentiment":"negative"}],"strengths":["real strength 1","real strength 2","real strength 3"],"risks":["real risk 1","real risk 2","real risk 3"],"themes":{"positive":["t1","t2","t3"],"negative":["t1","t2"],"neutral":["t1","t2"]},"employeeSentiment":"from data","competitiveInsight":"from data","competitors":[{"name":"real competitor name","rating":<number 0-5, or null if unknown>,"reviewCount":<integer, or null if unknown>,"note":"1 sentence on their position"},{"name":"real competitor name","rating":<number 0-5, or null if unknown>,"reviewCount":<integer, or null if unknown>,"note":"1 sentence"},{"name":"real competitor name","rating":<number 0-5, or null if unknown>,"reviewCount":<integer, or null if unknown>,"note":"1 sentence"},{"name":"real competitor name","rating":<number 0-5, or null if unknown>,"reviewCount":<integer, or null if unknown>,"note":"1 sentence"},{"name":"real competitor name","rating":<number 0-5, or null if unknown>,"reviewCount":<integer, or null if unknown>,"note":"1 sentence"}],"actions":[{"priority":"urgent","title":"t","desc":"evidence-based, operational"},{"priority":"urgent","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"30days","title":"t","desc":"d"},{"priority":"ongoing","title":"t","desc":"d"}],"commercialActions":[{"title":"t","desc":"d","evidence":"financial metric reference"},{"title":"t","desc":"d","evidence":"financial metric reference"}]}\n\nPUNCTUATION, HARD RULE: never use an em-dash (—) or an en-dash (–) in any string you return, and never use their HTML entity forms. This is 4xi house style and it is absolute. It applies to every field without exception: review quotes, strengths, risks, themes, employee sentiment, competitive insight, competitor notes, actions and commercial actions. Where you would reach for one, use a comma, a colon, parentheses, or a full stop and a second sentence, chosen to suit that sentence rather than substituted mechanically. For a numeric range use a plain hyphen ("10-20", never "10–20").\n\n${COMPARISON_RULE}` + (planPromptEnabled() ? '\n\n' + PLAN_RULE : ''), { label: 'diagnose-p2', model: 'claude-haiku-4-5-20251001' })
     ]);
     console.log('[diagnose] both Claude calls complete in', Date.now() - tClaude, 'ms');
@@ -2332,6 +2343,11 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
       console.log('[diagnose] p2 competitors shape:', shapes);
     }
     const report = Object.assign({}, p1, p2);
+    // 2026-11-18 (Simon): no count the prompt did not supply, no zero for absent data
+    // (lib-presence.js). Before scoring and the summary, so neither reads a false count.
+    const presenceChanges = applyPresenceRules(report, googleRecord);
+    if (presenceChanges.length) console.log('PRESENCE_RULES [diagnose] changes=' + presenceChanges.length + ' '
+      + JSON.stringify(presenceChanges.reduce((t, c) => ((t[c.reason || c.action] = (t[c.reason || c.action] || 0) + 1), t), {})));
     // 2026-10-02 (Simon Q7): EVERY COMPETITOR OR PEER DROPPED BEFORE SCORING, AND WHY.
     // Stored on the report (always an array on a /diagnose run, empty when nothing
     // was dropped), so "How this report was built" can print "Removed before
@@ -2361,9 +2377,11 @@ COMPETITOR MATCHING RULES, apply these to non-user-named competitors:
     report.healthCheckScore = computed.ok ? computed.score : null;
 
     const summary = await writeExecutiveSummary({
-      name: displayName, location, report, score: computed.score, band: computedBand,
+      name: displayName, location, report, score: computed.score, band: computedBand, googleRecord,
     });
-    report.executiveSummary = summary.text;
+    const summaryCleaned = [];
+    report.executiveSummary = presenceClean(summary.text, googleRecord, 'executiveSummary', summaryCleaned);
+    if (summaryCleaned.length) console.log('PRESENCE_RULES [summary] removed=' + summaryCleaned.length + ' ' + summaryCleaned.map((c) => c.reason).join(','));
     report.summaryGate = summary.reason;
 
     // ── User-named competitor safety net ─────────────────────────────────
@@ -3490,7 +3508,7 @@ async function saveToHubSpot(email, firstName, restaurantName, location, report)
       diagnostix_score:        recordedScore(report).score ?? 0,
       diagnostix_verdict:      recordedScore(report).verdict || '',
       diagnostix_cuisine:      report.cuisineDetected || '',
-      diagnostix_online_score: report.onlinePresence && report.onlinePresence.overall ? report.onlinePresence.overall : 0,
+      diagnostix_online_score: report.onlinePresence && typeof report.onlinePresence.overall === 'number' ? report.onlinePresence.overall : null,
       diagnostix_date:         new Date().toISOString().split('T')[0],
       report_purchased:        false,
       lead_source:             'DiagnostiX'
@@ -4442,8 +4460,13 @@ function renderReportHtml({ subscriber, report, reportLabel, proofOnly = false, 
 
   // Online presence channels
   const onlineChannels = (report?.onlinePresence?.channels || []).map(c => {
+    // 2026-11-18 (Simon): absent data is "Not available", never a bar at zero.
+    if (typeof c.score !== 'number') return `<div class="pres-row">
+      <div class="pres-name">${esc(c.name)}</div>
+      <div class="pres-na" style="color:#888;font-style:italic">Not available</div>
+    </div>`;
     const cColor = c.score >= 65 ? '#00A651' : c.score >= 45 ? '#F7941D' : '#ED1C24';
-    const pct = Math.max(0, Math.min(100, c.score || 0));
+    const pct = Math.max(0, Math.min(100, c.score));
     return `<div class="pres-row">
       <div class="pres-name">${esc(c.name)}</div>
       <div class="pres-bar"><div class="pres-fill" style="width:${pct}%;background:${cColor}"></div></div>
