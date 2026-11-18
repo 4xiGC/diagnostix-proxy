@@ -54,5 +54,5 @@
   "optional": {
     "provenance": "object, from 2026-09-30 (RVP B5, lib-provenance.js buildProvenance): methodVersion, passes (label, model, promptVersion, tokens), promptVersions, confidence, durationMs, writtenAt. Additive: Analytics does not read it, and a response without it is still valid."
   },
-  "v3Consumers": "2026-11-18: diagnostix-analytics lib/score.js overallFromPillars applies the v2 Employee Sentiment 50 rule to every peer and returns null for any null pillar; it must read v3 (numeric pillars only, a measured 50 kept) before RVP 8.11.67 ships"
+  "v3Consumers": "2026-11-18: diagnostix-analytics 0.5.6 reads v3. lib/score.js overallFromPillars reads each benchmarks row under its own method_version: v3 averages the pillars present (a null or absent pillar is left out, never 0; a measured 50 is kept; fewer than 3 means no overall). A subject is read from one method only. Pinned by SHARED_V3_TABLE in both repos."
 }

@@ -124,3 +124,29 @@ test('one note for both changes, on v3 reports only', async () => {
   assert.ok(h2.includes('Method ' + S.OVERALL_METHOD_VERSION_V2), 'an old report names its own method, v2');
   assert.ok(/Employee Sentiment[\s\S]{0,400}Not available/.test(h3));
 });
+
+// ── THE SHARED v3 TABLE (2026-11-18) ────────────────────────────────────────
+// Identical, value for value, to SHARED_V3_TABLE in diagnostix-analytics
+// test/peer-scores.test.js, which recomputes peer overalls from the
+// benchmarks rows this repo writes. Separate repos, no shared package: drift
+// turns one of the two suites red.
+const SHARED_V3_TABLE = [
+  { pillars: [66, 70, 42, 48, 58, 72], expect: 59 },
+  { pillars: [78, 68, 50, 58, 72, 74], expect: 67 },
+  { pillars: [78, 68, null, 58, 72, 74], expect: 70 },
+  { pillars: [80, null, null, 83, null, 83], expect: 82 },
+  { pillars: [70, null, null, 71, null, null], expect: null },
+  { pillars: [null, null, null, null, null, null], expect: null },
+  { pillars: [0, 0, null, 0, null, null], expect: 0 },
+];
+
+test('THE SHARED v3 TABLE, value for value with diagnostix-analytics', () => {
+  for (const row of SHARED_V3_TABLE) {
+    const p = {};
+    S.PILLAR_KEYS.forEach((k, i) => { p[k] = { score: row.pillars[i], scoreRule: S.SCORE_RULE_V3 }; });
+    const r = S.computeOverall(p);
+    assert.equal(r.ok ? r.score : null, row.expect, row.pillars.join(','));
+  }
+  assert.equal(S.OVERALL_METHOD_VERSION, 'rvp-overall-mean-v3');
+  assert.equal(S.MIN_PILLARS_FOR_OVERALL, 3);
+});
